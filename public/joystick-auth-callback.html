@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head><title>Joystick Auth Callback</title></head>
+<body style="background:#0F0F12;color:#E0E0E6;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="text-align:center;">
+    <h2 id="status">Authenticating...</h2>
+    <p>You can close this window.</p>
+  </div>
+  <script>
+    (function() {
+      var queryParams = new URLSearchParams(window.location.search);
+      var code = queryParams.get('code');
+      var state = queryParams.get('state');
+      var error = queryParams.get('error');
+      var errorDesc = queryParams.get('error_description');
+
+      console.log('[Joystick Auth Callback] URL:', window.location.href);
+      console.log('[Joystick Auth Callback] code:', code ? 'present' : 'missing', 'state:', state ? 'present' : 'missing');
+
+      var targetOrigin = '*';
+      try {
+        if (window.opener && window.opener.location) {
+          targetOrigin = window.opener.location.origin;
+        }
+      } catch (e) {
+        console.warn('[Joystick Auth Callback] Could not read opener origin, using wildcard:', e);
+      }
+
+      function closeWindow(delay) {
+        setTimeout(function() {
+          try { window.close(); } catch(e) {}
+        }, delay || 2000);
+      }
+
+      if (error) {
+        document.getElementById('status').textContent = 'Authentication Failed: ' + (errorDesc || error);
+        document.getElementById('status').style.color = '#ff6b6b';
+        if (window.opener) {
+          window.opener.postMessage({ type: 'JOYSTICK_AUTH_ERROR', error: errorDesc || error }, targetOrigin);
+        }
+        closeWindow(3000);
+        return;
+      }
+
+      if (!code) {
+        document.getElementById('status').textContent = 'No authorization code received — check console for URL details';
+        document.getElementById('status').style.color = '#ff6b6b';
+        if (window.opener) {
+          window.opener.postMessage({ type: 'JOYSTICK_AUTH_ERROR', error: 'No authorization code in callback. URL: ' + window.location.href }, targetOrigin);
+        }
+        closeWindow(5000);
+        return;
+      }
+
+      document.getElementById('status').textContent = 'Authorization code received — exchanging token...';
+      if (window.opener) {
+        window.opener.postMessage({ type: 'JOYSTICK_AUTH_CODE', code: code, state: state }, targetOrigin);
+      } else {
+        // Fallback: store in localStorage so the main app can poll and pick it up
+        console.log('[Joystick Auth Callback] No opener window — storing code in localStorage as fallback');
+        localStorage.setItem('joystick_auth_callback', JSON.stringify({ code: code, state: state, ts: Date.now() }));
+        document.getElementById('status').textContent = 'Authorization code received — return to the app to complete login.';
+        document.getElementById('status').style.color = '#53fc18';
+      }
+      closeWindow(2000);
+    })();
+  </script>
+</body>
+</html>

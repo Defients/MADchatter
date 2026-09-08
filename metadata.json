@@ -1,0 +1,6 @@
+{
+  "name": "Forge Chat Co-Pilot",
+  "description": "An elite contextual chat co-pilot agent designed for Twitch viewers to generate high-signal chat messages based on stream context and configuration.",
+  "requestFramePermissions": ["display-capture", "microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

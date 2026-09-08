@@ -1,0 +1,21 @@
+{
+  "name": "AutoForge — AI Twitch Co-Pilot",
+  "short_name": "AutoForge",
+  "description": "An AI-powered Twitch co-pilot that generates high-signal chat messages in real time using stream context, transcription, and live chat analysis.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "32x32",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/madchatter-logo1.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

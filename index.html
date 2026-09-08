@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Primary Meta Tags -->
+    <title>AutoForge — AI Twitch Co-Pilot</title>
+    <meta name="title" content="AutoForge — AI Twitch Co-Pilot" />
+    <meta name="description" content="AutoForge is an AI-powered Twitch co-pilot that generates high-signal chat messages in real time using stream context, transcription, and live chat analysis." />
+    <meta name="keywords" content="Twitch, AI, co-pilot, chat bot, stream assistant, Twitch chat, AI chat generation, stream context, live streaming, AutoForge" />
+    <meta name="author" content="AutoForge" />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#0a0a0f" />
+    <link rel="canonical" href="https://madchatter.fun/" />
+
+    <!-- Icons & Manifest -->
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/madchatter-logo1.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://madchatter.fun/" />
+    <meta property="og:title" content="AutoForge — AI Twitch Co-Pilot" />
+    <meta property="og:description" content="An AI-powered Twitch co-pilot that generates high-signal chat messages in real time using stream context, transcription, and live chat analysis." />
+    <meta property="og:image" content="https://madchatter.fun/og-image.png" />
+    <meta property="og:site_name" content="AutoForge" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://madchatter.fun/" />
+    <meta name="twitter:title" content="AutoForge — AI Twitch Co-Pilot" />
+    <meta name="twitter:description" content="An AI-powered Twitch co-pilot that generates high-signal chat messages in real time using stream context, transcription, and live chat analysis." />
+    <meta name="twitter:image" content="https://madchatter.fun/og-image.png" />
+    <meta name="twitter:site" content="@autoforge" />
+    <meta name="twitter:creator" content="@autoforge" />
+
+    <!-- Structured Data (JSON-LD) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "AutoForge — AI Twitch Co-Pilot",
+      "description": "An AI-powered Twitch co-pilot that generates high-signal chat messages in real time using stream context, transcription, and live chat analysis.",
+      "url": "https://madchatter.fun/",
+      "applicationCategory": "EntertainmentApplication",
+      "operatingSystem": "Web",
+      "image": "https://madchatter.fun/og-image.png",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "featureList": [
+        "Real-time AI chat message generation",
+        "Live stream transcription",
+        "Twitch chat analysis and context fusion",
+        "Configurable tone and instructions",
+        "Keyboard shortcuts for fast interaction"
+      ]
+    }
+    </script>
+  </head>
+  <body>
+    <script>
+      // Intercept Joystick OAuth callback before React loads (Joystick strips .html from redirect URL)
+      (function() {
+        var p = window.location.pathname;
+        if (p === '/joystick-auth-callback' || p === '/joystick-auth-callback/') {
+          var params = new URLSearchParams(window.location.search);
+          var code = params.get('code');
+          var state = params.get('state');
+          var error = params.get('error');
+          if (code) {
+            localStorage.setItem('joystick_auth_callback', JSON.stringify({ code: code, state: state, ts: Date.now() }));
+            document.title = 'Joystick Auth — Complete';
+            document.body.innerHTML = '<div style="background:#0F0F12;color:#E0E0E6;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;"><h2 style="color:#53fc18;">Authorization received</h2><p>You can close this window and return to the app.</p></div></div>';
+            try { window.close(); } catch(e) {}
+          } else if (error) {
+            document.title = 'Joystick Auth — Failed';
+            document.body.innerHTML = '<div style="background:#0F0F12;color:#E0E0E6;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;"><h2 style="color:#ff6b6b;">Authentication Failed</h2><p>' + (params.get('error_description') || error) + '</p></div></div>';
+          }
+        }
+      })();
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
