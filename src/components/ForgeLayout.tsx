@@ -2607,7 +2607,11 @@ export function ForgeLayout() {
               defaultSize={`${Math.max(5, 100 - (leftCollapsed ? leftCollapsedSize : leftPanelSize) - rightSize)}%`}
               className="bg-transparent z-10 relative"
             >
-              <div className="flex flex-col h-full overflow-x-hidden">
+              {/* Gold hexagon background with golden sparkles */}
+              <div className="forge-hex-bg" aria-hidden="true">
+                <div className="forge-hex-sparkles" aria-hidden="true" />
+              </div>
+              <div className="flex flex-col h-full overflow-x-hidden relative z-10">
                 {/* Top-Center Frame: Compact Header — Logo left, Stream Info center, Login right */}
                 <div data-tutorial="command-palette" className="shrink-0 h-[42px] border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-3 z-40 relative overflow-visible">
                   {/* Far-Left: MADchatter Logo */}
