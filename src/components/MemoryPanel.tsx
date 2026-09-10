@@ -465,7 +465,7 @@ export function MemoryPanel() {
                 </div>
               )}
               {autoMemories.length === 0 && !isAddingNew ? (
-                <EmptyState icon={Sparkles} label="No memories yet. They'll form automatically as the bot watches chat." />
+                <EmptyState icon={Sparkles} label="No memories yet." hint="They'll form automatically as the bot watches chat." />
               ) : (
                 [...autoMemories]
                   .sort((a, b) => b.strength - a.strength)
@@ -603,7 +603,7 @@ export function MemoryPanel() {
           {activeTab === "profiles" && (
             <div className="space-y-1.5">
               {userProfiles.length === 0 ? (
-                <EmptyState icon={Users} label="No user profiles yet. They'll build as the bot interacts with chatters." />
+                <EmptyState icon={Users} label="No user profiles yet." hint="They'll build as the bot interacts with chatters." />
               ) : (
                 [...userProfiles]
                   .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
@@ -655,7 +655,7 @@ export function MemoryPanel() {
           {activeTab === "jokes" && (
             <div className="space-y-1.5">
               {insideJokes.length === 0 ? (
-                <EmptyState icon={Laugh} label="No inside jokes yet. They'll emerge as the bot finds patterns in chat." />
+                <EmptyState icon={Laugh} label="No inside jokes yet." hint="They'll emerge as the bot finds patterns in chat." />
               ) : (
                 [...insideJokes]
                   .sort((a, b) => b.strength - a.strength)
@@ -751,11 +751,14 @@ export function MemoryPanel() {
   );
 }
 
-function EmptyState({ icon: Icon, label }: { icon: any; label: string }) {
+function EmptyState({ icon: Icon, label, hint }: { icon: any; label: string; hint?: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-12 gap-2">
       <Icon className="w-8 h-8 text-purple-500/20" />
-      <span className="text-[11px] text-gray-600 italic text-center max-w-xs">{label}</span>
+      <div className="flex flex-col items-center gap-1 max-w-xs">
+        <span className="text-[11px] text-gray-600 italic text-center">{label}</span>
+        {hint && <span className="text-[10px] text-gray-700 text-center leading-snug whitespace-nowrap">{hint}</span>}
+      </div>
     </div>
   );
 }
