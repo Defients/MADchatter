@@ -2636,6 +2636,9 @@
   color: var(--lt-text) !important;
 }
 
+/* text-white is used heavily for big numbers, headings, and labels */
+.light-theme .text-white { color: var(--lt-text) !important; }
+
 .light-theme .text-gray-100 { color: #2a2a3e !important; }
 .light-theme .text-gray-200 { color: #33334a !important; }
 .light-theme .text-gray-300 { color: #44445a !important; }
@@ -2648,6 +2651,7 @@
 
 .light-theme .bg-white\/5,
 .light-theme .bg-white\/\[0\.02\],
+.light-theme .bg-white\/\[0\.03\],
 .light-theme .bg-white\/\[0\.04\] {
   background-color: rgba(0, 0, 0, 0.03) !important;
 }
@@ -2681,10 +2685,6 @@
 .light-theme .text-orange-400,
 .light-theme .text-orange-500 {
   color: #ea580c !important;
-}
-
-.light-theme .text-orange-300 {
-  color: #f97316 !important;
 }
 
 .light-theme .text-purple-400,
@@ -2731,6 +2731,35 @@
 .light-theme .text-amber-500 {
   color: #d97706 !important;
 }
+
+/* ── -300 accent variants (lighter shades need darkening for light bg) ────── */
+
+.light-theme .text-green-300 { color: #16a34a !important; }
+.light-theme .text-blue-300 { color: #2563eb !important; }
+.light-theme .text-purple-300 { color: #7c3aed !important; }
+.light-theme .text-cyan-300 { color: #0891b2 !important; }
+.light-theme .text-pink-300 { color: #db2777 !important; }
+.light-theme .text-red-300 { color: #dc2626 !important; }
+.light-theme .text-amber-300 { color: #d97706 !important; }
+.light-theme .text-teal-300 { color: #0d9488 !important; }
+.light-theme .text-yellow-300 { color: #ca8a04 !important; }
+.light-theme .text-orange-300 { color: #ea580c !important; }
+
+/* ── Indigo family (used heavily in Analytics) ─────────────────────────────── */
+
+.light-theme .text-indigo-300 { color: #4f46e5 !important; }
+.light-theme .text-indigo-400 { color: #4338ca !important; }
+.light-theme .text-indigo-500 { color: #4338ca !important; }
+
+/* ── -700 dark variants (already dark, keep visible on light bg) ──────────── */
+
+.light-theme .text-red-700 { color: #b91c1c !important; }
+.light-theme .text-orange-700 { color: #c2410c !important; }
+
+/* ── Special opacity variants ────────────────────────────────────────────── */
+
+.light-theme .text-green-400\/70 { color: rgba(22, 163, 74, 0.8) !important; }
+.light-theme .text-green-400\/60 { color: rgba(22, 163, 74, 0.7) !important; }
 
 /* ── Background accent shifts ─────────────────────────────────────────────── */
 
@@ -2888,6 +2917,7 @@
 .light-theme .directives-scroll::-webkit-scrollbar-thumb,
 .light-theme .settings-scroll-area::-webkit-scrollbar-thumb,
 .light-theme .forge-scroll-report::-webkit-scrollbar-thumb,
+.light-theme .analytics-scroll::-webkit-scrollbar-thumb,
 .light-theme .themed-scroll::-webkit-scrollbar-thumb {
   background: rgba(var(--lt-gold), 0.3) !important;
   border-radius: 4px;
@@ -2899,6 +2929,7 @@
 .light-theme .directives-scroll::-webkit-scrollbar-thumb:hover,
 .light-theme .settings-scroll-area::-webkit-scrollbar-thumb:hover,
 .light-theme .forge-scroll-report::-webkit-scrollbar-thumb:hover,
+.light-theme .analytics-scroll::-webkit-scrollbar-thumb:hover,
 .light-theme .themed-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(var(--lt-gold), 0.5) !important;
 }
