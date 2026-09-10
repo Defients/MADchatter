@@ -1714,7 +1714,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               <textarea
                 value={botIdentityStory}
                 onChange={(e) => setBotIdentityStory(e.target.value)}
-                placeholder="Write a persona backstory the bot will use when accused of being AI. e.g. 'I'm a 24-year-old gamer from Ohio who dropped out of college to stream full-time. I love pizza and hate Mondays.'"
+                placeholder="I'm Tyler, 34yo, ((aspiring)) streamer, gamer, and professional rabbit-hole enthusiast. I build strange internet projects, obsess over playing cards, argue with Ymzo in my head, and have been online long enough to remember when viewers were viewers."
                 rows={4}
                 style={identityHeight ? { height: `${identityHeight}px` } : undefined}
                 className="w-full text-[11px] bg-black/30 border border-red-500/20 rounded-lg px-2 py-1.5 text-gray-200 placeholder:text-gray-600 outline-none focus:border-red-500/40 resize-none leading-relaxed overflow-y-auto themed-scroll"
