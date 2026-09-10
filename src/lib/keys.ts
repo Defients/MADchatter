@@ -60,17 +60,23 @@ export function getApiKey(provider: string): string | null {
   if (normProvider === "openai") return keys.chatGptKey || null;
   if (normProvider === "claude") return keys.claudeKey || null;
   if (normProvider === "openrouter") return keys.openRouterKey || null;
-  // Ollama / local runs without a key — return a dummy so the OpenAI SDK
-  // constructor gets a non-empty string and the app's key guards pass.
-  if (normProvider === "ollama") return "ollama-local";
+  if (normProvider === "ollama") {
+    // Ollama runs without a key, but it still needs a base URL and model to
+    // function. Return null when either is missing so key guards and fallback
+    // chains don't treat an unconfigured Ollama as available.
+    const keys = getKeys();
+    if (!keys.customBaseUrl || !keys.customModel) return null;
+    return "ollama-local";
+  }
   return null;
 }
 
 export function hasAnyApiKey(): boolean {
   const keys = getKeys();
   if (keys.geminiKey || keys.chatGptKey || keys.claudeKey || keys.openRouterKey) return true;
-  // Ollama needs no key, so it counts as "configured" whenever it's the active provider.
-  return getActiveProvider() === "ollama";
+  // Ollama needs no key, but it does need a base URL and model to actually
+  // function. Only count it as configured when both are set.
+  return getActiveProvider() === "ollama" && !!keys.customBaseUrl && !!keys.customModel;
 }
 
 export function getProviderWithKey(): string | null {
@@ -79,8 +85,9 @@ export function getProviderWithKey(): string | null {
   if (keys.geminiKey) return "gemini";
   if (keys.chatGptKey) return "openai";
   if (keys.claudeKey) return "claude";
-  // No cloud keys configured — fall back to Ollama if it's the active provider.
-  if (getActiveProvider() === "ollama") return "ollama";
+  // No cloud keys configured — fall back to Ollama if it's the active provider
+  // AND has a base URL + model set.
+  if (getActiveProvider() === "ollama" && keys.customBaseUrl && keys.customModel) return "ollama";
   return null;
 }
 

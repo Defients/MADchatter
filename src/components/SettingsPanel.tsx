@@ -195,9 +195,9 @@ export function SettingsPanel({
                     p === "openrouter"
                       ? (keys.openRouterKey ? "bg-green-500" : "bg-gray-700")
                       : p === "ollama"
-                        // Ollama needs no key — always show as ready (green) so the
-                        // status dot reflects that it's usable without credentials.
-                        ? "bg-green-500"
+                        // Ollama needs no key, but it does need a base URL and model
+                        // to actually function. Show green only when both are set.
+                        ? (keys.customBaseUrl && keys.customModel ? "bg-green-500" : "bg-gray-700")
                         : keys[
                             `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
                           ]
