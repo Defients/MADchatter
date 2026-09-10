@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -64,6 +64,7 @@ export function StatusBar() {
     messageQueueDepth,
     audioEnergy,
     streamHealth,
+    bots,
   } = useAppStore();
 
   const platform = useAppStore((s) => s.platform);
@@ -120,6 +121,19 @@ export function StatusBar() {
     localStorage.setItem('forge-statusbar-x', dockX.toString());
   }, [dockX]);
 
+  // Merge global sentMessages with per-bot runtime.sentMessages so the log
+  // shows multi-bot activity. Per-bot sends go to bots[].runtime.sentMessages,
+  // not the global sentMessages list, so without this merge the log stays
+  // empty in multi-bot mode.
+  const allSent = useMemo(() => {
+    type DisplayMsg = { id: string; message: string; channel?: string; timestamp: number; source: string; botName?: string };
+    const global: DisplayMsg[] = sentMessages.map((m) => ({ ...m, botName: undefined }));
+    const perBot: DisplayMsg[] = bots.flatMap((b) =>
+      b.runtime.sentMessages.map((m) => ({ ...m, botName: b.session?.username }))
+    );
+    return [...global, ...perBot].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
+  }, [sentMessages, bots]);
+
   const startDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -158,8 +172,8 @@ export function StatusBar() {
   }[tmiSendState];
 
   const handleCopyHistory = async () => {
-    const text = sentMessages.map((m) =>
-      `[${formatClock(m.timestamp)}] [${m.source.toUpperCase()}] ${m.message}`
+    const text = allSent.map((m) =>
+      `[${formatClock(m.timestamp)}] [${m.source.toUpperCase()}]${m.botName ? ` [${m.botName}]` : ''} ${m.message}`
     ).join('\n');
     try {
       await navigator.clipboard.writeText(text);
@@ -204,7 +218,7 @@ export function StatusBar() {
                       <button
                         type="button"
                         onClick={handleCopyHistory}
-                        disabled={sentMessages.length === 0}
+                        disabled={allSent.length === 0}
                         className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30"
                       >
                         <Copy className="w-3 h-3" />
@@ -214,7 +228,7 @@ export function StatusBar() {
                       <button
                         type="button"
                         onClick={clearSentMessages}
-                        disabled={sentMessages.length === 0}
+                        disabled={allSent.length === 0}
                         className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-30"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -223,18 +237,23 @@ export function StatusBar() {
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 forge-scroll">
-                  {sentMessages.length === 0 ? (
+                  {allSent.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-6 gap-1">
                       <Send className="w-5 h-5 text-gray-700" />
                       <span className="text-[10px] text-gray-600 font-mono">No messages sent yet</span>
                     </div>
                   ) : (
-                    [...sentMessages].reverse().map((msg) => (
+                    allSent.map((msg) => (
                       <div key={msg.id} className="rounded-lg border p-2 bg-black/30 border-white/5 hover:border-white/10 transition-colors">
                         <div className="flex items-center gap-1.5 mb-1">
                           <span className={cn('text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded border', SOURCE_COLORS[msg.source])}>
                             {SOURCE_LABELS[msg.source]}
                           </span>
+                          {msg.botName && (
+                            <span className="text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded border text-[#c79bff] bg-[#9146FF]/10 border-[#9146FF]/20">
+                              {msg.botName}
+                            </span>
+                          )}
                           <span className="text-[9px] font-mono text-gray-600">{formatClock(msg.timestamp)}</span>
                         </div>
                         <p className="text-[11px] text-gray-300 leading-snug break-words font-mono">{msg.message}</p>

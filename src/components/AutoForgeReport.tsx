@@ -92,6 +92,7 @@ export function AutoForgeReport() {
     clearAutoForgeEvents,
     streamMetadata,
     config,
+    bots,
   } = useAppStore();
 
   const [now, setNow] = useState(Date.now());
@@ -108,27 +109,39 @@ export function AutoForgeReport() {
     return () => clearInterval(interval);
   }, [isAutoForgeReportOpen]);
 
+  // Merge global autoForgeEventLog with per-bot runtime.autoForgeEvents so the
+  // report shows multi-bot activity. Per-bot events go to bots[].runtime, not
+  // the global log, so without this merge the report stays empty in multi-bot
+  // mode.
+  const allEvents = useMemo(() => {
+    const global = autoForgeEventLog.map((e) => ({ ...e, botName: undefined as string | undefined }));
+    const perBot = bots.flatMap((b) =>
+      b.runtime.autoForgeEvents.map((e) => ({ ...e, botName: b.session?.username }))
+    );
+    return [...global, ...perBot].sort((a, b) => a.timestamp - b.timestamp);
+  }, [autoForgeEventLog, bots]);
+
   const filteredEvents = useMemo(() => {
-    return autoForgeEventLog.filter((e) => {
+    return allEvents.filter((e) => {
       if (activeFilters.size > 0 && !activeFilters.has(e.type)) return false;
       if (severityFilter !== "all" && e.severity !== severityFilter) return false;
       return true;
     });
-  }, [autoForgeEventLog, activeFilters, severityFilter]);
+  }, [allEvents, activeFilters, severityFilter]);
 
   const stats = useMemo(() => {
-    const actions = autoForgeEventLog.filter((e) => e.type === "action_sent").length;
-    const mentions = autoForgeEventLog.filter((e) => e.type === "mention").length;
-    const spikes = autoForgeEventLog.filter((e) => e.type === "spike").length;
-    const errors = autoForgeEventLog.filter((e) => e.type === "error").length;
-    const silences = autoForgeEventLog.filter((e) => e.type === "silence").length;
+    const actions = allEvents.filter((e) => e.type === "action_sent").length;
+    const mentions = allEvents.filter((e) => e.type === "mention").length;
+    const spikes = allEvents.filter((e) => e.type === "spike").length;
+    const errors = allEvents.filter((e) => e.type === "error").length;
+    const silences = allEvents.filter((e) => e.type === "silence").length;
 
-    const first = autoForgeEventLog[0]?.timestamp;
-    const last = autoForgeEventLog[autoForgeEventLog.length - 1]?.timestamp;
+    const first = allEvents[0]?.timestamp;
+    const last = allEvents[allEvents.length - 1]?.timestamp;
     const span = first && last ? last - first : 0;
 
-    return { actions, mentions, spikes, errors, silences, total: autoForgeEventLog.length, span };
-  }, [autoForgeEventLog]);
+    return { actions, mentions, spikes, errors, silences, total: allEvents.length, span };
+  }, [allEvents]);
 
   const toggleFilter = (type: AutoForgeEventType) => {
     setActiveFilters((prev) => {
@@ -149,7 +162,7 @@ export function AutoForgeReport() {
   };
 
   const handleGenerateBriefing = useCallback(async () => {
-    if (autoForgeEventLog.length === 0) {
+    if (allEvents.length === 0) {
       toast.error("No events to summarize yet.");
       return;
     }
@@ -158,7 +171,7 @@ export function AutoForgeReport() {
     try {
       const activeProvider = getActiveProvider();
       const result = await generateAutoForgeBriefing({
-        events: autoForgeEventLog,
+        events: allEvents,
         streamMetadata,
         activeProvider,
         config,
@@ -173,11 +186,12 @@ export function AutoForgeReport() {
     } finally {
       setIsGeneratingBriefing(false);
     }
-  }, [autoForgeEventLog, streamMetadata, config]);
+  }, [allEvents, streamMetadata, config]);
 
   const handleCopyLog = async () => {
-    const text = autoForgeEventLog.map((e) => {
-      return `[${formatClock(e.timestamp)}] [${e.type}] [${e.severity}] ${e.summary}${e.details ? "\n  Details: " + JSON.stringify(e.details) : ""}`;
+    const text = allEvents.map((e) => {
+      const botPrefix = (e as any).botName ? ` [${(e as any).botName}]` : "";
+      return `[${formatClock(e.timestamp)}] [${e.type}] [${e.severity}]${botPrefix} ${e.summary}${e.details ? "\n  Details: " + JSON.stringify(e.details) : ""}`;
     }).join("\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -188,7 +202,7 @@ export function AutoForgeReport() {
   };
 
   const handleDownloadLog = () => {
-    const data = JSON.stringify(autoForgeEventLog, null, 2);
+    const data = JSON.stringify(allEvents, null, 2);
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -201,6 +215,11 @@ export function AutoForgeReport() {
 
   const handleClearLog = () => {
     clearAutoForgeEvents();
+    // Also clear per-bot event logs so stale multi-bot events don't persist.
+    const state = useAppStore.getState();
+    for (const bot of state.bots) {
+      state.clearBotAutoForgeEvents(bot.id);
+    }
     setBriefing(null);
     toast.success("Event log cleared.");
   };
@@ -297,7 +316,7 @@ export function AutoForgeReport() {
               <button
                 type="button"
                 onClick={handleGenerateBriefing}
-                disabled={isGeneratingBriefing || autoForgeEventLog.length === 0}
+                disabled={isGeneratingBriefing || allEvents.length === 0}
                 className={cn(
                   "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase font-mono tracking-wider transition-all",
                   isGeneratingBriefing
@@ -400,7 +419,7 @@ export function AutoForgeReport() {
               <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-2">
                 <ScrollText className="w-8 h-8 opacity-30" />
                 <p className="text-xs font-mono">
-                  {autoForgeEventLog.length === 0 ? "No events logged yet." : "No events match current filters."}
+                  {allEvents.length === 0 ? "No events logged yet." : "No events match current filters."}
                 </p>
               </div>
             ) : (
@@ -429,6 +448,11 @@ export function AutoForgeReport() {
                             {EVENT_ICONS[event.type]}
                             {event.type.replace(/_/g, " ")}
                           </span>
+                          {(event as any).botName && (
+                            <span className="text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded border text-[#c79bff] bg-[#9146FF]/10 border-[#9146FF]/20 shrink-0">
+                              {(event as any).botName}
+                            </span>
+                          )}
                           {event.details && (
                             <span className="ml-auto shrink-0">
                               {isExpanded ? <ChevronDown className="w-3 h-3 text-gray-500" /> : <ChevronRight className="w-3 h-3 text-gray-500" />}

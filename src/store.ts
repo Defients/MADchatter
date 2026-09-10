@@ -621,6 +621,7 @@ interface AppState {
   // Each dispatches into bots[i].runtime. Legacy global actions remain untouched.
   addBotSentMessage: (id: string, msg: Omit<SentMessage, "id">) => void;
   addBotAutoForgeEvent: (id: string, event: Omit<AutoForgeEvent, "id">) => void;
+  clearBotAutoForgeEvents: (id: string) => void;
   addBotDecisionLogEntry: (id: string, entry: Omit<DecisionLogEntry, "id">) => string;
   updateBotDecisionLogEntry: (id: string, entryId: string, updates: Partial<DecisionLogEntry>) => void;
   addBotSentimentReading: (id: string, reading: SentimentReading) => void;
@@ -1695,6 +1696,12 @@ export const useAppStore = create<AppState>()(
             if (log.length > 500) log.splice(0, log.length - 500);
             return { ...b, runtime: { ...b.runtime, autoForgeEvents: log } };
           }),
+        })),
+      clearBotAutoForgeEvents: (id) =>
+        set((state) => ({
+          bots: state.bots.map((b) =>
+            b.id === id ? { ...b, runtime: { ...b.runtime, autoForgeEvents: [] } } : b
+          ),
         })),
       addBotDecisionLogEntry: (id, entry) => {
         const entryId = generateId();

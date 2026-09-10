@@ -89,6 +89,14 @@ export function useAutoForgeBot(botId: string) {
         uniqueChatters,
         peakChatVelocity: Math.max(runtime.enhancedStats.peakChatVelocity, chatVelocity),
       });
+      // Mirror into global enhancedStats so AnalyticsPanel populates in multi-bot mode.
+      // The legacy useAutoForge loop self-disables when multi-bot is active, so without
+      // this mirror the global stats (Messages Out, Chatters, Peak Velocity, etc.)
+      // stay frozen at zero for the whole multi-bot session.
+      store.updateEnhancedStats({
+        uniqueChatters,
+        peakChatVelocity: Math.max(store.enhancedStats.peakChatVelocity, chatVelocity),
+      });
       const sentimentHistoryForEngagement = store.sentimentHistory;
       const recentSentiment = sentimentHistoryForEngagement.slice(-20);
       const positiveRatio = recentSentiment.length > 0
@@ -122,6 +130,32 @@ export function useAutoForgeBot(botId: string) {
         }
       }
       const isMentioned = mentionedLines.length > 0;
+
+      // ── Mirror mention/spike detection into global stats ────────────────
+      // The legacy loop handles these globally but self-disables in multi-bot
+      // mode. Without this mirror, the AnalyticsPanel "Mentions" and "Spikes"
+      // counters stay at zero. Events go to per-bot runtime so the AutoForge
+      // Report can merge them without duplication.
+      if (isMentioned) {
+        store.incrementStat("mentionsDetected");
+        store.addBotAutoForgeEvent(botId, {
+          timestamp: Date.now(),
+          type: "mention",
+          severity: "high",
+          summary: `[${bot.session.username}] Mentioned by chat: ${mentionedLines.slice(0, 3).join(" | ")}`,
+          details: { mentionedLines, botUsername, botId },
+        });
+      }
+      if (activitySpike) {
+        store.incrementStat("spikesDetected");
+        store.addBotAutoForgeEvent(botId, {
+          timestamp: Date.now(),
+          type: "spike",
+          severity: "medium",
+          summary: `Activity spike: ${newMessages} new lines in ${Math.round(elapsedMs / 1000)}s (velocity: ${chatVelocity}/min)`,
+          details: { newMessages, elapsedMs, chatVelocity, activityLevel },
+        });
+      }
 
       // ── Persona fit (0–1): how well this bot's persona matches the moment ─
       // High-chaos personas fit high activity; calm personas fit low activity.
@@ -172,6 +206,7 @@ export function useAutoForgeBot(botId: string) {
       }
 
       // ── Decide ───────────────────────────────────────────────────────────
+      const decisionStartTime = Date.now();
       const decision = await autoforgeDecide({
         streamMetadata: store.streamMetadata,
         visualContext: store.visualContextTags.join(" "),
@@ -208,6 +243,20 @@ export function useAutoForgeBot(botId: string) {
       // Record token usage from the decision call
       if ((decision as any).tokenUsage) {
         useAppStore.getState().recordTokenUsage("autoforge_decide", (decision as any).tokenUsage);
+      }
+
+      // Mirror response time + provider fallback into global enhancedStats so
+      // the AnalyticsPanel "Avg Response" and "Fallbacks" counters populate in
+      // multi-bot mode (the legacy loop that normally handles these is off).
+      const responseTimeMs = Date.now() - decisionStartTime;
+      const actionDist = { ...store.enhancedStats.actionDistribution };
+      actionDist[decision.decision] = (actionDist[decision.decision] || 0) + 1;
+      store.updateEnhancedStats({
+        actionDistribution: actionDist,
+        avgResponseTimeMs: Math.round(store.enhancedStats.avgResponseTimeMs * 0.7 + responseTimeMs * 0.3),
+      });
+      if ((decision as any).used_fallback_provider) {
+        store.incrementStat("providerFallbacks");
       }
 
       store.setBotLastAutoForgeDecision(botId, { ...decision, timestamp: now, activityLevel, personaFit, isMentioned });
@@ -281,6 +330,7 @@ export function useAutoForgeBot(botId: string) {
           playSfx("autoforge_action");
           actionRateLimiter.recordAction(decision.decision);
           store.incrementBotStat(botId, "autoForgeActions");
+          store.incrementStat("autoForgeActions");
 
           sendFn(channel, decision.action_payload).catch((e) => {
             console.error(`[AutoForgeBot ${bot.session.username}] send failed:`, e);
@@ -301,6 +351,7 @@ export function useAutoForgeBot(botId: string) {
             botId,
           });
           store.incrementBotStat(botId, "messagesSent");
+          store.incrementMessagesSent();
           store.addBotActionHistoryEntry(botId, {
             timestamp: Date.now(),
             actionType: decision.decision,
@@ -319,6 +370,7 @@ export function useAutoForgeBot(botId: string) {
         }
       } else if (decision.decision === "deliberate_silence") {
         store.incrementBotStat(botId, "silenceDecisions");
+        store.incrementStat("silenceDecisions");
         store.addBotAutoForgeEvent(botId, {
           timestamp: Date.now(),
           type: "silence",

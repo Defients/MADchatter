@@ -900,17 +900,15 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   <div className="flex flex-col gap-2">
                     <div className="flex items-center justify-between">
                       <span>System Configuration</span>
-                      <ThemedTooltip content="Contact: kovrycha@gmail.com">
-                        <a
-                          href="mailto:kovrycha@gmail.com"
-                          className="group relative mr-auto ml-3 inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-500 hover:text-orange-400 hover:bg-orange-500/10 transition-all duration-300"
-                        >
-                          <Mail className="w-5.8 h-5.8" style={{ width: '1.67rem', height: '1.67rem' }} />
-                          <span className="pointer-events-none absolute -bottom-9 right-0 z-[100] px-2.5 py-1.5 bg-[#12121a] border border-orange-500/30 rounded-lg text-[10px] font-mono text-gray-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200 shadow-xl">
-                            ✉ kovrycha@gmail.com
-                          </span>
-                        </a>
-                      </ThemedTooltip>
+                      <a
+                        href="mailto:kovrycha@gmail.com"
+                        className="group relative mr-auto ml-3 inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-500 hover:text-orange-400 hover:bg-orange-500/10 transition-all duration-300"
+                      >
+                        <Mail className="w-5.8 h-5.8" style={{ width: '1.67rem', height: '1.67rem' }} />
+                        <span className="pointer-events-none absolute -top-9 right-0 z-[100] px-2.5 py-1.5 bg-[#12121a] border border-orange-500/30 rounded-lg text-[10px] font-mono text-gray-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200 shadow-xl">
+                          ✉ kovrycha@gmail.com
+                        </span>
+                      </a>
                     </div>
                     <div className="flex items-center gap-2">
                     {/* Sound Effects — collapsible panel */}

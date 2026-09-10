@@ -660,7 +660,7 @@ export function TheForge() {
               <FidgetSpinner size={300} showSpinCount={true} />
             </div>
 
-            <div className="text-lg font-black text-gray-100 tracking-tight mb-1 mt-2">
+            <div className="text-lg font-black text-gray-100 tracking-tight mb-1 mt-12">
               Ready to Forge
             </div>
             <div className="text-xs text-gray-500 mb-4">

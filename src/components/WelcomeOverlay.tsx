@@ -164,12 +164,12 @@ export function WelcomeOverlay() {
             animate={{ scale: 1, y: 0 }}
             exit={{ scale: 0.92, y: 30 }}
             transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-            className="relative w-full max-w-3xl mx-4 bg-gradient-to-b from-[#141419] to-[#0a0a0f] border border-white/[0.08] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden"
+            className="relative w-full max-w-4xl mx-4 bg-gradient-to-b from-[#141419] to-[#0a0a0f] border border-white/[0.08] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.6)] overflow-hidden"
           >
             {/* Top accent bar */}
             <div className="h-[2px] w-full bg-gradient-to-r from-orange-500 via-purple-500 to-cyan-500" />
 
-            <div className="p-8 md:p-10 max-h-[85vh] overflow-y-auto forge-scroll">
+            <div className="p-10 md:p-14 max-h-[85vh] overflow-y-auto forge-scroll">
               {/* Joystick install notification */}
               {platform === 'joystick' && (
                 <motion.div
@@ -206,7 +206,7 @@ export function WelcomeOverlay() {
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ delay: 0.2, duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                  className="mx-auto h-24 w-auto mb-3 object-contain"
+                  className="mx-auto h-28 w-auto mb-3 object-contain"
                   style={{ filter: "drop-shadow(0 0 16px rgba(255, 250, 250, 0.25))" }}
                 />
                 <p className="text-sm text-gray-400 mt-3 max-w-md mx-auto leading-relaxed">
