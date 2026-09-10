@@ -22,9 +22,6 @@ Built for streamers and bot operators who want control over their bot's personal
 
 **Project status:** actively developed. Desktop Chrome or Edge is the intended environment. Platform integrations and advanced modes have different capabilities; see [platform support](#platform-support) and [multi-bot mode](#multi-bot-mode).
 
-<!-- Add an actual app screenshot here when available; see docs/SCREENSHOTS.md.
-     Keep the README free of broken image placeholders. -->
-
 ## What you can do
 
 | Capability | In practice |
@@ -179,6 +176,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the source map, contribution conventi
 - [Setup and troubleshooting](docs/SETUP.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
-- [Screenshot guide](docs/SCREENSHOTS.md)
 
 **License:** this project is licensed under the [MIT License](LICENSE). See the `LICENSE` file for details. Created by **Deffy Urz**.

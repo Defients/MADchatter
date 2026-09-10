@@ -9,7 +9,7 @@ MADchatter combines live chat, AI providers, browser media, and autonomous messa
 - For a bug, describe the trigger, expected behavior, actual behavior, and steps to reproduce it.
 - For UI or documentation improvements, include a screenshot or a concrete before/after example when it helps.
 - Discuss new features before implementing them. Prefer focused fixes and polish; avoid unrelated refactors.
-- Check the repository's licensing status before proposing reuse or redistribution. No project license is currently declared.
+- Check the repository's [MIT License](LICENSE) before proposing reuse or redistribution.
 
 ## Local development
 

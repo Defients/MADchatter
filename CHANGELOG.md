@@ -14,6 +14,9 @@ All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD f
 - **Dead code cleanup** — Removed `whisperChunksRef` from `useDeepgramTranscription.ts` (declared and reset 3× but never populated; `whisperQueueRef` is the working queue). Removed `pttToggleMode`/`setPttToggleMode` from `usePushToTalk.ts` (declared and returned but never set or read by any consumer).
 - **README overhaul** — Complete rewrite reflecting current state: added Multi-Bot Mode, Ollama/Local provider, Kick/Joystick platforms, Smart Replies, Rule Engine, Session Goals, Chat Pulse, updated keyboard shortcuts (1–9), removed stale "Live Modifiers" HUD reference, added build/verification commands table, added Ollama setup guide, added Multi-Bot Mode section.
 
+### Removed
+- **Public release cleanup** — Removed `audit-output/` (internal audit reports), `docs/SCREENSHOTS.md` (screenshot guide with no images), and `chunce.txt` (raw Twitch chat log; the Tour uses an embedded copy in `tutorialData.tsx`). Added `audit-output/` to `.gitignore`. Fixed stale "no license declared" reference in CONTRIBUTING.md (now MIT).
+
 ### Added
 - **Ollama / Local provider** — First-class provider button in Settings (emerald-themed, always-green status dot since no key required). Selecting it pre-fills `http://localhost:11434/v1` and `llama3.1:8b` as defaults. `getApiKey("ollama")` returns a dummy `"ollama-local"` so key guards pass. Added to provider fallback chain. Added to TuningDeck model dropdown. Server-side `getApiKey` and dispatch blocks updated. Info banner in Settings explains setup. Welcome overlay includes step-by-step Ollama instructions with Windows cmd/PowerShell commands and `OLLAMA_ORIGINS=*` guidance.
 - **Auto-fill Ollama URL button** — "Ollama URL" button (Wand2 icon) next to Custom API Base URL in Settings; fills `http://localhost:11434/v1` in one click.

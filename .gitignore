@@ -13,3 +13,6 @@ coverage/
 # Release archives — too large for git, keep local only
 *.release.zip
 MADchatter-release.zip
+
+# Internal audit output
+audit-output/
