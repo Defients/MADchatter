@@ -1136,30 +1136,60 @@
 .light-theme .forge-hex-bg {
   background-color: var(--lt-bg);
   background-image:
-    radial-gradient(circle at 50% 50%, rgba(201, 161, 74, 0.08) 1px, transparent 1.5px),
+    radial-gradient(circle at 50% 50%, rgba(201, 161, 74, 0.25) 1.5px, transparent 2px),
     repeating-conic-gradient(
       from 30deg at 50% 50%,
       transparent 0deg,
-      rgba(201, 161, 74, 0.05) 1deg,
-      transparent 2deg,
+      rgba(201, 161, 74, 0.15) 1.5deg,
+      transparent 3deg,
       transparent 60deg
     );
+  background-size: 40px 40px, 40px 40px;
 }
 
 .light-theme .forge-hex-bg::before {
   background-image:
-    linear-gradient(60deg, rgba(201, 161, 74, 0.12) 1px, transparent 1px),
-    linear-gradient(-60deg, rgba(201, 161, 74, 0.12) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(201, 161, 74, 0.08) 1px, transparent 1px);
-  opacity: 0.7;
+    linear-gradient(60deg, rgba(180, 140, 50, 0.35) 1.5px, transparent 1.5px),
+    linear-gradient(-60deg, rgba(180, 140, 50, 0.35) 1.5px, transparent 1.5px),
+    linear-gradient(0deg, rgba(180, 140, 50, 0.25) 1.5px, transparent 1.5px);
+  background-size: 28px 48px, 28px 48px, 28px 48px;
+  background-position: 0 0, 0 0, 0 0;
+  opacity: 0.85;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 90%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 20%, transparent 90%);
 }
 
 .light-theme .forge-hex-bg::after {
   background-image:
-    radial-gradient(circle, rgba(232, 196, 104, 0.15) 1px, transparent 1.5px);
+    radial-gradient(circle, rgba(201, 161, 74, 0.4) 1.5px, transparent 2.5px);
+  background-size: 28px 48px;
+  background-position: 14px 24px;
+  animation: hex-pulse-light 6s ease-in-out infinite;
+}
+
+@keyframes hex-pulse-light {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
 .light-theme .forge-hex-sparkles {
+  background-image:
+    radial-gradient(2.5px 2.5px at 10% 15%, rgba(201, 161, 74, 1), transparent),
+    radial-gradient(2px 2px at 25% 40%, rgba(201, 161, 74, 0.9), transparent),
+    radial-gradient(2.5px 2.5px at 50% 10%, rgba(201, 161, 74, 1), transparent),
+    radial-gradient(2px 2px at 70% 30%, rgba(201, 161, 74, 0.8), transparent),
+    radial-gradient(3px 3px at 85% 50%, rgba(201, 161, 74, 1), transparent),
+    radial-gradient(2px 2px at 15% 70%, rgba(201, 161, 74, 0.9), transparent),
+    radial-gradient(2.5px 2.5px at 40% 85%, rgba(201, 161, 74, 1), transparent),
+    radial-gradient(2px 2px at 60% 60%, rgba(201, 161, 74, 0.8), transparent),
+    radial-gradient(2.5px 2.5px at 90% 80%, rgba(201, 161, 74, 1), transparent),
+    radial-gradient(2px 2px at 35% 25%, rgba(201, 161, 74, 0.7), transparent),
+    radial-gradient(2px 2px at 80% 15%, rgba(201, 161, 74, 0.8), transparent),
+    radial-gradient(2.5px 2.5px at 5% 55%, rgba(201, 161, 74, 0.9), transparent),
+    radial-gradient(2px 2px at 55% 45%, rgba(201, 161, 74, 0.7), transparent),
+    radial-gradient(2.5px 2.5px at 95% 35%, rgba(201, 161, 74, 1), transparent),
+    radial-gradient(2px 2px at 20% 90%, rgba(201, 161, 74, 0.8), transparent);
+  background-repeat: no-repeat;
   animation: sparkle-twinkle-light 4s ease-in-out infinite;
 }
 
