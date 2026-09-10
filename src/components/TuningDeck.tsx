@@ -319,10 +319,11 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       const hasOld = parsed.some((c: string) => c === "Add sarcasm" || c.includes("Shorten") || c.includes("JP slang"));
       const hasOldEmote = parsed.some((c: string) => c.includes("React to gameplay") && !c.startsWith("\uD83C\uDFC6")) || parsed.some((c: string) => c.includes("Backseat advice") && !c.startsWith("\uD83D\uDCA1"));
       const hasAgree = parsed.some((c: string) => c.includes("Agree with chat"));
-      if (hasOld || hasOldEmote) {
-        const fresh = ["🔥 Hype it up","🏆 React to gameplay","😂 Be sarcastic","🎵 Reference the music","💀 Roast gently","🙏 Show appreciation","💡 Backseat advice","📈 Smart analysis","🤝 Agree with chat","🍿 Narrate the chaos","⏱️ Time references","🎮 Game tips","😤 Hype the clutch","🧊 Chill vibes","🎪 Embrace the chaos"];
-        localStorage.setItem("custom_forge_chips", JSON.stringify(fresh));
-        return fresh;
+      const hasPlayOff = parsed.some((c: string) => c.includes("Play off chat"));
+      const FRESH_CHIPS = ["🔥 Hype it up","🏆 React to gameplay","😂 Be sarcastic","🎵 Reference the music","💀 Roast gently","🙏 Show appreciation","💡 Backseat advice","📈 Smart analysis","🎭 Play off chat","📜 Callback the lore","📣 Engage the streamer","🍿 Narrate the chaos","⏱️ Time references","🎮 Game tips","😤 Hype the clutch","🧊 Chill vibes","🎪 Embrace the chaos"];
+      if (hasOld || hasOldEmote || (hasAgree && !hasPlayOff)) {
+        localStorage.setItem("custom_forge_chips", JSON.stringify(FRESH_CHIPS));
+        return FRESH_CHIPS;
       }
       const hasNewChips = parsed.some((c: string) => c.includes("Embrace the chaos"));
       if (!hasNewChips && parsed.length <= 14) {
@@ -332,7 +333,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       }
       return parsed;
     }
-    return saved ? JSON.parse(saved) : ["🔥 Hype it up", "🏆 React to gameplay", "😂 Be sarcastic", "🎵 Reference the music", "💀 Roast gently", "🙏 Show appreciation", "💡 Backseat advice", "📈 Smart analysis", "🤝 Agree with chat", "🍿 Narrate the chaos", "⏱️ Time references", "🎮 Game tips", "😤 Hype the clutch", "🧊 Chill vibes", "🎪 Embrace the chaos"];
+    return saved ? JSON.parse(saved) : ["🔥 Hype it up", "🏆 React to gameplay", "😂 Be sarcastic", "🎵 Reference the music", "💀 Roast gently", "🙏 Show appreciation", "💡 Backseat advice", "📈 Smart analysis", "🎭 Play off chat", "📜 Callback the lore", "📣 Engage the streamer", "🍿 Narrate the chaos", "⏱️ Time references", "🎮 Game tips", "😤 Hype the clutch", "🧊 Chill vibes", "🎪 Embrace the chaos"];
   });
 
   useEffect(() => {
