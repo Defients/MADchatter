@@ -2023,10 +2023,10 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 <SelectValue placeholder="Ready to tr0ll(!)" />
               </SelectTrigger>
               <SelectContent className="bg-[#0a0a0f] border-white/10 text-white">
-                <SelectItem value="none" className="text-gray-400 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🚫 None — Strict text only</SelectItem>
-                <SelectItem value="minimal" className="text-amber-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">😏 Minimal — 1 emote max</SelectItem>
-                <SelectItem value="moderate" className="text-violet-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🔥 Moderate — Standard Twitch style</SelectItem>
-                <SelectItem value="heavy" className="text-fuchsia-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">💀 Heavy — Spammy chat hype</SelectItem>
+                <SelectItem value="none" className="text-[10px] text-gray-400 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🚫 None — Strict text only</SelectItem>
+                <SelectItem value="minimal" className="text-[10px] text-amber-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">😏 Minimal — 1 emote max</SelectItem>
+                <SelectItem value="moderate" className="text-[10px] text-violet-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🔥 Moderate — Standard Twitch style</SelectItem>
+                <SelectItem value="heavy" className="text-[10px] text-fuchsia-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">💀 Heavy — Spammy chat hype</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -2047,9 +2047,9 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 <SelectValue placeholder="Standard" />
               </SelectTrigger>
               <SelectContent className="bg-[#0a0a0f] border-white/10 text-white">
-                <SelectItem value="family" className="text-green-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🧸 Family — No profanity, safe for all</SelectItem>
-                <SelectItem value="standard" className="text-amber-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">✅ Standard — Typical Twitch energy</SelectItem>
-                <SelectItem value="unfiltered" className="text-red-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🔥 Unfiltered — Raw, no holds barred</SelectItem>
+                <SelectItem value="family" className="text-[10px] text-green-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🧸 Family — No profanity, safe for all</SelectItem>
+                <SelectItem value="standard" className="text-[10px] text-amber-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">✅ Standard — Typical Twitch energy</SelectItem>
+                <SelectItem value="unfiltered" className="text-[10px] text-red-400/90 focus:!bg-white focus:!text-black data-[highlighted]:!bg-white data-[highlighted]:!text-black">🔥 Unfiltered — Raw, no holds barred</SelectItem>
               </SelectContent>
             </Select>
           </div>
