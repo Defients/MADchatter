@@ -1131,39 +1131,62 @@
   75% { opacity: 0.9; transform: scale(1.05); }
 }
 
-/* ── Light theme: brighter gold hexagons ──────────────────────────────────── */
+/* ── Light theme: abstract golden aura background ─────────────────────────── */
 
 .light-theme .forge-hex-bg {
   background-color: var(--lt-bg);
   background-image:
-    radial-gradient(circle at 50% 50%, rgba(201, 161, 74, 0.25) 1.5px, transparent 2px),
-    repeating-conic-gradient(
-      from 30deg at 50% 50%,
-      transparent 0deg,
-      rgba(201, 161, 74, 0.15) 1.5deg,
-      transparent 3deg,
-      transparent 60deg
-    );
-  background-size: 40px 40px, 40px 40px;
+    /* Soft scattered gold blobs — organic, not gridded */
+    radial-gradient(ellipse 600px 400px at 15% 20%, rgba(201, 161, 74, 0.12), transparent 60%),
+    radial-gradient(ellipse 500px 350px at 85% 30%, rgba(232, 196, 104, 0.10), transparent 65%),
+    radial-gradient(ellipse 450px 500px at 50% 80%, rgba(201, 161, 74, 0.08), transparent 60%),
+    radial-gradient(ellipse 350px 250px at 75% 65%, rgba(232, 196, 104, 0.09), transparent 55%),
+    radial-gradient(ellipse 300px 400px at 25% 70%, rgba(201, 161, 74, 0.07), transparent 60%);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  animation: gold-aura-drift 20s ease-in-out infinite alternate;
 }
 
+@keyframes gold-aura-drift {
+  0% { background-position: 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%; }
+  50% { background-position: 3% 2%, -2% 3%, 1% -2%, -3% 1%, 2% -1%; }
+  100% { background-position: -2% 3%, 3% -1%, -1% 2%, 2% -3%, -3% 2%; }
+}
+
+/* Abstract flowing gold lines — organic curves, not a grid */
 .light-theme .forge-hex-bg::before {
   background-image:
-    linear-gradient(60deg, rgba(180, 140, 50, 0.35) 1.5px, transparent 1.5px),
-    linear-gradient(-60deg, rgba(180, 140, 50, 0.35) 1.5px, transparent 1.5px),
-    linear-gradient(0deg, rgba(180, 140, 50, 0.25) 1.5px, transparent 1.5px);
-  background-size: 28px 48px, 28px 48px, 28px 48px;
-  background-position: 0 0, 0 0, 0 0;
-  opacity: 0.85;
-  mask-image: radial-gradient(ellipse at center, black 20%, transparent 90%);
-  -webkit-mask-image: radial-gradient(ellipse at center, black 20%, transparent 90%);
+    /* Diagonal flowing strokes */
+    linear-gradient(120deg, transparent 30%, rgba(201, 161, 74, 0.08) 45%, rgba(232, 196, 104, 0.12) 50%, rgba(201, 161, 74, 0.08) 55%, transparent 70%),
+    linear-gradient(70deg, transparent 20%, rgba(201, 161, 74, 0.06) 40%, rgba(232, 196, 104, 0.09) 50%, rgba(201, 161, 74, 0.06) 60%, transparent 80%),
+    linear-gradient(200deg, transparent 35%, rgba(201, 161, 74, 0.07) 48%, rgba(232, 196, 104, 0.10) 52%, rgba(201, 161, 74, 0.07) 56%, transparent 65%);
+  background-size: 200% 200%, 180% 180%, 220% 220%;
+  background-position: 0% 0%, 50% 50%, 30% 70%;
+  opacity: 0.9;
+  mask-image: radial-gradient(ellipse 80% 90% at 50% 50%, black 30%, transparent 95%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 90% at 50% 50%, black 30%, transparent 95%);
+  animation: gold-flow-shift 15s ease-in-out infinite alternate;
 }
 
+@keyframes gold-flow-shift {
+  0% { background-position: 0% 0%, 50% 50%, 30% 70%; }
+  100% { background-position: 30% 20%, 20% 70%, 60% 40%; }
+}
+
+/* Scattered gold flecks — irregular, not gridded */
 .light-theme .forge-hex-bg::after {
   background-image:
-    radial-gradient(circle, rgba(201, 161, 74, 0.4) 1.5px, transparent 2.5px);
-  background-size: 28px 48px;
-  background-position: 14px 24px;
+    radial-gradient(circle at 12% 18%, rgba(201, 161, 74, 0.35) 1px, transparent 3px),
+    radial-gradient(circle at 78% 25%, rgba(232, 196, 104, 0.3) 1.5px, transparent 4px),
+    radial-gradient(circle at 45% 55%, rgba(201, 161, 74, 0.25) 1px, transparent 3px),
+    radial-gradient(circle at 88% 70%, rgba(232, 196, 104, 0.3) 1.5px, transparent 4px),
+    radial-gradient(circle at 22% 82%, rgba(201, 161, 74, 0.3) 1px, transparent 3px),
+    radial-gradient(circle at 62% 12%, rgba(232, 196, 104, 0.25) 1px, transparent 3px),
+    radial-gradient(circle at 35% 40%, rgba(201, 161, 74, 0.2) 1px, transparent 2.5px),
+    radial-gradient(circle at 92% 45%, rgba(232, 196, 104, 0.25) 1px, transparent 3px),
+    radial-gradient(circle at 8% 60%, rgba(201, 161, 74, 0.3) 1.5px, transparent 4px);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
   animation: hex-pulse-light 6s ease-in-out infinite;
 }
 
