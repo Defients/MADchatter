@@ -655,11 +655,11 @@ export function TheForge() {
         ) : (
           /* Ready to Forge — shown when setup is complete but no variants yet */
           <div className="flex flex-col items-center justify-center text-center max-w-lg mx-auto py-10">
-            <div className="-mt-8 overflow-visible">
+            <div className="-mt-20 overflow-visible">
               <FidgetSpinner size={300} showSpinCount={true} />
             </div>
 
-            <div className="text-lg font-black text-gray-100 tracking-tight mb-1 mt-6">
+            <div className="text-lg font-black text-gray-100 tracking-tight mb-1 mt-2">
               Ready to Forge
             </div>
             <div className="text-xs text-gray-500 mb-4">
