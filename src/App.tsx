@@ -1,24 +1,26 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { ForgeLayout } from './components/ForgeLayout';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './components/ui/command';
 import { useAppStore } from './store';
 import { toast } from 'sonner';
 import tmi from 'tmi.js';
 import { useAutoForge } from './hooks/useAutoForge';
+import { useMultiBotOrchestrator } from './hooks/useMultiBotOrchestrator';
 import { useAutoMemory } from './hooks/useAutoMemory';
 import { useVoiceCommands } from './hooks/useVoiceCommands';
 import { AutoForgeHUD } from './components/AutoForgeHUD';
-import { AutoForgeReport } from './components/AutoForgeReport';
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { CosmoTechBackground } from './components/CosmoTechBackground';
+import { CorruptureBackground } from './components/CorruptureBackground';
+import { MentionOverlay } from './components/MentionOverlay';
 import { StatusBar } from './components/StatusBar';
 import { ShortcutHelp } from './components/ShortcutHelp';
+import { useBotToggleShortcuts } from './hooks/useBotToggleShortcuts';
 import { WelcomeOverlay } from './components/WelcomeOverlay';
-import { TutorialWalkthrough } from './components/TutorialWalkthrough';
 import { RageCursor } from './components/RageCursor';
 import { EasterEggs } from './components/EasterEggs';
-import { MemoryPanel } from './components/MemoryPanel';
-import { AnalyticsPanel } from './components/AnalyticsPanel';
+import { MobileAdvisory } from './components/MobileAdvisory';
+import { useIsMobile } from './hooks/useMediaQuery';
 import { getKeys } from './lib/keys';
 import { tmiSendManager } from './lib/twitch';
 import { KickChatClient, kickSendManager, fetchKickMetadata } from './lib/kick';
@@ -27,36 +29,79 @@ import { getPlatformSendFn } from './lib/platformSend';
 import { playMessageSound, setAudioOutputSink, setSoundUrl, setSoundVolume } from './lib/sound';
 import { playSfx, initSfxAudioContext } from './lib/sfx';
 import { createChatMessage } from './lib/chatUtils';
+import type { ChatMessage } from './types';
 import { classifySentiment } from './lib/sentiment';
 import { requestNotificationPermission, notifyMention } from './lib/notifications';
 import { messageQueue, startQueueProcessor } from './lib/messageQueue';
+
+// Lazy-load heavy panels/overlays — only loaded when opened, reducing initial bundle on mobile.
+const AutoForgeReport = lazy(() => import('./components/AutoForgeReport').then(m => ({ default: m.AutoForgeReport })));
+const TutorialWalkthrough = lazy(() => import('./components/TutorialWalkthrough').then(m => ({ default: m.TutorialWalkthrough })));
+const MemoryPanel = lazy(() => import('./components/MemoryPanel').then(m => ({ default: m.MemoryPanel })));
+const AnalyticsPanel = lazy(() => import('./components/AnalyticsPanel').then(m => ({ default: m.AnalyticsPanel })));
+const VisualHistoryOverlay = lazy(() => import('./components/VisualHistoryOverlay').then(m => ({ default: m.VisualHistoryOverlay })));
 
 export default function App() {
   const [openCommand, setOpenCommand] = React.useState(false);
   const [konamiActive, setKonamiActive] = React.useState(false);
   const [maxRageShake, setMaxRageShake] = React.useState(false);
+  const isMobile = useIsMobile();
   const { 
     clearAllContext, 
     setVariants, 
-    streamMetadata, 
-    updateStreamMetadata, 
-    appendChatLog,
+    streamMetadata,
+    updateStreamMetadata,
     markUserBanned,
     variants,
     setTmiReadState,
     setTmiSendState,
     incrementMessagesReceived,
     platform,
-    cosmotechTheme,
+    theme,
+    setTheme,
     messageSoundEnabled,
     audioOutputDeviceId,
     customSoundUrl,
     soundVolume,
+    hypeLevel,
   } = useAppStore();
 
   const tmiClientRef = useRef<tmi.Client | null>(null);
   const kickClientRef = useRef<KickChatClient | null>(null);
   const joystickClientRef = useRef<JoystickChatClient | null>(null);
+
+  // Chat message batching buffer — flushes every 500ms to reduce re-renders on fast chat
+  const chatBatchRef = useRef<ChatMessage[]>([]);
+  const chatBatchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    chatBatchTimerRef.current = setInterval(() => {
+      const batch = chatBatchRef.current;
+      if (batch.length > 0) {
+        chatBatchRef.current = [];
+        useAppStore.getState().appendChatLogBatch(batch);
+      }
+    }, 500);
+    return () => {
+      if (chatBatchTimerRef.current) clearInterval(chatBatchTimerRef.current);
+      // Flush any remaining
+      const batch = chatBatchRef.current;
+      if (batch.length > 0) {
+        chatBatchRef.current = [];
+        useAppStore.getState().appendChatLogBatch(batch);
+      }
+    };
+  }, []);
+
+  // Helper: queue a chat message for batched append
+  const queueChatMessage = useCallback((msg: ChatMessage) => {
+    chatBatchRef.current.push(msg);
+    // If buffer gets too large, flush immediately
+    if (chatBatchRef.current.length >= 50) {
+      const batch = chatBatchRef.current;
+      chatBatchRef.current = [];
+      useAppStore.getState().appendChatLogBatch(batch);
+    }
+  }, []);
 
   // Expose joystick client globally for send manager to access
   useEffect(() => {
@@ -69,8 +114,14 @@ export default function App() {
   const channelRef = useRef(streamMetadata?.channelName);
   channelRef.current = streamMetadata?.channelName;
 
-  // Initialize AutoForge loop
+  // Initialize AutoForge loop (legacy single-bot; self-disables in multi-bot mode)
   useAutoForge();
+  // Multi-bot orchestrator (no-op unless multiBotEnabled === true). Returns JSX
+  // that mounts one useAutoForgeBot loop per active+authenticated bot — MUST be
+  // rendered, otherwise the per-bot AutoForge loops never run.
+  const multiBotLoops = useMultiBotOrchestrator();
+  // 1–9 shortcuts to toggle each bot on/off (no-op unless multi-bot is engaged)
+  useBotToggleShortcuts();
   useAutoMemory();
 
   // Voice commands system
@@ -202,11 +253,11 @@ export default function App() {
       joystickClientRef.current = joystickClient;
 
       joystickClient.onMessage((username, content) => {
-        appendChatLog(createChatMessage(username, content, 'joystick'));
+        queueChatMessage(createChatMessage(username, content, 'joystick'));
         incrementMessagesReceived();
         processIncomingMessage(username, content, 'joystick');
-        const botName = getJoystickBotUsername().toLowerCase();
-        if (messageSoundEnabled && username.toLowerCase() === botName) playMessageSound();
+        const botName = getJoystickBotUsername();
+        if (messageSoundEnabled && botName && username.toLowerCase() === botName.toLowerCase()) playMessageSound();
       });
 
       joystickClient.onStateChange((state) => {
@@ -244,7 +295,7 @@ export default function App() {
       kickClientRef.current = kickClient;
 
       kickClient.onMessage((username, content) => {
-        appendChatLog(createChatMessage(username, content, 'kick'));
+        queueChatMessage(createChatMessage(username, content, 'kick'));
         incrementMessagesReceived();
         processIncomingMessage(username, content, 'kick');
       });
@@ -288,7 +339,7 @@ export default function App() {
     client.on('message', (channel, tags, message, self) => {
       if (self) return;
       const username = tags['display-name'] || tags.username || 'user';
-      appendChatLog(createChatMessage(username, message, 'twitch'));
+      queueChatMessage(createChatMessage(username, message, 'twitch'));
       incrementMessagesReceived();
       processIncomingMessage(username, message, 'twitch');
     });
@@ -299,6 +350,32 @@ export default function App() {
     client.on('timeout', (_channel, username, _reason, _duration) => {
       markUserBanned(username);
     });
+
+    // C2: Stream event awareness — follows, subs, raids, cheers, hosts
+    client.on('subscription', (_channel, username, methods, _message, _userstate) => {
+      const plan = methods?.plan ? String(methods.plan) : "1000";
+      useAppStore.getState().addStreamEvent(`🔔 ${username} subscribed (${methods.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`);
+    });
+    client.on('resub', (_channel, username, _months, _message, _userstate, methods) => {
+      const plan = methods?.plan ? String(methods.plan) : "1000";
+      useAppStore.getState().addStreamEvent(`🔔 ${username} resubscribed (${methods?.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`);
+    });
+    client.on('subgift', (_channel, username, _streakMonths, recipient, methods, _userstate) => {
+      const plan = methods?.plan ? String(methods.plan) : "1000";
+      useAppStore.getState().addStreamEvent(`🎁 ${username} gifted a sub to ${recipient} (${methods?.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`);
+    });
+    client.on('raided', (_channel, username, viewers) => {
+      useAppStore.getState().addStreamEvent(`⚔️ ${username} raided with ${viewers} viewers`);
+    });
+    client.on('cheer', (_channel, _userstate, message) => {
+      const bits = _userstate.bits || 0;
+      const username = _userstate['display-name'] || _userstate.username || 'Someone';
+      useAppStore.getState().addStreamEvent(`💎 ${username} cheered ${bits} bits: "${message}"`);
+    });
+    client.on('hosted', (_channel, username, viewers) => {
+      useAppStore.getState().addStreamEvent(`📺 ${username} hosted with ${viewers || 0} viewers`);
+    });
+
     client.on('connected', () => { setTmiReadState('connected'); playSfx('connect'); });
     client.on('disconnected', () => { setTmiReadState('disconnected'); playSfx('disconnect'); });
     client.on('connecting', () => setTmiReadState('connecting'));
@@ -327,7 +404,7 @@ export default function App() {
       }
       setTmiReadState('disconnected');
     };
-  }, [streamMetadata?.channelName, appendChatLog, markUserBanned, incrementMessagesReceived, setTmiReadState, platform]);
+  }, [streamMetadata?.channelName, queueChatMessage, markUserBanned, incrementMessagesReceived, setTmiReadState, platform]);
 
   // 3. Periodic metadata polling (Twitch via decapi.me OR Kick via Kick API)
   useEffect(() => {
@@ -406,6 +483,12 @@ export default function App() {
         return;
       }
 
+      // Hotkey: Esc = Dismiss mention overlay
+      if (e.key === 'Escape') {
+        window.dispatchEvent(new CustomEvent('mention-overlay-dismiss'));
+        return;
+      }
+
       // Hotkey: F = Forge
       if (e.key.toLowerCase() === 'f') {
         e.preventDefault();
@@ -455,13 +538,16 @@ export default function App() {
         return;
       }
 
-      // Hotkey: T = Toggle CosmoTech Theme
+      // Hotkey: T = Cycle Theme (default → cosmotech → corrupture → default)
       if (e.key.toLowerCase() === 't') {
         e.preventDefault();
         const s = useAppStore.getState();
-        const newVal = !s.cosmotechTheme;
-        s.setCosmotechTheme(newVal);
-        toast.success(`CosmoTech™ theme ${newVal ? 'enabled' : 'disabled'}`);
+        const themes: ("default" | "cosmotech" | "corrupture")[] = ["default", "cosmotech", "corrupture"];
+        const currentIdx = themes.indexOf(s.theme);
+        const nextTheme = themes[(currentIdx + 1) % themes.length];
+        s.setTheme(nextTheme);
+        const themeName = nextTheme === "default" ? "Default" : nextTheme === "cosmotech" ? "CosmoTech™" : "Corrupture™";
+        toast.success(`${themeName} theme enabled`);
         playSfx('theme_toggle');
         return;
       }
@@ -473,6 +559,15 @@ export default function App() {
         const isOpening = !s.analyticsPanelOpen;
         s.setAnalyticsPanelOpen(isOpening);
         playSfx(isOpening ? 'hud_open' : 'hud_close');
+        return;
+      }
+
+      // Hotkey: V = Open Visual Snapshot History
+      if (e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        const s = useAppStore.getState();
+        s.setVisualHistoryOpen(true);
+        playSfx('hud_open');
         return;
       }
 
@@ -516,6 +611,7 @@ export default function App() {
         source: "manual",
       });
       useAppStore.getState().incrementMessagesSent();
+      useAppStore.getState().incrementStat("manualActions");
       const platformLabel = currentPlatform === 'kick' ? 'Kick' : currentPlatform === 'joystick' ? 'Joystick' : 'Twitch';
       toast.success(`Sent top variant to ${platformLabel} chat!`, { id: toastId });
       playSfx('send_message');
@@ -526,15 +622,28 @@ export default function App() {
   };
 
   return (
-    <div className={`flex flex-col h-screen bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans select-none relative z-0 rage-cursor-active ${cosmotechTheme ? 'cosmotech' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? 'max-rage-shake' : ''}`}>
-      {cosmotechTheme ? <CosmoTechBackground /> : <AnimatedBackground />}
+    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobile ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? 'max-rage-shake' : ''}`}>
+      {/* Skip link — keyboard / screen-reader accessibility */}
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[200] focus:rounded-lg focus:bg-orange-500 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white">
+        Skip to main content
+      </a>
+      <MobileAdvisory />
+      {theme === 'cosmotech' ? <CosmoTechBackground /> : theme === 'corrupture' ? <CorruptureBackground /> : <AnimatedBackground />}
+      <MentionOverlay />
+      {/* B12: Hype Mode Visual Effect */}
+      {hypeLevel >= 2 && <div className="hype-mode-overlay" />}
+      <div id="main-content" className="contents">
       <ForgeLayout />
+      </div>
+      {/* Per-bot AutoForge loops (renders null; mounts the useAutoForgeBot
+          instances that drive multi-bot AutoForge). */}
+      {multiBotLoops}
 
       {/* Command Palette (⌘K) */}
       {openCommand && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh] bg-black/70 backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Command Palette" onClick={() => { setOpenCommand(false); playSfx('palette_close'); }} onKeyDown={(e) => { if (e.key === 'Escape') { setOpenCommand(false); playSfx('palette_close'); } }}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg">
-            <Command className="rounded-2xl border border-white/[0.08] shadow-[0_24px_80px_rgba(0,0,0,0.5)] bg-[#131318] text-white max-w-lg overflow-hidden">
+            <Command className="rounded-2xl border border-white/[0.08] shadow-[var(--elev-4)] bg-[#131318] text-white max-w-lg overflow-hidden">
               <CommandInput placeholder="Type a command or search..." className="text-white placeholder:text-gray-500" autoFocus />
               <CommandList className="max-h-72">
                 <CommandEmpty>No results found.</CommandEmpty>
@@ -603,6 +712,14 @@ export default function App() {
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
                     playSfx('palette_select');
+                    useAppStore.getState().setVisualHistoryOpen(true); 
+                    playSfx('hud_open');
+                  }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
+                    Open Visual Snapshot History
+                  </CommandItem>
+                  <CommandItem onSelect={() => { 
+                    setOpenCommand(false); 
+                    playSfx('palette_select');
                     const s = useAppStore.getState();
                     const isOpening = !s.isAutoForgeHUDOpen;
                     s.setIsAutoForgeHUDOpen(isOpening);
@@ -630,17 +747,23 @@ export default function App() {
                     setOpenCommand(false); 
                     playSfx('palette_select');
                     const s = useAppStore.getState();
-                    s.setCosmotechTheme(!s.cosmotechTheme);
-                    toast.success(`CosmoTech™ theme ${!s.cosmotechTheme ? 'enabled' : 'disabled'}`);
+                    const themes: ("default" | "cosmotech" | "corrupture")[] = ["default", "cosmotech", "corrupture"];
+                    const currentIdx = themes.indexOf(s.theme);
+                    const nextTheme = themes[(currentIdx + 1) % themes.length];
+                    s.setTheme(nextTheme);
+                    const themeName = nextTheme === "default" ? "Default" : nextTheme === "cosmotech" ? "CosmoTech™" : "Corrupture™";
+                    toast.success(`${themeName} theme enabled`);
                     playSfx('theme_toggle');
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Toggle CosmoTech™ Theme
+                    Cycle Theme (Default / CosmoTech™ / Corrupture™)
                   </CommandItem>
                 </CommandGroup>
                 <CommandGroup heading="Help" className="text-gray-400 border-t border-white/[0.04] pt-2">
+                  {!isMobile && (
                   <CommandItem onSelect={() => { setOpenCommand(false); playSfx('palette_select'); window.dispatchEvent(new CustomEvent('tutorial-start')); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
                     Start Tutorial Walkthrough
                   </CommandItem>
+                  )}
                 </CommandGroup>
                 <CommandGroup heading="Management" className="text-gray-400 border-t border-white/[0.04] pt-2">
                   <CommandItem onSelect={() => { clearAllContext(); setOpenCommand(false); toast.success('Workspace context cleared'); playSfx('clear_context'); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
@@ -696,14 +819,15 @@ export default function App() {
       )}
 
       <AutoForgeHUD />
-      <AutoForgeReport />
-      <MemoryPanel />
-      <AnalyticsPanel />
+      <Suspense fallback={null}><AutoForgeReport /></Suspense>
+      <Suspense fallback={null}><MemoryPanel /></Suspense>
+      <Suspense fallback={null}><AnalyticsPanel /></Suspense>
+      <Suspense fallback={null}><VisualHistoryOverlay /></Suspense>
       <StatusBar />
       <ShortcutHelp />
       <WelcomeOverlay />
-      <TutorialWalkthrough />
-      <RageCursor />
+      {!isMobile && <Suspense fallback={null}><TutorialWalkthrough /></Suspense>}
+      {!isMobile && <RageCursor />}
       <EasterEggs />
     </div>
   );

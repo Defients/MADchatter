@@ -1,21 +1,44 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useAppStore } from '../store';
-import { BarChart3, X, Activity, MessageSquare, Bot, Clock, Users, Zap, Gauge, HeartPulse, Flame, Trophy, ScrollText, TrendingUp, Target, Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import { BarChart3, X, Activity, MessageSquare, Bot, Clock, Users, Zap, Gauge, HeartPulse, Flame, Trophy, ScrollText, TrendingUp, Target, Trash2, CheckCircle2, Download, Activity as ActivityIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx } from '../lib/sfx';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
 import { SENTIMENT_COLORS } from '../lib/sentiment';
 import type { SentimentLabel, GoalType, SessionGoal } from '../types';
 
-function StatCard({ icon: Icon, label, value, sublabel }: { icon: any; label: string; value: string | number; sublabel?: string }) {
+// B1: Animated number counter
+function AnimatedNumber({ value, format }: { value: number; format?: (v: number) => string }) {
+  const motionValue = useMotionValue(0);
+  const rounded = useTransform(motionValue, (latest) => format ? format(latest) : Math.round(latest).toString());
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const controls = animate(motionValue, value, { duration: 0.6, ease: "easeOut" });
+    const unsubscribe = rounded.on("change", (v) => {
+      if (ref.current) ref.current.textContent = v;
+    });
+    return () => { controls.stop(); unsubscribe(); };
+  }, [value]);
+
+  return <span ref={ref} className="tabular-nums">{format ? format(0) : "0"}</span>;
+}
+
+function StatCard({ icon: Icon, label, value, sublabel, accent }: { icon: any; label: string; value: string | number; sublabel?: string; accent?: string }) {
+  const theme = useAppStore((s) => s.theme);
+  // B7: Theme-aware icon colors
+  const iconColor = accent || (theme === 'cosmotech' ? 'text-cyan-400' : theme === 'corrupture' ? 'text-red-400' : 'text-gray-400');
+  const isNumeric = typeof value === 'number';
   return (
     <div className="flex flex-col gap-1 p-2.5 bg-white/[0.03] rounded-lg border border-white/5">
-      <div className="flex items-center gap-1.5 text-gray-400">
-        <Icon className="w-3 h-3" />
-        <span className="text-[10px] uppercase tracking-wide">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <Icon className={cn("w-3 h-3", iconColor)} />
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">{label}</span>
       </div>
-      <span className="text-lg font-bold text-white tabular-nums leading-none">{value}</span>
+      <span className="text-lg font-bold text-white tabular-nums leading-none">
+        {isNumeric ? <AnimatedNumber value={value as number} /> : value}
+      </span>
       {sublabel && <span className="text-[10px] text-gray-500">{sublabel}</span>}
     </div>
   );
@@ -50,12 +73,19 @@ export function AnalyticsPanel() {
     removeSessionGoal,
     clearSessionGoals,
     sentimentHistory,
+    goalEvaluationResults,
+    providerFallbackHistory,
+    streamHealth,
+    actionAccuracy,
+    clearActionAccuracy,
   } = useAppStore();
 
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     if (!analyticsPanelOpen) return;
+    // Refresh provider fallback history when panel opens
+    useAppStore.getState().refreshProviderFallbackHistory();
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [analyticsPanelOpen]);
@@ -66,6 +96,24 @@ export function AnalyticsPanel() {
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [newGoalType, setNewGoalType] = useState<GoalType>('mentionResponseRate');
   const [newGoalTarget, setNewGoalTarget] = useState('80');
+
+  // Memoize sorted chatters and max count to avoid recompute on every render
+  const sortedChatters = useMemo(() =>
+    Object.values(chatterStats)
+      .sort((a, b) => {
+        if (leaderboardSort === 'positive') return b.positiveCount - a.positiveCount;
+        if (leaderboardSort === 'mentions') return b.mentionCount - a.mentionCount;
+        return b.messageCount - a.messageCount;
+      })
+      .slice(0, 15),
+    [chatterStats, leaderboardSort]
+  );
+  const maxChatterCount = useMemo(() =>
+    Math.max(...Object.values(chatterStats).map(c =>
+      leaderboardSort === 'positive' ? c.positiveCount : leaderboardSort === 'mentions' ? c.mentionCount : c.messageCount
+    ), 1),
+    [chatterStats, leaderboardSort]
+  );
 
   if (!analyticsPanelOpen) return null;
 
@@ -137,6 +185,35 @@ export function AnalyticsPanel() {
               <span className="text-[10px] text-gray-500 ml-2">{formatDuration(sessionDuration)}</span>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const s = useAppStore.getState();
+                  const report = {
+                    sessionStart: new Date(s.enhancedStats.sessionStart).toISOString(),
+                    sessionDuration: formatDuration(now - s.enhancedStats.sessionStart),
+                    stats: s.enhancedStats,
+                    topChatters: Object.values(s.chatterStats).sort((a, b) => b.messageCount - a.messageCount).slice(0, 10),
+                    sentimentSummary: s.sentimentSummary,
+                    decisionLog: s.decisionLog.slice(-50),
+                    actionHistory: s.actionHistory.slice(-50),
+                    streamEvents: s.streamEvents,
+                    goals: s.goalEvaluationResults,
+                    providerFallbacks: s.providerFallbackHistory,
+                    actionAccuracy: s.actionAccuracy,
+                    streamHealth: s.streamHealth,
+                  };
+                  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = `madchatter-session-${Date.now()}.json`;
+                  a.click(); URL.revokeObjectURL(url);
+                  playSfx('hud_open');
+                }}
+                className="text-[10px] text-gray-400 hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/20 transition-colors flex items-center gap-1"
+                title="Export session report"
+              >
+                <Download className="w-3 h-3" /> Report
+              </button>
               <button
                 onClick={() => { resetEnhancedStats(); playSfx('clear_context'); }}
                 className="text-[10px] text-gray-400 hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/20 transition-colors"
@@ -266,6 +343,138 @@ export function AnalyticsPanel() {
               <StatCard icon={Gauge} label="Peak Velocity" value={enhancedStats.peakChatVelocity} sublabel="lines/min" />
               <StatCard icon={Clock} label="Avg Response" value={`${enhancedStats.avgResponseTimeMs}ms`} />
             </div>
+
+            {/* D1: Cost & Token Stats */}
+            <div className="grid grid-cols-4 gap-2">
+              <StatCard icon={Flame} label="Total Tokens" value={enhancedStats.totalTokensUsed.toLocaleString()} sublabel="session total" />
+              <StatCard icon={Zap} label="Est. Cost" value={`$${enhancedStats.estimatedCost.toFixed(4)}`} sublabel="session total" />
+              <StatCard icon={Bot} label="Fallbacks" value={enhancedStats.providerFallbacks} sublabel="provider switches" />
+              <StatCard icon={Clock} label="Session" value={formatDuration(now - enhancedStats.sessionStart)} />
+            </div>
+
+            {/* A10: Stream Health Score */}
+            {streamHealth && (
+              <div className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+                    <ActivityIcon className="w-3.5 h-3.5 text-green-400" />
+                    Stream Health
+                  </span>
+                  <span className={cn(
+                    "text-[10px] font-bold uppercase px-2 py-0.5 rounded",
+                    streamHealth.label === "poppin" && "bg-green-500/20 text-green-400",
+                    streamHealth.label === "healthy" && "bg-teal-500/20 text-teal-400",
+                    streamHealth.label === "active" && "bg-blue-500/20 text-blue-400",
+                    streamHealth.label === "slow" && "bg-yellow-500/20 text-yellow-400",
+                    streamHealth.label === "dead" && "bg-red-500/20 text-red-400",
+                  )}>
+                    {streamHealth.label} · {streamHealth.overall}/100
+                  </span>
+                </div>
+                <div className="grid grid-cols-5 gap-2 text-center">
+                  {[
+                    { label: "Velocity", val: streamHealth.velocityScore, color: "bg-indigo-500" },
+                    { label: "Sentiment", val: streamHealth.sentimentScore, color: "bg-pink-500" },
+                    { label: "Diversity", val: streamHealth.diversityScore, color: "bg-teal-500" },
+                    { label: "Mentions", val: streamHealth.mentionScore, color: "bg-orange-500" },
+                    { label: "Visual", val: streamHealth.visualScore, color: "bg-purple-500" },
+                  ].map((m) => (
+                    <div key={m.label} className="flex flex-col gap-1">
+                      <div className="h-12 bg-white/5 rounded flex items-end overflow-hidden">
+                        <motion.div
+                          className={cn("w-full rounded-t", m.color)}
+                          initial={{ height: 0 }}
+                          animate={{ height: `${m.val}%` }}
+                          transition={{ duration: 0.5, ease: "easeOut" }}
+                        />
+                      </div>
+                      <span className="text-[8px] text-gray-500 uppercase">{m.label}</span>
+                      <span className="text-[9px] text-gray-400 font-mono">{m.val}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* A9: AutoForge Accuracy Metrics */}
+            {actionAccuracy.length > 0 && (
+              <div className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+                    <Target className="w-3.5 h-3.5 text-cyan-400" />
+                    AutoForge Accuracy
+                  </span>
+                  <button onClick={() => { clearActionAccuracy(); playSfx('clear_context'); }} className="text-[9px] text-gray-500 hover:text-red-400">clear</button>
+                </div>
+                <div className="space-y-1.5">
+                  {actionAccuracy.map((entry) => (
+                    <div key={entry.actionType} className="flex items-center gap-2 text-[10px]">
+                      <span className="text-gray-400 w-28 truncate font-mono">{entry.actionType}</span>
+                      <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-all duration-500",
+                            entry.accuracyPct >= 70 ? "bg-green-500/60" : entry.accuracyPct >= 40 ? "bg-yellow-500/60" : "bg-red-500/60"
+                          )}
+                          style={{ width: `${entry.accuracyPct}%` }}
+                        />
+                      </div>
+                      <span className="text-gray-500 w-16 tabular-nums text-right">
+                        {entry.engaged}/{entry.total} ({entry.accuracyPct}%)
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* D3: Provider Fallback History */}
+            {providerFallbackHistory.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-gray-400">
+                  <Bot className="w-3 h-3" />
+                  <span className="text-[10px] uppercase tracking-wide">Provider Fallback History</span>
+                </div>
+                <div className="max-h-32 overflow-y-auto space-y-1 forge-scroll">
+                  {providerFallbackHistory.slice(-10).reverse().map((entry, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[10px] text-gray-500 bg-white/[0.02] rounded px-2 py-1">
+                      <span className="text-orange-400 font-mono">{entry.fromProvider}</span>
+                      <span className="text-gray-600">→</span>
+                      <span className="text-cyan-400 font-mono">{entry.toProvider}</span>
+                      <span className="text-gray-600 truncate flex-1">{entry.reason}</span>
+                      <span className="text-gray-700">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* D2: Goal Evaluation Results */}
+            {goalEvaluationResults.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-gray-400">
+                  <Target className="w-3 h-3" />
+                  <span className="text-[10px] uppercase tracking-wide">Goal Evaluation (Live)</span>
+                </div>
+                <div className="space-y-1">
+                  {goalEvaluationResults.map((goal, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[10px]">
+                      <span className={cn("w-4 h-4 rounded-full flex items-center justify-center", goal.met ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-gray-500")}>
+                        {goal.met ? "✓" : "○"}
+                      </span>
+                      <span className="text-gray-300 flex-1 truncate">{goal.label || goal.goalType}</span>
+                      <span className="text-gray-500 font-mono">{goal.current}/{goal.target}</span>
+                      <div className="w-16 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div
+                          className={cn("h-full rounded-full transition-all", goal.met ? "bg-green-500" : "bg-yellow-500")}
+                          style={{ width: `${Math.round(goal.progress * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Action Distribution */}
             <div className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
@@ -502,19 +711,11 @@ export function AnalyticsPanel() {
                   </div>
                 </div>
                 <div className="space-y-1 max-h-48 overflow-y-auto analytics-scroll">
-                  {Object.values(chatterStats)
-                    .sort((a, b) => {
-                      if (leaderboardSort === 'positive') return b.positiveCount - a.positiveCount;
-                      if (leaderboardSort === 'mentions') return b.mentionCount - a.mentionCount;
-                      return b.messageCount - a.messageCount;
-                    })
-                    .slice(0, 15)
-                    .map((chatter, i) => {
+                  {sortedChatters.map((chatter, i) => {
                       const rank = i + 1;
                       const medalColor = rank === 1 ? "text-amber-400" : rank === 2 ? "text-gray-300" : rank === 3 ? "text-orange-700" : "text-gray-600";
-                      const maxCount = Math.max(...Object.values(chatterStats).map(c => leaderboardSort === 'positive' ? c.positiveCount : leaderboardSort === 'mentions' ? c.mentionCount : c.messageCount), 1);
                       const sortValue = leaderboardSort === 'positive' ? chatter.positiveCount : leaderboardSort === 'mentions' ? chatter.mentionCount : chatter.messageCount;
-                      const barPct = (sortValue / maxCount) * 100;
+                      const barPct = (sortValue / maxChatterCount) * 100;
                       return (
                         <div key={chatter.username} className="flex items-center gap-2 text-[10px] py-1 border-b border-white/[0.02] last:border-0">
                           <span className={cn("font-bold w-4 text-center", medalColor)}>{rank}</span>

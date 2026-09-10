@@ -9,7 +9,7 @@ import {
   type ExtractionParams,
 } from "../lib/memoryEngine";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
-import { startNewSession, saveSessionEnd, detectMood } from "../lib/personalityEngine";
+import { startNewSession, saveSessionEnd, detectMoodWithLock } from "../lib/personalityEngine";
 import * as memoryStore from "../lib/memoryStore";
 import type { PersonalityState } from "../types";
 
@@ -32,6 +32,8 @@ export function useAutoMemory() {
   const lastExtractionRef = useRef<number>(Date.now());
   const lastDecayRef = useRef<number>(Date.now());
   const initializedRef = useRef(false);
+  // Re-entrance guard: prevents overlapping extraction/decay cycles
+  const busyRef = useRef(false);
   const chatLogRef = useRef(chatLog);
   chatLogRef.current = chatLog;
 
@@ -99,6 +101,10 @@ export function useAutoMemory() {
     if (!autoMemoryConfig.enabled) return;
 
     const interval = setInterval(async () => {
+      // Re-entrance guard: skip if previous cycle is still running
+      if (busyRef.current) return;
+      busyRef.current = true;
+      try {
       const now = Date.now();
       const state = useAppStore.getState();
 
@@ -186,7 +192,7 @@ export function useAutoMemory() {
 
       // Update mood based on current context
       if (state.personalityState && state.autoMemoryConfig.personalityEvolutionEnabled) {
-        const detectedMood = detectMood(chatLogRef.current, state.audioTranscript, state.streamMetadata.viewerCount);
+        const detectedMood = detectMoodWithLock(chatLogRef.current, state.audioTranscript, state.streamMetadata.viewerCount, useAppStore.getState().moodLock);
         if (detectedMood !== state.personalityState.mood) {
           const updated: PersonalityState = {
             ...state.personalityState,
@@ -194,6 +200,9 @@ export function useAutoMemory() {
           };
           setPersonalityState(updated);
         }
+      }
+      } finally {
+        busyRef.current = false;
       }
     }, 30000); // Check every 30 seconds
 

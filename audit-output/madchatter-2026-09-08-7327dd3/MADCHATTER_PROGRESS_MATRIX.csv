@@ -1,0 +1,87 @@
+ID,Name,Purpose,Status,Completion%,Confidence,Dependencies,Blockers,Missing Integrations,Duplication,User Reachability,Activation Path,Verification State,Evidence IDs
+MC-UI-001,ForgeLayout,Main dashboard layout,Integrated,70,High,MC-UI-002/003/011/013,None,Screen capture stream cleanup,None,Direct - mounted by App.tsx,App.tsx renders ForgeLayout,PARTIAL,E-A1
+MC-UI-002,TheForge,Forge/suggestion display,Integrated,65,High,MC-AI-001/003,Duplicate forge logic in TuningDeck,Consistent forge trigger handling,MC-UI-003 duplicate handleForge,Direct - ForgeLayout child,ForgeLayout mount,PARTIAL,E-B1
+MC-UI-003,TuningDeck,Control deck + forge trigger,Integrated,65,High,MC-AI-001,Duplicate handleForge; pre-records analytics before send,Unify forge path,MC-UI-002 duplicate handleForge,Direct - ForgeLayout child,ForgeLayout mount,PARTIAL,E-B1
+MC-UI-004,VariantCard,Suggestion card with refine/send,Integrated,70,High,MC-AI-003/007,None,None,None,Direct - TheForge child,TheForge render,PARTIAL,E-B2
+MC-UI-005,MemoryPanel,Memory management UI,Integrated,55,Medium,MC-MEM-001/003,None,None,None,Direct - App.tsx,H key or command palette,PARTIAL,E-B3
+MC-UI-006,AutoForgeHUD,Decision HUD,Integrated,60,Medium,MC-AI-005,1s polling timer,None,None,Direct - App.tsx,H key,PARTIAL,E-B4
+MC-UI-007,AutoForgeReport,Event report panel,Integrated,55,Medium,MC-AI-009,Briefing gen may be unused,None,None,Direct - App.tsx,Command palette,PARTIAL,E-B4
+MC-UI-008,AnalyticsPanel,Session analytics,Integrated,55,Medium,MC-INFRA-001,1s polling; inflated stats,None,None,Direct - App.tsx,D key,PARTIAL,E-B4
+MC-UI-009,ActionTimeline,Action history timeline,Integrated,50,Medium,MC-INFRA-001,None,None,None,Direct - ForgeLayout child,ForgeLayout mount,NOT_RUN,E-A1
+MC-UI-010,StatusBar,Connection/stats bar,Integrated,65,High,MC-CHAT-001/003/005,None,None,None,Direct - App.tsx,Always visible,PARTIAL,E-A1
+MC-UI-011,StreamEmbed,Twitch stream iframe,Integrated,50,Medium,None,None,None,None,Direct - ForgeLayout child,ForgeLayout mount,NOT_RUN,E-A1
+MC-UI-012,StreamOverlay,Stream overlay,Integrated,45,Low,None,Crop rect not updated on resize,None,None,Direct - ForgeLayout child,ForgeLayout mount,NOT_RUN,E-B5
+MC-UI-013,EmoteText,Emote image rendering,Integrated,60,High,MC-CHAT-012,None,None,None,Direct - chat rendering,Chat message display,PARTIAL,E-C1
+MC-UI-014,SettingsPanel,Full settings modal,Integrated,60,High,MC-AUTH-005/006,None,None,None,Direct - TuningDeck,Settings button,PARTIAL,E-C2
+MC-UI-015,CommandPalette,Ctrl+K palette,Integrated,65,High,MC-INFRA-001,None,None,None,Direct - App.tsx,Ctrl+K,PARTIAL,E-A2
+MC-UI-016,WelcomeOverlay,Welcome screen,Integrated,50,Medium,None,None,None,None,Direct - App.tsx,First load,PARTIAL,E-A2
+MC-UI-017,TutorialWalkthrough,Onboarding,Integrated,55,Medium,None,None,None,None,Direct - App.tsx,Tutorial command,NOT_RUN,E-A2
+MC-UI-018,ShortcutHelp,Shortcut help,Integrated,50,High,None,None,None,None,Direct - App.tsx,? key,NOT_RUN,E-A2
+MC-UI-019,AnimatedBackground,Default background,Integrated,50,High,None,None,None,None,Direct - App.tsx,Default theme,NOT_RUN,E-A2
+MC-UI-020,CosmoTechBackground,CosmoTech theme,Integrated,50,High,None,None,None,None,Direct - App.tsx,T key,NOT_RUN,E-A2
+MC-UI-021,EasterEggs,Easter eggs,Integrated,50,Medium,None,None,None,None,Direct - App.tsx,Konami code,NOT_RUN,E-A2
+MC-UI-022,RageCursor,Rage cursor,Integrated,45,Low,None,None,None,None,Direct - App.tsx,Easter egg trigger,NOT_RUN,E-A2
+MC-UI-023,FidgetSpinner,Fidget spinner,Integrated,45,Low,None,None,None,None,Direct - ForgeLayout child,ForgeLayout mount,NOT_RUN,E-A1
+MC-UI-024,ErrorBoundary,Error boundary,Integrated,50,High,None,None,None,None,Direct - main.tsx,Always active,PARTIAL,E-A3
+MC-UI-025,shadcn Primitives,UI primitives,Integrated,80,High,None,None,None,None,Indirect - all components,Component render,PASS,E-A4
+MC-AI-001,Forge Engine (Client),Generate chat variants,Integrated,55,High,MC-AUTH-005/012,No output validation; dangerouslyAllowBrowser,Schema validation,MC-AI-002 duplicate,Direct - TuningDeck/TheForge,F key or forge-trigger,FAIL,E-B1
+MC-AI-002,Forge Engine (Server),Server-side forge,Partial,45,High,MC-AUTH-006,Not wired to client; orphan route,Client integration,MC-AI-001 duplicate,Indirect - /api/generate-chat,HTTP POST,NOT_RUN,E-C3
+MC-AI-003,Variant Refinement (Client),Refine suggestion,Integrated,50,High,MC-AUTH-005,No output validation,None,MC-AI-004 duplicate,Direct - VariantCard,Refine button,FAIL,E-B2
+MC-AI-004,Variant Refinement (Server),Server-side refine,Partial,45,High,MC-AUTH-006,Not wired to client,Client integration,MC-AI-003 duplicate,Indirect - /api/refine-suggestion,HTTP POST,NOT_RUN,E-C3
+MC-AI-005,AutoForge Decision Engine,AI decision engine,Integrated,55,High,MC-AUTH-005/012,No output validation; bookkeeping before send,Schema validation + await send,MC-AI-006 duplicate,Direct - useAutoForge,15s interval,FAIL,E-B6
+MC-AI-006,AutoForge Decision (Server),Server-side decision,Partial,45,High,MC-AUTH-006,Not wired to client,Client integration,MC-AI-005 duplicate,Indirect - /api/autoforge-decide,HTTP POST,NOT_RUN,E-C3
+MC-AI-007,Vision Context Generator,Screenshot description,Integrated,50,Medium,MC-AUTH-005,None,None,MC-AI-008 duplicate,Direct - ForgeLayout,Capture trigger,PARTIAL,E-B5
+MC-AI-008,Vision Context (Server),Server-side vision,Partial,45,Medium,MC-AUTH-006,Not wired to client,Client integration,MC-AI-007 duplicate,Indirect - /api/vision,HTTP POST,NOT_RUN,E-C3
+MC-AI-009,AutoForge Briefing,After-action report,Partial,35,Low,MC-AUTH-005,Possibly dead export,Verify import,None,Indirect - AutoForgeReport,Report open,NOT_RUN,E-B4
+MC-AI-010,Prompt Constants (Client),System prompts,Integrated,60,High,None,Duplicated in server,Single source of truth,MC-AI-011 duplicate,N/A,N/A,PASS,E-A5
+MC-AI-011,Prompt Constants (Server),Duplicated prompts,Partial,55,High,None,Drift risk,Single source of truth,MC-AI-010 duplicate,N/A,N/A,PASS,E-C4
+MC-AI-012,Provider Fallback,Health/cooldown/fallback,Integrated,55,High,MC-AUTH-005,In-memory only; reset on reload,Persist health,None,Indirect - ai.ts,AI call failure,PARTIAL,E-B6
+MC-AI-013,Smart Replies,Mention reply suggestions,Partial,40,Low,MC-AI-001,Silent failure on errors,None,None,Indirect - useAutoForge,Mention detected,NOT_RUN,E-B6
+MC-AI-014,Memory Extraction,AI memory extraction,Partial,45,Medium,MC-AI-001/010,Read-modify-write races; double reload,Collision-safe writes,None,Indirect - useAutoMemory,30s interval,NOT_RUN,E-B3
+MC-AI-015,Memory Retrieval,Memory ranking/formatting,Integrated,55,High,MC-MEM-001,None,None,None,Indirect - useAutoForge/TuningDeck,AutoForge cycle,NOT_RUN,E-B3
+MC-AI-016,Personality Engine,Mood/trait evolution,Partial,40,Low,MC-MEM-001,saveSessionEnd on every personality change,Stable save trigger,None,Indirect - useAutoMemory,Session end,NOT_RUN,E-B3
+MC-AI-017,Joke Engine,Inside-joke lifecycle,Partial,40,Low,MC-MEM-001,Read-modify-write races,Collision-safe writes,None,Indirect - useAutoForge,Joke callback,NOT_RUN,E-B3
+MC-AUTH-001,Twitch Auth (Client),Implicit OAuth,Integrated,45,Medium,MC-CHAT-001,Implicit flow; no PKCE; loose origin check,PKCE + strict origin,None,Direct - SettingsPanel,Login button,PARTIAL,E-C5
+MC-AUTH-002,Twitch Auth (Server),Auth-code flow,Partial,40,Medium,MC-AUTH-006,Orphan route; not consumed by client,Client integration,None,Indirect - /auth/callback,OAuth redirect,NOT_RUN,E-C5
+MC-AUTH-003,Kick Auth,OAuth 2.1 + PKCE,Integrated,55,Medium,MC-INFRA-003,Hardcoded client secret in bundle,Remove secret from bundle,None,Direct - SettingsPanel,Login button,PARTIAL,E-C6
+MC-AUTH-004,Joystick Auth,OAuth code flow,Integrated,50,Medium,MC-INFRA-004,Hardcoded client secret; no PKCE,PKCE + remove secret,None,Direct - SettingsPanel,Login button,PARTIAL,E-C7
+MC-AUTH-005,API Key Management,localStorage key storage,Integrated,40,High,None,Plaintext localStorage; keys in bundle,Server-side key vault,None,Direct - SettingsPanel,Settings save,PARTIAL,E-C8
+MC-AUTH-006,Server Session Store,In-memory sessions,Partial,30,Medium,None,No HMAC/signature; anonymous session creation,Signed sessions,None,Indirect - server.ts,HTTP request,NOT_RUN,E-C3
+MC-CHAT-001,Twitch Chat Read,tmi.js read client,Integrated,60,High,MC-AUTH-001,Ref not set before timer; half-connect leak,Ref assignment timing,None,Direct - App.tsx,Channel set,PARTIAL,E-B7
+MC-CHAT-002,Twitch Chat Send,TMI send manager,Integrated,60,High,MC-AUTH-001/009,None,None,None,Direct - platformSend,Send action,PARTIAL,E-B7
+MC-CHAT-003,Kick Chat Read,Pusher WebSocket,Integrated,55,High,MC-CHAT-007,No jitter in backoff,None,None,Direct - App.tsx,Channel set,PARTIAL,E-B8
+MC-CHAT-004,Kick Chat Send,REST API send,Integrated,55,High,MC-AUTH-003/009,Token refresh + proxy fallback,None,None,Direct - platformSend,Send action,PARTIAL,E-B8
+MC-CHAT-005,Joystick Chat Read,ActionCable WebSocket,Integrated,50,Medium,MC-CHAT-007,No heartbeat; global mutable dependency,None,None,Direct - App.tsx,Channel set,PARTIAL,E-B9
+MC-CHAT-006,Joystick Chat Send,WebSocket send,Integrated,45,Medium,MC-CHAT-005,Global window ref may be null; no queue,None,None,Direct - platformSend,Send action,PARTIAL,E-B9
+MC-CHAT-007,Platform Send Dispatch,Send router,Integrated,55,High,MC-CHAT-002/004/006,None,None,None,Indirect - all send paths,Send call,PARTIAL,E-B7
+MC-CHAT-008,Message Queue,Retry queue,Stubbed,15,High,MC-CHAT-007,enqueue() never called,Wire enqueue on send failure,None,Not reachable,N/A,FAIL,E-B10
+MC-CHAT-009,Send Rate Limiter,Sliding-window dedup,Integrated,60,High,None,None,None,Indirect - send managers,Send call,PASS,E-A5
+MC-CHAT-010,Action Rate Limiter,AutoForge throttling,Integrated,55,High,None,In-memory only,None,None,Indirect - useAutoForge,AutoForge cycle,PASS,E-A5
+MC-CHAT-011,Chat Ingestion Pipeline,Message processing,Integrated,55,High,MC-CHAT-013/014,window globals for bot username,None,None,Direct - App.tsx,Chat message received,PARTIAL,E-B7
+MC-CHAT-012,Emote System,7TV/FFZ emotes,Integrated,55,Medium,None,None,None,Indirect - EmoteText,Chat render,NOT_RUN,E-A1
+MC-CHAT-013,Sentiment Analysis,Rule-based sentiment,Integrated,55,High,None,None,None,Indirect - processIncomingMessage,Chat message,NOT_RUN,E-A5
+MC-CHAT-014,Anti-Repetition,Repetition tracking,Integrated,50,High,None,None,None,Indirect - useAutoForge,AutoForge cycle,NOT_RUN,E-A5
+MC-MEM-001,Memory Store,IndexedDB CRUD,Integrated,55,High,None,None,None,Indirect - memoryEngine/useAutoMemory,Memory operations,PARTIAL,E-B3
+MC-MEM-002,Auto-Memory Hook,Extraction/decay loop,Integrated,45,Medium,MC-MEM-001/003,Timer reset on mount; double reload,Single hydration path,None,Direct - App.tsx,App mount,NOT_RUN,E-B3
+MC-MEM-003,Memory Decay,Strength decay/pruning,Partial,40,Low,MC-MEM-001,None,None,None,Indirect - useAutoMemory,Decay interval,NOT_RUN,E-B3
+MC-MEM-004,Pinned/Golden Memory,User context anchors,Integrated,55,High,MC-INFRA-001,None,None,None,Direct - MemoryPanel,Memory panel UI,PARTIAL,E-A1
+MC-AUDIO-001,Deepgram Transcription,Real-time transcription,Integrated,50,Medium,MC-AUDIO-002,None,None,None,Direct - ForgeLayout,Voice capture start,NOT_RUN,E-B11
+MC-AUDIO-002,Whisper Fallback,Local ASR,Partial,40,Low,None,Model load not cancellable; 23MB WASM,Cancel loading,None,Indirect - useDeepgramTranscription/usePushToTalk,Whisper mode,NOT_RUN,E-B11
+MC-AUDIO-003,Push-to-Talk,Mic capture + Whisper,Integrated,45,Medium,MC-AUDIO-002,Shared mic stream never stopped,Stop stream on unmount,None,Direct - TuningDeck,PTT button,NOT_RUN,E-B11
+MC-AUDIO-004,Voice Commands,VAD command dispatch,Integrated,45,Low,MC-AUDIO-002/005,Substring match ambiguity; own mic stream,None,None,Direct - App.tsx,App mount,NOT_RUN,E-B11
+MC-AUDIO-005,Voice Command Parser,Pattern matching,Integrated,45,Medium,None,Substring match ambiguity,Exact match,None,Indirect - useVoiceCommands,Voice input,NOT_RUN,E-B11
+MC-AUDIO-006,TTS Engine,Web Speech + ElevenLabs,Integrated,50,Medium,None,Not awaited by callers,Await TTS,None,Indirect - useAutoForge/TheForge,Send action,NOT_RUN,E-B11
+MC-AUDIO-007,Sound Effects,Synth SFX,Integrated,55,High,None,None,None,Indirect - multiple components,UI interaction,PASS,E-A5
+MC-AUDIO-008,Message Sound,MP3 notification,Integrated,55,High,None,None,None,Indirect - App.tsx/useAutoForge,Message received/sent,PASS,E-A5
+MC-AUDIO-009,Frame Diff,Visual change detection,Integrated,55,High,None,First frame always delta=1,None,None,Indirect - ForgeLayout,Capture,NOT_RUN,E-B5
+MC-INFRA-001,Zustand Store,Global state,Integrated,65,High,None,Broad subscriptions cause re-renders,Selective subscriptions,None,Indirect - all,App mount,PASS,E-A3
+MC-INFRA-002,Express Server,API server,Partial,45,Medium,MC-AUTH-006,No CORS; no CSP; orphan routes,Security headers + wiring,None,Indirect - npm run server,Server start,PARTIAL,E-C3
+MC-INFRA-003,Cloudflare Kick Proxy,Kick CORS proxy,Integrated,50,Medium,None,CORS *; hardcoded secrets,Origin allowlist + secret removal,None,Indirect - kick.ts,Kick API call,PARTIAL,E-C6
+MC-INFRA-004,Cloudflare Joystick Proxy,Joystick CORS proxy,Integrated,50,Medium,None,CORS *; hardcoded secrets,Origin allowlist + secret removal,None,Indirect - joystick.ts,Joystick API call,PARTIAL,E-C7
+MC-INFRA-005,Deno Kick Proxy,Alternative Kick proxy,Partial,40,Low,None,TS copy is dead; JS is entrypoint,Remove TS copy,None,Indirect - Deno Deploy,Deno deploy,NOT_RUN,E-A5
+MC-INFRA-006,Vite Build,Build config,Integrated,55,High,None,No chunking; 2MB bundle; 23MB WASM,Code splitting,None,N/A,npm run build,PASS,E-A6
+MC-INFRA-007,Notifications,Browser notifications,Integrated,50,High,None,None,None,None,Indirect - useAutoForge/App.tsx,Mention/error event,NOT_RUN,E-A5
+MC-INFRA-008,TypeScript Config,TS config,Integrated,70,High,None,None,None,None,N/A,tsc --noEmit,PASS,E-A6
+MC-INFRA-009,Tailwind/shadcn Config,Styling config,Integrated,70,High,None,None,None,None,N/A,N/A,PASS,E-A4
+MC-INFRA-010,OAuth Callback Pages,Auth callbacks,Integrated,45,Medium,None,postMessage targetOrigin=*; XSS in index.html,Strict origin + textContent,None,Direct - OAuth flow,OAuth redirect,PARTIAL,E-C5
+MC-INFRA-011,Legal Pages,Privacy/terms,Integrated,50,High,None,None,None,None,Direct - public/,URL access,NOT_RUN,E-A5

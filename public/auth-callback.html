@@ -15,6 +15,10 @@
       var accessToken = hashParams.get('access_token') || queryParams.get('access_token');
       var error = hashParams.get('error') || queryParams.get('error');
       var errorDesc = hashParams.get('error_description') || queryParams.get('error_description');
+      // Multi-bot: Twitch echoes back the `state` param we sent. Forward it so
+      // the opener can route this token to the correct bot slot. Absent in
+      // legacy single-bot logins (handled as before).
+      var botState = hashParams.get('state') || queryParams.get('state') || null;
 
       console.log('[auth-callback] URL:', window.location.href);
       console.log('[auth-callback] hash:', hash);
@@ -23,7 +27,7 @@
       if (error) {
         document.getElementById('status').textContent = 'Authentication Failed: ' + (errorDesc || error);
         if (window.opener) {
-          window.opener.postMessage({ type: 'OAUTH_ERROR', error: errorDesc || error }, '*');
+          window.opener.postMessage({ type: 'OAUTH_ERROR', error: errorDesc || error, botState: botState }, '*');
         }
         setTimeout(function() { window.close(); }, 3000);
         return;
@@ -32,7 +36,7 @@
       if (!accessToken) {
         document.getElementById('status').textContent = 'No token received — check console for URL details';
         if (window.opener) {
-          window.opener.postMessage({ type: 'OAUTH_ERROR', error: 'No access token in callback. URL: ' + window.location.href }, '*');
+          window.opener.postMessage({ type: 'OAUTH_ERROR', error: 'No access token in callback. URL: ' + window.location.href, botState: botState }, '*');
         }
         setTimeout(function() { window.close(); }, 5000);
         return;
@@ -57,7 +61,7 @@
           };
           document.getElementById('status').textContent = 'Authentication Successful';
           if (window.opener) {
-            window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', session: session }, '*');
+            window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', session: session, botState: botState }, '*');
           }
         } else {
           // Token valid but couldn't fetch user — store token with minimal info
@@ -68,7 +72,7 @@
           };
           document.getElementById('status').textContent = 'Authentication Successful';
           if (window.opener) {
-            window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', session: session }, '*');
+            window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', session: session, botState: botState }, '*');
           }
         }
         setTimeout(function() { window.close(); }, 1500);

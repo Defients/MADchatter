@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useAppStore } from '../store';
-import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Settings, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp } from 'lucide-react';
+import { useAppStore, selectMultiBotActive } from '../store';
+import type { Bot } from '../types';
+import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx, playForceBurstSfx } from '../lib/sfx';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
@@ -88,7 +89,9 @@ export function AutoForgeHUD() {
     setAutoForgeConfidenceThreshold,
     engagementScore,
     streamLikelyOffline,
+    bots,
   } = useAppStore();
+  const multiBotActive = useAppStore(selectMultiBotActive);
 
   const [now, setNow] = useState(Date.now());
   const [burstKey, setBurstKey] = useState(0);
@@ -113,21 +116,55 @@ export function AutoForgeHUD() {
 
   if (!isAutoForgeHUDOpen) return null;
 
-  const timeSinceLast = autoForgeLastActionMs 
-    ? Math.max(0, Math.floor((now - autoForgeLastActionMs) / 1000))
+  // In multi-bot mode the legacy global pacing fields are NOT updated (the
+  // legacy loop stands down). Derive next/last/decision from per-bot runtimes
+  // so the HUD's NEXT CHECK timer and decision card stay accurate.
+  const activeBots = multiBotActive ? bots.filter((b) => b.active && b.session) : [];
+
+  const rawNext = multiBotActive
+    ? activeBots.reduce<number>((min, b) => Math.min(min, b.runtime.autoForgeNextActionMs), Infinity)
+    : (autoForgeNextActionMs ?? 0);
+  const effectiveNextActionMs = rawNext === Infinity ? 0 : rawNext;
+
+  const effectiveLastActionMs = multiBotActive
+    ? activeBots.reduce<number>((max, b) => Math.max(max, b.runtime.autoForgeLastActionMs ?? 0), 0)
+    : (autoForgeLastActionMs ?? 0);
+
+  // Most recent decision across bots (by timestamp), plus the bot that owns it
+  // so the card can show who was chosen to speak and why.
+  let effectiveDecision = lastAutoForgeDecision;
+  let decisionBot: Bot | null = null;
+  if (multiBotActive && activeBots.length > 0) {
+    let bestTs = -1;
+    for (const b of activeBots) {
+      const d = b.runtime.lastAutoForgeDecision;
+      const ts = d?.timestamp ?? b.runtime.autoForgeLastActionMs ?? 0;
+      if (d && ts > bestTs) {
+        bestTs = ts;
+        effectiveDecision = d;
+        decisionBot = b;
+      }
+    }
+  }
+
+  const timeSinceLast = effectiveLastActionMs
+    ? Math.max(0, Math.floor((now - effectiveLastActionMs) / 1000))
     : 0;
 
-  const timeUntilNext = autoForgeNextActionMs
-    ? Math.max(0, Math.floor((autoForgeNextActionMs - now) / 1000))
+  const timeUntilNext = effectiveNextActionMs
+    ? Math.max(0, Math.floor((effectiveNextActionMs - now) / 1000))
     : 0;
 
-  const decisionType = lastAutoForgeDecision?.decision || 'None';
-  const decisionReason = lastAutoForgeDecision?.reason || 'Waiting for initial signal check...';
-  const confidence = lastAutoForgeDecision?.confidence || 0;
-  const activityLevel = lastAutoForgeDecision?.activityLevel || 0;
-  
-  const appliedChaos = lastAutoForgeDecision?.applied_chaos_level ?? config.chaosLevel;
-  const appliedHumor = lastAutoForgeDecision?.applied_humor_level ?? config.humorLevel;
+  const decisionType = effectiveDecision?.decision || 'None';
+  const decisionReason = effectiveDecision?.reason || 'Waiting for initial signal check...';
+  const confidence = effectiveDecision?.confidence || 0;
+  const activityLevel = effectiveDecision?.activityLevel || 0;
+
+  // Multi-bot "why chosen" context for the decision card.
+  const decisionBotUsername = decisionBot?.session?.username ?? null;
+  const decisionPersonaFit = effectiveDecision?.personaFit;
+  const decisionWasMentioned = effectiveDecision?.isMentioned === true;
+  const decisionWasSent = decisionType !== 'None' && decisionType !== 'deliberate_silence' && decisionType !== 'meta_observation' && !!effectiveDecision?.action_payload;
   
   return (
     <motion.div
@@ -231,10 +268,27 @@ export function AutoForgeHUD() {
                   <span className="text-[9px] text-blue-300 font-mono font-bold">CONF: {Math.round(confidence * 100)}%</span>
                 </div>
                 <span className="text-[10px] font-mono text-blue-400 font-bold uppercase">{decisionType}</span>
+                {multiBotActive && decisionBotUsername && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-[9px] font-mono font-bold text-[#c79bff] bg-[#9146FF]/15 border border-[#9146FF]/30 rounded px-1.5 py-0.5">
+                      {decisionWasSent ? 'Sent by' : 'Decided by'} @{decisionBotUsername}
+                    </span>
+                    {typeof decisionPersonaFit === 'number' && (
+                      <span className="text-[9px] font-mono text-gray-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5" title="How well this bot's persona fits the moment">
+                        FIT {Math.round(decisionPersonaFit * 100)}%
+                      </span>
+                    )}
+                    {decisionWasMentioned && (
+                      <span className="text-[9px] font-mono text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-1.5 py-0.5">
+                        @MENTIONED
+                      </span>
+                    )}
+                  </div>
+                )}
                 <p className="text-xs text-gray-300 leading-relaxed italic pr-4">"{decisionReason}"</p>
-                {lastAutoForgeDecision?.action_payload && (
+                {effectiveDecision?.action_payload && (
                   <div className="mt-1 p-2 bg-black/50 rounded border border-white/5 text-[10px] font-mono text-white break-words">
-                    {lastAutoForgeDecision.action_payload}
+                    {effectiveDecision.action_payload}
                   </div>
                 )}
               </div>
@@ -280,7 +334,7 @@ export function AutoForgeHUD() {
                   <Clock className="w-3 h-3 text-green-400" /> Last Action
                 </span>
                 <span className="text-xs font-mono text-gray-200 mt-0.5">
-                  {autoForgeLastActionMs ? `${timeSinceLast}s ago` : "Never"}
+                  {effectiveLastActionMs ? `${timeSinceLast}s ago` : "Never"}
                 </span>
               </div>
 
@@ -436,33 +490,6 @@ export function AutoForgeHUD() {
               </div>
             </div>
 
-            {/* AI Directed Sliders (Live Values) */}
-            <div className="flex flex-col gap-2 p-2.5 bg-black/40 rounded border border-white/5">
-              <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
-                <Settings className="w-3 h-3" /> Live Modifiers
-              </span>
-              
-              <div className="flex flex-col gap-1">
-                <div className="flex justify-between items-center text-[10px]">
-                  <span className="text-gray-400 uppercase">Humor</span>
-                  <span className="text-gray-200 font-mono">{appliedHumor}% <span className="text-gray-600">(Base: {config.humorLevel})</span></span>
-                </div>
-                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-orange-500 transition-all duration-1000" style={{ width: `${appliedHumor}%` }} />
-                </div>
-              </div>
-              
-              <div className="flex flex-col gap-1 mt-1">
-                <div className="flex justify-between items-center text-[10px]">
-                  <span className="text-gray-400 uppercase">Chaos</span>
-                  <span className="text-gray-200 font-mono">{appliedChaos}% <span className="text-gray-600">(Base: {config.chaosLevel})</span></span>
-                </div>
-                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-500 transition-all duration-1000" style={{ width: `${appliedChaos}%` }} />
-                </div>
-              </div>
-            </div>
-
             {/* Last Decision Details */}
             <div className="flex flex-col">
               <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase mb-2 ml-1">Previous Cycle Decision</span>
@@ -472,11 +499,28 @@ export function AutoForgeHUD() {
                   <span className="text-[9px] text-blue-300 font-mono font-bold">CONF: {Math.round(confidence * 100)}%</span>
                 </div>
                 <span className="text-[10px] font-mono text-blue-400 font-bold uppercase">{decisionType}</span>
+                {multiBotActive && decisionBotUsername && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[9px] font-mono font-bold text-[#c79bff] bg-[#9146FF]/15 border border-[#9146FF]/30 rounded px-1.5 py-0.5">
+                      {decisionWasSent ? 'Sent by' : 'Decided by'} @{decisionBotUsername}
+                    </span>
+                    {typeof decisionPersonaFit === 'number' && (
+                      <span className="text-[9px] font-mono text-gray-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5" title="How well this bot's persona fits the moment (0–100%). Mentioned bots get +30%.">
+                        FIT {Math.round(decisionPersonaFit * 100)}%
+                      </span>
+                    )}
+                    {decisionWasMentioned && (
+                      <span className="text-[9px] font-mono text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-1.5 py-0.5">
+                        @MENTIONED
+                      </span>
+                    )}
+                  </div>
+                )}
                 <p className="text-xs text-gray-300 leading-relaxed italic pr-4">"{decisionReason}"</p>
-                
-                {lastAutoForgeDecision?.action_payload && (
+
+                {effectiveDecision?.action_payload && (
                   <div className="mt-1 p-2 bg-black/50 rounded border border-white/5 text-[10px] font-mono text-white break-words">
-                    {lastAutoForgeDecision.action_payload}
+                    {effectiveDecision.action_payload}
                   </div>
                 )}
               </div>

@@ -1044,9 +1044,11 @@ function buildForceBurstSynth(level: number): SynthConfig {
     layers.push({ type: "square", freq: [4000, 9000], gain: 0.05, attack: 0.002, decay: 0.03, sustain: 0.3, release: 0.5, delay: 0.04, filterFreq: 8000 });
   }
 
+  // Cap escalation so reverb/gain don't grow unbounded (layers only go up to level 5)
+  const escLevel = Math.min(level, 5);
   return {
-    duration: 0.4 + level * 0.1,
-    reverb: { decay: 0.6 + level * 0.2, wet: 0.15 + level * 0.05 },
+    duration: 0.4 + escLevel * 0.1,
+    reverb: { decay: 0.6 + escLevel * 0.2, wet: Math.min(0.15 + escLevel * 0.05, 1) },
     layers,
   };
 }
@@ -1064,7 +1066,7 @@ export function playSfx(event: SfxEvent, options?: { volume?: number }): void {
   const state = useAppStore.getState();
   if (!state.sfxEnabled) return;
 
-  const theme: Theme = state.cosmotechTheme ? "cosmotech" : "default";
+  const theme: Theme = state.theme === "cosmotech" ? "cosmotech" : state.theme === "corrupture" ? "cosmotech" : "default";
   const soundMap = SOUND_MAPS[theme];
   const def = soundMap[event];
   if (!def) return;
@@ -1082,8 +1084,9 @@ export function playForceBurstSfx(): void {
   const state = useAppStore.getState();
   if (!state.sfxEnabled) return;
 
-  forceClickTimes.push(Date.now());
+  // Read escalation level BEFORE pushing so the first click returns 0 (not 1)
   const level = getForceEscalationLevel();
+  forceClickTimes.push(Date.now());
   const synth = buildForceBurstSynth(level);
   const volume = (state.sfxVolume ?? 0.3) * (1 + level * 0.08);
 

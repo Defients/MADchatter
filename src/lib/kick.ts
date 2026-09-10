@@ -1,4 +1,5 @@
 import { SendRateLimiter } from "./rateLimiter";
+import { useAppStore } from "../store";
 
 export type Platform = "twitch" | "kick" | "joystick";
 
@@ -366,6 +367,17 @@ class KickSendManager extends SendRateLimiter {
   private state: ChatReadState = 'disconnected';
   private stateListeners: Set<(state: string) => void> = new Set();
   private channelInfoCache: Map<string, { broadcasterUserId: number; expiresAt: number }> = new Map();
+  private ensureValid: () => Promise<KickSession | null>;
+  private refresh: (session: KickSession) => Promise<KickSession | null>;
+
+  constructor(
+    ensureValid: () => Promise<KickSession | null> = ensureValidKickSession,
+    refresh: (session: KickSession) => Promise<KickSession | null> = refreshKickToken,
+  ) {
+    super();
+    this.ensureValid = ensureValid;
+    this.refresh = refresh;
+  }
 
   getState(): ChatReadState {
     return this.state;
@@ -403,7 +415,7 @@ class KickSendManager extends SendRateLimiter {
     }
 
     // Ensure we have a valid session (auto-refresh if token is expired)
-    let session = await ensureValidKickSession();
+    let session = await this.ensureValid();
     if (!session) {
       throw new Error('Not authenticated with Kick. Please log in via the Kick login button to send chat messages.');
     }
@@ -472,7 +484,7 @@ class KickSendManager extends SendRateLimiter {
         const errText = await res.text().catch(() => '');
         console.warn(`[Kick Send] Got ${res.status}, attempting token refresh...`, errText);
 
-        const refreshed = await refreshKickToken(session);
+        const refreshed = await this.refresh(session);
         if (refreshed) {
           console.log('[Kick Send] Token refreshed, retrying send...');
           res = await attemptSend(refreshed.accessToken);
@@ -519,6 +531,25 @@ class KickSendManager extends SendRateLimiter {
 
 export const kickSendManager = new KickSendManager();
 
+// ─── Multi-Bot: per-identity Kick send managers (additive) ──────────────────
+const kickSendManagerRegistry = new Map<string, KickSendManager>();
+
+export function getKickSendManagerForBot(botId: string): KickSendManager {
+  let mgr = kickSendManagerRegistry.get(botId);
+  if (!mgr) {
+    mgr = new KickSendManager(
+      () => ensureValidKickSessionForBot(botId),
+      (session) => refreshKickTokenForBot(botId, session),
+    );
+    kickSendManagerRegistry.set(botId, mgr);
+  }
+  return mgr;
+}
+
+export function disposeKickSendManagerForBot(botId: string): void {
+  kickSendManagerRegistry.delete(botId);
+}
+
 // ─── Kick Session Management ─────────────────────────────────────────────────
 
 const KICK_SESSION_KEY = 'kick_session';
@@ -555,6 +586,33 @@ export function setKickSession(session: KickSession | null): void {
   } else {
     localStorage.removeItem(KICK_SESSION_KEY);
   }
+}
+
+// ─── Multi-Bot: per-bot Kick session accessors (additive) ───────────────────
+// Sessions for additional Kick bots live in the store (bots[].session). The
+// legacy kick_session localStorage key above is untouched (single-bot mode).
+
+export function getKickSessionForBot(botId: string): KickSession | null {
+  const bot = useAppStore.getState().bots.find((b) => b.id === botId);
+  if (bot?.session?.accessToken && bot?.session?.username) {
+    return {
+      accessToken: bot.session.accessToken,
+      refreshToken: bot.session.refreshToken,
+      username: bot.session.username,
+      userId: bot.session.userId,
+      profileImageUrl: bot.session.profileImageUrl,
+      expiresAt: bot.session.expiresAt,
+    } as KickSession;
+  }
+  return null;
+}
+
+export function setKickSessionForBot(botId: string, session: KickSession | null): void {
+  useAppStore.getState().setBotSession(botId, session);
+}
+
+export function removeKickSessionForBot(botId: string): void {
+  useAppStore.getState().setBotSession(botId, null);
 }
 
 // ─── Token Refresh ────────────────────────────────────────────────────────────
@@ -633,6 +691,56 @@ export async function ensureValidKickSession(): Promise<KickSession | null> {
 
   // Refresh failed — return null so caller can prompt re-auth
   return null;
+}
+
+// ─── Multi-Bot: per-bot token refresh + ensure (additive) ───────────────────
+
+export async function refreshKickTokenForBot(botId: string, session: KickSession): Promise<KickSession | null> {
+  if (!session.refreshToken) {
+    console.warn('[Kick Auth] No refresh_token available — cannot refresh. User must re-authenticate.');
+    return null;
+  }
+  const clientId = getKickClientId();
+  const clientSecret = DEFAULT_KICK_CLIENT_SECRET;
+  try {
+    const res = await fetch(`${PROXY_BASE}/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: session.refreshToken, client_id: clientId, client_secret: clientSecret }),
+    });
+    if (!res.ok) {
+      if (res.status === 400 || res.status === 401) {
+        setKickSessionForBot(botId, null);
+      }
+      return null;
+    }
+    const tokenData = await res.json();
+    const newSession: KickSession = {
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token || session.refreshToken,
+      username: session.username,
+      userId: session.userId,
+      broadcasterUserId: session.broadcasterUserId,
+      profileImageUrl: session.profileImageUrl,
+      expiresAt: Date.now() + (tokenData.expires_in || 3600) * 1000,
+    };
+    setKickSessionForBot(botId, newSession);
+    return newSession;
+  } catch (e) {
+    console.error('[Kick Auth] Per-bot token refresh error:', e);
+    return null;
+  }
+}
+
+export async function ensureValidKickSessionForBot(botId: string): Promise<KickSession | null> {
+  const session = getKickSessionForBot(botId);
+  if (!session) return null;
+  if (!session.expiresAt) return session;
+  const now = Date.now();
+  const bufferMs = 60_000;
+  if (now < session.expiresAt - bufferMs) return session;
+  const refreshed = await refreshKickTokenForBot(botId, session);
+  return refreshed ?? null;
 }
 
 // ─── Kick OAuth 2.1 + PKCE ───────────────────────────────────────────────────
@@ -735,4 +843,9 @@ export async function fetchKickUser(accessToken: string): Promise<{ id: string; 
 
 export async function sendKickMessage(channel: string, message: string): Promise<void> {
   await kickSendManager.send(channel, message);
+}
+
+// Multi-bot: send as a specific Kick bot identity (independent rate limit + dedup).
+export async function sendKickMessageAsBot(botId: string, channel: string, message: string): Promise<void> {
+  await getKickSendManagerForBot(botId).send(channel, message);
 }

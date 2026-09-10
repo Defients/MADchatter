@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey, getKeys, getActiveProvider } from "./keys";
+import { getApiKey, getKeys, getActiveProvider, openAiCompatEndpoint } from "./keys";
 import { MEMORY_EXTRACTION_PROMPT } from "./prompts";
 import type {
   AutoMemory,
@@ -20,6 +20,74 @@ function normalizeProvider(rawProvider: string): string {
   if (rawProvider === "gemini-pro" || rawProvider === "gemini-env") return "gemini";
   if (rawProvider === "anthropic") return "claude";
   return rawProvider;
+}
+
+/**
+ * B7: Deterministic relationship progression.
+ * Advances a user's relationship based on message count, rapport score, and interaction history.
+ * Thresholds:
+ *   stranger → acquaintance: 5+ total messages, rapport 10+
+ *   acquaintance → regular: 20+ total messages, rapport 30+
+ *   regular → friend: 50+ total messages, rapport 60+, 3+ positive interactions
+ *   friend → inner_circle: 100+ total messages, rapport 85+, 5+ positive interactions
+ */
+export function progressRelationship(profile: UserProfile): {
+  relationship: UserProfile["relationship"];
+  rapportScore: number;
+  reason?: string;
+} {
+  const { totalMessages, rapportScore, interactionHistory, relationship } = profile;
+  const positiveInteractions = interactionHistory.filter(
+    (i) => i.type === "chat_reply" || i.type === "joke_exchange" || i.type === "support"
+  ).length;
+
+  const thresholds: { level: UserProfile["relationship"]; msgs: number; rapport: number; interactions: number }[] = [
+    { level: "inner_circle", msgs: 100, rapport: 85, interactions: 5 },
+    { level: "friend", msgs: 50, rapport: 60, interactions: 3 },
+    { level: "regular", msgs: 20, rapport: 30, interactions: 0 },
+    { level: "acquaintance", msgs: 5, rapport: 10, interactions: 0 },
+  ];
+
+  for (const t of thresholds) {
+    if (totalMessages >= t.msgs && rapportScore >= t.rapport && positiveInteractions >= t.interactions) {
+      if (relationship !== t.level) {
+        return {
+          relationship: t.level,
+          rapportScore: Math.min(100, rapportScore),
+          reason: `Progressed to ${t.level} (${totalMessages} msgs, ${rapportScore} rapport, ${positiveInteractions} positive interactions)`,
+        };
+      }
+      return { relationship: t.level, rapportScore: Math.min(100, rapportScore) };
+    }
+  }
+  return { relationship: relationship || "stranger", rapportScore: Math.min(100, rapportScore) };
+}
+
+/**
+ * B7: Increment rapport score deterministically based on interaction type.
+ */
+export function incrementRapport(
+  profile: UserProfile,
+  interactionType: "chat_reply" | "mention" | "joke_exchange" | "argument" | "support",
+): { rapportScore: number; interactionHistory: UserProfile["interactionHistory"] } {
+  const increments: Record<string, number> = {
+    chat_reply: 1,
+    mention: 2,
+    joke_exchange: 3,
+    support: 4,
+    argument: -2,
+  };
+  const inc = increments[interactionType] || 0;
+  const newScore = Math.max(0, Math.min(100, profile.rapportScore + inc));
+  const newHistory = [
+    ...profile.interactionHistory,
+    {
+      timestamp: Date.now(),
+      type: interactionType,
+      summary: "",
+    },
+  ].slice(-50); // Keep last 50 interactions
+  return { rapportScore: newScore, interactionHistory: newHistory };
 }
 
 function cleanJsonStr(str: string): string {
@@ -88,7 +156,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
-    const model = rawProvider === "gemini-pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
     const response = await ai.models.generateContent({
       model,
       contents: [{ role: "user", parts: [{ text: userMessage }] }],
@@ -99,9 +167,8 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
       },
     });
     generatedJsonStr = response.text || "{}";
-  } else if (provider === "openai" || provider === "openrouter") {
-    const baseUrl = provider === "openrouter" ? keys.customBaseUrl || "https://openrouter.ai/api/v1" : undefined;
-    const model = provider === "openrouter" ? keys.customModel || "google/gemini-2.5-flash" : "gpt-4o";
+  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
     const response = await ai.chat.completions.create({
       model,
@@ -116,7 +183,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await ai.messages.create({
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 2048,
       temperature: 0.5,
       system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
@@ -125,7 +192,13 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
     generatedJsonStr = (response.content[0] as any).text || "{}";
   }
 
-  const result = JSON.parse(cleanJsonStr(generatedJsonStr)) as MemoryExtractionResult;
+  let result: MemoryExtractionResult;
+  try {
+    result = JSON.parse(cleanJsonStr(generatedJsonStr)) as MemoryExtractionResult;
+  } catch (e) {
+    console.warn("[memoryEngine] Failed to parse model JSON, returning empty result", e);
+    return { newMemories: [], updatedProfiles: [], newJokes: [], summary: "" };
+  }
 
   // Filter by confidence threshold
   if (result.newMemories) {
@@ -200,6 +273,14 @@ export async function applyExtractionResults(
           ? Array.from(new Set([...profile.knownFacts, ...update.updates.knownFacts]))
           : profile.knownFacts,
       };
+
+      // B7: Apply deterministic relationship progression
+      const progressed = progressRelationship(merged);
+      merged.relationship = progressed.relationship;
+      merged.rapportScore = progressed.rapportScore;
+      if (progressed.reason) {
+        console.log(`[Memory] ${profile.username}: ${progressed.reason}`);
+      }
 
       await memoryStore.upsertProfile(merged);
       profilesUpdated++;

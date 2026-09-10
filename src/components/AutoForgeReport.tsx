@@ -308,9 +308,29 @@ export function AutoForgeReport() {
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
-                className="p-3 bg-purple-500/5 border border-purple-500/15 rounded-lg text-xs text-gray-300 leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto forge-scroll-report"
+                className="space-y-1.5"
               >
-                {briefing}
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] text-gray-600">Select text or use the copy button</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(briefing).then(
+                        () => { toast.success("Briefing copied to clipboard!"); playSfx('copy'); },
+                        () => toast.error("Failed to copy — clipboard not available"),
+                      );
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 border border-purple-500/30 transition-colors"
+                  >
+                    <Copy className="w-3 h-3" />
+                    Copy
+                  </button>
+                </div>
+                <div
+                  className="p-3 bg-purple-500/5 border border-purple-500/15 rounded-lg text-xs text-gray-300 leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto forge-scroll-report select-text"
+                  style={{ userSelect: "text", WebkitUserSelect: "text" }}
+                >
+                  {briefing}
+                </div>
               </motion.div>
             )}
           </div>

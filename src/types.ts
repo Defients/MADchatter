@@ -17,6 +17,7 @@ export interface ForgeSuggestion {
   why_it_fits?: string;
   confidence: number;
   tone?: string;
+  best?: boolean;
 }
 
 export interface ForgeResponse {
@@ -45,6 +46,28 @@ export interface ForgeConfig {
   generationMode: string;
   effortLevel?: "low" | "medium" | "high";
   autoForgeContextTokens?: number;
+}
+
+// ─── Creative Tools Types (E1/E4) ───────────────────────────────────
+export interface ForgeTemplate {
+  id: string;
+  name: string;
+  description: string;
+  directives: string;
+  humorLevel: number;
+  chaosLevel: number;
+  emoteDensity: string;
+  lengthPreference: string;
+  createdAt: number;
+}
+
+export interface VisualSnapshotHistoryEntry {
+  id: string;
+  url: string;
+  tags: string[];
+  timestamp: number;
+  source: "manual" | "auto";
+  delta?: number;
 }
 
 export interface TwitchUser {
@@ -90,6 +113,8 @@ export interface SentMessage {
   channel: string;
   timestamp: number;
   source: "manual" | "autoforge" | "followup";
+  // Multi-bot mode: which bot account sent this. Absent in legacy single-bot mode.
+  botId?: string;
 }
 
 export interface SessionStats {
@@ -207,6 +232,14 @@ export interface ActionHistoryEntry {
   message: string;
   provider: string;
   success: boolean;
+  // D4: Post-send engagement correlation
+  engagement?: {
+    chatLinesAfter: number;
+    mentionsAfter: number;
+    reactionsAfter: number;
+    label: "ignored" | "low" | "moderate" | "high";
+    evaluatedAt: number;
+  };
 }
 
 export interface EnhancedSessionStats {
@@ -383,4 +416,230 @@ export interface EngagementBreakdown {
   diversityScore: number;
   recencyScore: number;
   overall: number;
+}
+
+// ─── AutoForge Sequence Types (C3) ────────────────────────────
+
+export interface AutoForgeSequenceStep {
+  id: string;
+  actionType: "full_forge" | "short_reaction" | "emote_only" | "quick_followup";
+  payload?: string;
+  delayMs: number;
+}
+
+export interface AutoForgeSequence {
+  id: string;
+  name: string;
+  steps: AutoForgeSequenceStep[];
+  enabled: boolean;
+  createdAt: number;
+}
+
+// ─── Per-Action Rate Limit Config (C5) ─────────────────────────
+
+export interface PerActionRateLimit {
+  maxPerHour: number;
+  maxPerTenMinutes: number;
+  cooldownMs: number;
+}
+
+export type PerActionRateLimitConfig = Record<string, PerActionRateLimit>;
+
+// ─── Stream Health Score (A10) ─────────────────────────────────
+
+export interface StreamHealthScore {
+  velocityScore: number;
+  sentimentScore: number;
+  diversityScore: number;
+  mentionScore: number;
+  visualScore: number;
+  overall: number;
+  label: "dead" | "slow" | "active" | "healthy" | "poppin";
+  updatedAt: number;
+}
+
+// ─── AutoForge Accuracy Metrics (A9) ────────────────────────────
+
+export interface ActionAccuracyEntry {
+  actionType: string;
+  total: number;
+  engaged: number;
+  ignored: number;
+  accuracyPct: number;
+}
+
+// ─── AutoForge Rule Engine Types (C1) ───────────────────────────
+
+export type RuleConditionType =
+  | "chat_velocity_above"
+  | "chat_velocity_below"
+  | "sentiment_is"
+  | "sentiment_is_not"
+  | "time_since_last_action_above"
+  | "time_since_last_action_below"
+  | "keyword_detected"
+  | "keyword_not_detected"
+  | "mention_detected"
+  | "activity_spike"
+  | "stream_health_is"
+  | "hype_level_above"
+  | "hype_level_below"
+  | "unique_chatters_above"
+  | "viewer_count_above"
+  | "viewer_count_below"
+  | "audio_energy_above";
+
+export type RuleConditionOperator = "and" | "or";
+
+export interface RuleCondition {
+  id: string;
+  type: RuleConditionType;
+  // Numeric threshold for velocity/time/chatters/viewers/audio conditions
+  value?: number;
+  // Sentiment label for sentiment conditions
+  sentimentLabel?: SentimentLabel;
+  // Stream health label for stream_health_is
+  healthLabel?: "dead" | "slow" | "active" | "healthy" | "poppin";
+  // Keyword string for keyword conditions
+  keyword?: string;
+}
+
+export type RuleActionType =
+  | "send_message"
+  | "send_emote"
+  | "change_mood"
+  | "apply_template"
+  | "trigger_full_forge"
+  | "notify_user"
+  | "set_hype_level"
+  | "force_autoforge_check";
+
+export interface RuleAction {
+  id: string;
+  type: RuleActionType;
+  // Message text for send_message / send_emote
+  payload?: string;
+  // Mood name for change_mood
+  mood?: string;
+  // Template ID for apply_template
+  templateId?: string;
+  // Notification message for notify_user
+  notification?: string;
+  // Hype level for set_hype_level
+  hypeLevel?: number;
+  // Delay before executing this action (ms)
+  delayMs: number;
+}
+
+export interface AutoForgeRule {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  // Conditions combined with the operator
+  conditions: RuleCondition[];
+  conditionOperator: RuleConditionOperator;
+  actions: RuleAction[];
+  // Cooldown to prevent re-firing too often (ms)
+  cooldownMs: number;
+  // Last time this rule fired (tracked internally)
+  lastFiredMs: number;
+  // Fire limit (0 = unlimited)
+  maxFires: number;
+  // Current fire count
+  fireCount: number;
+  createdAt: number;
+}
+
+// Context passed to the rule engine for evaluation
+export interface RuleEngineContext {
+  chatVelocity: number;
+  sentimentLabel: SentimentLabel | null;
+  timeSinceLastActionMs: number;
+  recentChatText: string;
+  isMentioned: boolean;
+  activitySpike: boolean;
+  streamHealthLabel: string | null;
+  hypeLevel: number;
+  uniqueChatters: number;
+  viewerCount: number;
+  audioEnergyRms: number;
+}
+
+// Result of evaluating a single rule
+export interface RuleEvaluationResult {
+  ruleId: string;
+  ruleName: string;
+  fired: boolean;
+  reason: string;
+  actionsExecuted: number;
+}
+
+// ─── Multi-Bot Types (toggle-gated, additive) ─────────────────
+// These mirror the existing global single-bot fields so each bot can carry
+// its own fully independent brain. The legacy global fields remain untouched
+// and are the source of truth when multiBotEnabled === false.
+
+export type BotPlatform = "twitch" | "kick" | "joystick";
+
+export interface BotIdentity {
+  id: string;
+  label: string;
+  platform: BotPlatform;
+  active: boolean;
+  createdAt: number;
+}
+
+export interface BotPersona {
+  config: ForgeConfig;
+  botIdentityMode: "admit" | "custom";
+  botIdentityStory: string;
+  activePersonaId: string | null;
+}
+
+export interface BotRuntime {
+  // Memory
+  longTermMemory: string;
+  pinnedMemories: PinnedMemory[];
+  goldenMemoryId: string | null;
+  autoMemories: AutoMemory[];
+  userProfiles: UserProfile[];
+  insideJokes: InsideJoke[];
+  personalityState: PersonalityState | null;
+  autoMemoryConfig: AutoMemoryConfig;
+  // History & analytics
+  sentMessages: SentMessage[];
+  actionHistory: ActionHistoryEntry[];
+  decisionLog: DecisionLogEntry[];
+  sessionStats: SessionStats;
+  enhancedStats: EnhancedSessionStats;
+  sentimentHistory: SentimentReading[];
+  sentimentSummary: SentimentSummary | null;
+  actionAccuracy: ActionAccuracyEntry[];
+  autoForgeEvents: AutoForgeEvent[];
+  // AutoForge pacing / state
+  lastAutoForgeDecision: import("./lib/ai").AutoForgeDecision | null;
+  autoForgeLastActionMs: number | null;
+  autoForgeNextActionMs: number;
+  autoForgeFollowup: { message: string; deliveredAt: number } | null;
+  isAutoForgeThinking: boolean;
+  smartReplies: SmartReply[];
+}
+
+// A session payload for a bot — platform-specific. Kept loose to avoid
+// importing platform libs into the types module.
+export interface BotSessionPayload {
+  accessToken: string;
+  username: string;
+  userId: string;
+  profileImageUrl?: string;
+  // Kick-specific extras (optional)
+  expiresAt?: number;
+  refreshToken?: string;
+}
+
+export interface Bot extends BotIdentity {
+  session: BotSessionPayload | null;
+  persona: BotPersona;
+  runtime: BotRuntime;
 }

@@ -12,12 +12,14 @@ import {
   Zap,
   Sparkles,
   Keyboard,
-  ChevronRight,
-  CheckCircle2,
-  Circle,
   Info,
   ExternalLink,
   Mail,
+  Users,
+  Calendar,
+  GitBranch,
+  AlertTriangle,
+  KeyRound,
 } from "lucide-react";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { playSfx } from "../lib/sfx";
@@ -25,6 +27,7 @@ import { useKickAuth } from "../hooks/useKickAuth";
 import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useAppStore } from "../store";
 import { getKeys } from "../lib/keys";
+import { useIsMobile } from "../hooks/useMediaQuery";
 
 const STORAGE_KEY = "madchatter-welcome-seen";
 
@@ -91,11 +94,14 @@ const HOTKEYS = [
   { keys: "S", label: "Send Top Variant" },
   { keys: "C", label: "Capture Stream" },
   { keys: "A", label: "Toggle AutoForge" },
-  { keys: "T", label: "CosmoTech Theme" },
+  { keys: "T", label: "Cycle Theme" },
   { keys: "Ctrl+B", label: "Collapse Context Rail" },
+  { keys: "1-9", label: "Toggle Bots (multi-bot)" },
+  { keys: "?", label: "All Keyboard Shortcuts" },
 ];
 
 export function WelcomeOverlay() {
+  const isMobile = useIsMobile();
   const [visible, setVisible] = useState(false);
   const [countdown, setCountdown] = useState(10);
   const [tourCountdown, setTourCountdown] = useState(3);
@@ -275,41 +281,64 @@ export function WelcomeOverlay() {
                 </div>
               </motion.div>
 
-              {/* Getting Started Flow */}
+              {/* Patch Update — MULTI-BOT */}
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 1.0, duration: 0.4 }}
-                className="bg-gradient-to-r from-purple-500/[0.04] via-teal-500/[0.04] to-orange-500/[0.04] border border-white/[0.04] rounded-xl p-4 mb-10"
+                className="relative overflow-hidden rounded-xl mb-10 border border-[#9146FF]/25"
               >
-                <div className="flex items-center gap-2 mb-3.5">
-                  <Sparkles className="w-4 h-4 text-orange-400" />
-                  <span className="text-xs font-black uppercase tracking-widest text-gray-400">Getting Started</span>
-                </div>
-                <div className="flex flex-col md:flex-row items-stretch gap-2">
-                  {[
-                    { step: "1", label: "Log in with Twitch, Kick, or Joystick", color: "text-purple-400", done: anyLoggedIn, isLoginStep: true },
-                    { step: "2", label: "Set your channel name", color: "text-teal-400", done: !!useAppStore.getState().streamMetadata?.channelName },
-                    { step: "3", label: "Add an AI API key in Settings", color: "text-orange-400", done: !!(getKeys().claudeKey || getKeys().chatGptKey || getKeys().geminiKey || getKeys().openRouterKey) },
-                    { step: "4", label: "Press F to Forge", color: "text-red-400", done: false },
-                  ].map((s, i) => (
-                    <React.Fragment key={s.step}>
-                      <div className={`flex-1 flex items-center gap-2.5 bg-black/20 rounded-lg px-3.5 py-2.5 transition-all ${s.done ? 'ring-1 ring-emerald-500/25' : ''}`}>
-                        <span className={`text-lg font-black font-mono ${s.color}`}>{s.step}</span>
-                        <span className="text-[11px] text-gray-300 font-medium flex-1 leading-snug">
-                          {s.isLoginStep ? (
-                            <>Log in with <span style={{ color: "#9146FF" }}>Twitch</span> <span style={{ color: "#53fc18" }}>Kick</span> or <span style={{ color: "#FF6B35" }}>Joystick</span></>
-                          ) : s.label}
-                        </span>
-                        {s.done ? (
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        ) : (
-                          <Circle className="w-3.5 h-3.5 text-gray-700 shrink-0" />
-                        )}
+                {/* Glow backdrop */}
+                <div className="absolute inset-0 bg-gradient-to-br from-[#9146FF]/[0.08] via-purple-500/[0.04] to-transparent pointer-events-none" />
+                <div className="absolute -top-12 -right-12 w-40 h-40 bg-[#9146FF]/10 rounded-full blur-3xl pointer-events-none" />
+
+                <div className="relative p-4 flex flex-col gap-3">
+                  {/* Header row */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#9146FF]/15 border border-[#9146FF]/30">
+                        <Bot className="w-4 h-4 text-[#c79bff]" />
+                      </span>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-[#c79bff] leading-none">Patch Update</span>
+                        <span className="text-sm font-black text-white leading-tight mt-0.5">Multi-Bot Mode</span>
                       </div>
-                      {i < 3 && <ChevronRight className="hidden md:flex w-4 h-4 text-gray-700 shrink-0 self-center" />}
-                    </React.Fragment>
-                  ))}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="flex items-center gap-1 text-[9px] font-mono text-gray-400 bg-black/30 border border-white/[0.06] rounded px-1.5 py-0.5">
+                        <GitBranch className="w-2.5 h-2.5" /> v2.4
+                      </span>
+                      <span className="flex items-center gap-1 text-[9px] font-mono text-gray-400 bg-black/30 border border-white/[0.06] rounded px-1.5 py-0.5">
+                        <Calendar className="w-2.5 h-2.5" /> Sep 10, 2026
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Tagline */}
+                  <p className="text-[11px] text-gray-300 leading-relaxed">
+                    Run <span className="text-white font-bold">multiple distinct bot identities</span> in the same channel from one MADchatter instance — each with its own persona, memory, brain, and send path.
+                  </p>
+
+                  {/* Feature notes */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {[
+                      { icon: <Users className="w-3 h-3 text-[#c79bff]" />, text: "Authenticate multiple Twitch / Kick accounts in one app" },
+                      { icon: <Brain className="w-3 h-3 text-blue-400" />, text: "Per-bot persona, memory & AI brain — fully independent" },
+                      { icon: <Zap className="w-3 h-3 text-orange-400" />, text: "AutoForge picks one speaker per cycle via persona fit + mentions" },
+                      { icon: <MessageSquare className="w-3 h-3 text-teal-400" />, text: "Manual \"Chat as\" sender picks which bot talks" },
+                    ].map((f, i) => (
+                      <div key={i} className="flex items-center gap-2 bg-black/25 rounded-lg px-2.5 py-2 border border-white/[0.04]">
+                        <span className="shrink-0">{f.icon}</span>
+                        <span className="text-[10.5px] text-gray-300 leading-snug">{f.text}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Footer note */}
+                  <div className="flex items-center gap-1.5 text-[9.5px] text-gray-500 pt-0.5">
+                    <Sparkles className="w-3 h-3 text-[#9146FF]/60" />
+                    <span>Opt-in &amp; additive — your original single-bot setup is preserved. Toggle it from the Multi-Bot panel in the header.</span>
+                  </div>
                 </div>
               </motion.div>
 
@@ -337,6 +366,7 @@ export function WelcomeOverlay() {
                     {canDismiss ? "Acknowledge & Enter the Forge" : `Acknowledge available in ${countdown}s`}
                   </span>
                 </button>
+                {!isMobile && (
                 <button
                   onClick={() => { playSfx('welcome_dismiss'); dismiss(); setTimeout(() => window.dispatchEvent(new CustomEvent('tutorial-start')), 400); }}
                   disabled={!canTour}
@@ -348,6 +378,7 @@ export function WelcomeOverlay() {
                 >
                   {canTour ? "Take the Tour" : `Tour available in ${tourCountdown}s`}
                 </button>
+                )}
                 <p className="text-[10px] text-gray-600">
                   This welcome screen won't appear again after you acknowledge.
                 </p>
@@ -361,6 +392,57 @@ export function WelcomeOverlay() {
                     Contact
                   </a>
                 </div>
+
+                {/* API Key required — early warning */}
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4, duration: 0.4 }}
+                  className="mt-6 relative overflow-hidden bg-gradient-to-r from-amber-500/[0.1] to-red-500/[0.06] border border-amber-500/25 rounded-xl p-4 flex items-start gap-3 text-left"
+                >
+                  <div className="absolute -top-8 -right-8 w-24 h-24 bg-amber-500/10 rounded-full blur-2xl pointer-events-none" />
+                  <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 shrink-0 mt-0.5">
+                    <KeyRound className="w-4 h-4 text-amber-400" />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-amber-200 font-bold mb-1 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3" /> An AI API key is required to operate
+                    </p>
+                    <p className="text-[11px] text-gray-300 leading-relaxed">
+                      MADchatter needs a provider API key (Gemini, OpenAI, Anthropic, or OpenRouter) to generate chat. <span className="text-amber-300 font-semibold">These keys are not free</span> — usage is billed by the provider and <span className="text-amber-300 font-semibold">will cost money</span> based on your model and volume. Add one in <span className="text-white font-semibold">Settings → API Config</span> before forging.
+                    </p>
+                  </div>
+                </motion.div>
+
+                {/* Local LLM note + setup instructions */}
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5, duration: 0.4 }}
+                  className="mt-3 relative overflow-hidden bg-gradient-to-r from-emerald-500/[0.08] to-teal-500/[0.05] border border-emerald-500/20 rounded-xl p-4 flex items-start gap-3 text-left"
+                >
+                  <div className="absolute -top-8 -right-8 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+                  <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 shrink-0 mt-0.5">
+                    <Bot className="w-4 h-4 text-emerald-400" />
+                  </span>
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <p className="text-xs text-emerald-200 font-bold flex items-center gap-1.5">
+                      <Info className="w-3 h-3" /> Prefer a free, local LLM? Ollama works too.
+                    </p>
+                    <p className="text-[11px] text-gray-300 leading-relaxed">
+                      You can run a model on your own machine with <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="text-emerald-300 font-semibold underline decoration-emerald-500/40 hover:decoration-emerald-400 inline-flex items-center gap-0.5">Ollama <ExternalLink className="w-2.5 h-2.5" /></a> — no API key, no per-token cost. <span className="text-gray-400">This takes more technical experience.</span> Pick the <span className="text-emerald-300 font-semibold">Ollama / Local</span> provider in Settings, then follow these steps:
+                    </p>
+                    <ol className="text-[10px] text-gray-400 leading-relaxed space-y-1 pl-1">
+                      <li><span className="text-emerald-300 font-mono font-bold">1.</span> Install Ollama from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="text-emerald-300 underline decoration-emerald-500/40 hover:decoration-emerald-400">ollama.com</a>, then pull a model: <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">ollama pull llama3.1:8b</code></li>
+                      <li><span className="text-emerald-300 font-mono font-bold">2.</span> <span className="text-gray-300">Quit the Ollama tray app</span> (system tray → right-click → Quit), then in a <span className="text-gray-300">terminal</span> (not the chat prompt) run:</li>
+                      <li className="pl-4"><code className="font-mono bg-black/40 px-1.5 py-1 rounded text-emerald-200 block">set OLLAMA_ORIGINS=* &amp;&amp; ollama serve</code><span className="text-gray-600"> (cmd)</span> &nbsp;or&nbsp; <code className="font-mono bg-black/40 px-1.5 py-1 rounded text-emerald-200">$env:OLLAMA_ORIGINS="*"; ollama serve</code><span className="text-gray-600"> (PowerShell)</span></li>
+                      <li><span className="text-emerald-300 font-mono font-bold">3.</span> In MADchatter Settings → choose <span className="text-emerald-300 font-semibold">Ollama / Local</span> (URL auto-fills to <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">http://localhost:11434/v1</code>), set Custom Model Name to your tag, Save.</li>
+                    </ol>
+                    <p className="text-[10px] text-gray-500 leading-relaxed">
+                      Tip: <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-400">ollama run</code> opens a chat prompt — don't type shell commands there. Type <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-400">/bye</code> to exit it first.
+                    </p>
+                  </div>
+                </motion.div>
               </motion.div>
             </div>
           </motion.div>

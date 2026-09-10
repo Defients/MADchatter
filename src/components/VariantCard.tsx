@@ -4,16 +4,19 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Copy, Send, Sparkles, MessageSquare, RefreshCw, Zap, GripVertical, X } from "lucide-react";
-import { ForgeSuggestion } from "../types";
+import { ForgeSuggestion, Bot } from "../types";
 import { toast } from "sonner";
 import { playSfx } from "../lib/sfx";
 import { Input } from "./ui/input";
+import { cn } from "../lib/utils";
 
 interface VariantCardProps extends React.HTMLAttributes<HTMLDivElement> {
   variant: ForgeSuggestion;
-  onSend: (message: string) => void;
+  onSend: (message: string, botId?: string) => void;
   onRefine: (id: number, type: string, customInstruction?: string) => Promise<void>;
   onClose?: (id: number) => void;
+  multiBotActive?: boolean;
+  activeBots?: Bot[];
 }
 
 const getProfileColor = (profile: string) => {
@@ -31,6 +34,8 @@ export const VariantCard: React.FC<VariantCardProps> = ({
   onSend,
   onRefine,
   onClose,
+  multiBotActive = false,
+  activeBots = [],
 }) => {
   const [isSending, setIsSending] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
@@ -106,6 +111,15 @@ export const VariantCard: React.FC<VariantCardProps> = ({
     }, 2000);
   };
 
+  const handleSendAsBot = (botId: string) => {
+    setIsSending(true);
+    onSend(variant.message, botId);
+    sendTimerRef.current = setTimeout(() => {
+      setIsSending(false);
+      sendTimerRef.current = null;
+    }, 2000);
+  };
+
   const handleRefineClick = async (type: string, customText?: string) => {
     setIsRefining(true);
     try {
@@ -141,7 +155,10 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       } : undefined}
     >
     <Card
-      className="bg-[#121217] border-white/5 rounded-xl overflow-hidden flex flex-col hover:border-white/10 hover:shadow-[0_4px_24px_rgba(0,0,0,0.4)] transition-all shadow-none"
+      className={cn(
+        "bg-[#121217] border-white/5 rounded-xl overflow-hidden flex flex-col hover:border-white/10 hover:shadow-[0_4px_24px_rgba(0,0,0,0.4)] transition-all shadow-none",
+        variant.best && "border-cyan-400/40 shadow-[0_0_16px_rgba(34,211,238,0.15)]"
+      )}
       style={isDragging ? { cursor: "grabbing" } : undefined}
     >
       {/* Card Header — draggable */}
@@ -157,6 +174,15 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           >
             {variant.profile}
           </Badge>
+          {variant.best && (
+            <Badge
+              variant="outline"
+              className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-cyan-500/15 border-cyan-400/40 text-cyan-300 pointer-events-none"
+              title="Highest-ranked variant by local scoring"
+            >
+              ★ Best
+            </Badge>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           <Badge
@@ -309,20 +335,44 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           </DialogContent>
         </Dialog>
 
-        {/* Big Green Send to Chat Button */}
-        <Button
-          className={`flex-1 h-9 font-black tracking-widest text-xs shadow-[0_0_15px_rgba(34,197,94,0.2)] rounded-lg ${isSending ? "bg-green-600 text-white" : "bg-green-500 hover:bg-green-400 text-black"}`}
-          onClick={handleSend}
-          disabled={isSending}
-        >
-          {isSending ? (
-            "SENT!"
-          ) : (
-            <span className="flex items-center gap-1.5 justify-center">
-              <Send className="w-3.5 h-3.5 shrink-0" /> SEND TO CHAT
-            </span>
-          )}
-        </Button>
+        {/* Send to Chat — multi-bot mode shows per-bot numbered squares */}
+        {multiBotActive && activeBots.length >= 2 ? (
+          <div className="flex-1 flex gap-1 items-stretch">
+            {activeBots.slice(0, 9).map((bot, idx) => (
+              <button
+                key={bot.id}
+                onClick={() => handleSendAsBot(bot.id)}
+                disabled={isSending}
+                title={`Send as @${bot.session?.username ?? bot.label}`}
+                className={cn(
+                  "flex-1 h-9 min-w-0 rounded-lg font-black text-xs flex items-center justify-center transition-all border",
+                  isSending
+                    ? "bg-green-600/30 text-green-300 border-green-500/30"
+                    : "bg-green-500/15 border-green-500/30 text-green-300 hover:bg-green-500 hover:text-black hover:border-green-400",
+                )}
+              >
+                <span className="flex flex-col items-center gap-0.5">
+                  <Send className="w-3 h-3 shrink-0" />
+                  <span className="text-[9px] leading-none">{idx + 1}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <Button
+            className={`flex-1 h-9 font-black tracking-widest text-xs shadow-[0_0_15px_rgba(34,197,94,0.2)] rounded-lg ${isSending ? "bg-green-600 text-white" : "bg-green-500 hover:bg-green-400 text-black"}`}
+            onClick={handleSend}
+            disabled={isSending}
+          >
+            {isSending ? (
+              "SENT!"
+            ) : (
+              <span className="flex items-center gap-1.5 justify-center">
+                <Send className="w-3.5 h-3.5 shrink-0" /> SEND TO CHAT
+              </span>
+            )}
+          </Button>
+        )}
       </div>
     </Card>
     </div>

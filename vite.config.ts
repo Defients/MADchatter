@@ -23,6 +23,17 @@ export default defineConfig(() => {
     build: {
       outDir: 'dist',
       assetsDir: 'assets',
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Split heavy vendor libs into separate chunks for better caching + parallel loading
+            'vendor-react': ['react', 'react-dom', 'react-resizable-panels'],
+            'vendor-icons': ['lucide-react'],
+            'vendor-chat': ['tmi.js'],
+            'vendor-ai': ['@anthropic-ai/sdk'],
+          },
+        },
+      },
     },
   };
 });

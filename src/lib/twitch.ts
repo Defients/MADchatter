@@ -1,5 +1,7 @@
 import tmi from "tmi.js";
+import { toast } from "sonner";
 import { SendRateLimiter } from "./rateLimiter";
+import { useAppStore } from "../store";
 
 export interface TwitchSession {
   accessToken: string;
@@ -12,6 +14,27 @@ export interface TwitchSession {
 // Instead of connecting/disconnecting for every message, we maintain a
 // singleton client that stays alive across sends. This dramatically reduces
 // latency (from ~2-5s per send down to <100ms after initial connect).
+//
+// The class is parameterized by a session getter so the legacy singleton
+// (tmiSendManager) uses the global single-bot session, while multi-bot mode
+// creates one instance per bot identity via createTmiSendManager().
+
+// Twitch NOTICE msg-ids that explain why a chat message was rejected. Surfaced
+// to the user via toast so they get the real reason instead of a silent drop.
+const TWITCH_NOTICE_MSGIDS: Record<string, string> = {
+  msg_verified_email: "Account email isn't verified — Twitch blocks chat until you verify the email on this account (twitch.tv → Settings → Email).",
+  msg_channel_blocked: "This account is blocked from the channel.",
+  msg_suspended: "This account is suspended.",
+  msg_ratelimit: "Rate-limited by Twitch — slow down.",
+  msg_duplicate: "Duplicate message blocked by Twitch.",
+  msg_emoteonly: "Channel is emote-only right now.",
+  msg_subsonly: "Channel is subs-only right now.",
+  msg_followersonly: "Channel is followers-only — the account must follow first.",
+  msg_followersonly_followed: "Channel is followers-only — the account needs to follow for longer.",
+  msg_slowmode: "Slow mode is on — wait before sending again.",
+  msg_timedout: "This account is timed out in the channel.",
+  msg_bad_characters: "Message blocked (too many repeated/bad characters).",
+};
 
 class TmiSendManager {
   private client: tmi.Client | null = null;
@@ -19,6 +42,11 @@ class TmiSendManager {
   private currentChannel: string | null = null;
   private connectionState: "disconnected" | "connecting" | "connected" | "error" = "disconnected";
   private stateListeners: Set<(state: string) => void> = new Set();
+  private sessionGetter: () => TwitchSession | null;
+
+  constructor(sessionGetter: () => TwitchSession | null = getTwitchSession) {
+    this.sessionGetter = sessionGetter;
+  }
 
   getState() {
     return this.connectionState;
@@ -35,7 +63,7 @@ class TmiSendManager {
   }
 
   async getClient(channel: string): Promise<tmi.Client> {
-    const session = getTwitchSession();
+    const session = this.sessionGetter();
     if (!session) throw new Error("Not authenticated with Twitch");
 
     // If channel changed, tear down old connection
@@ -60,11 +88,26 @@ class TmiSendManager {
     this.connectingPromise = new Promise<tmi.Client>((resolve, reject) => {
       const client = new tmi.Client({
         connection: { secure: true, reconnect: true },
+        // tmi.js 1.8.5 fetches emotes from Twitch's deprecated Kraken API
+        // (api.twitch.tv/kraken/chat/emoticon_images), which is dead in
+        // browsers and throws a CORS error every cycle. We don't use tmi's
+        // emote parsing (emotes are handled elsewhere), so skip it entirely.
+        options: { skipUpdatingEmotesets: true },
         identity: {
           username: session.username,
           password: `oauth:${session.accessToken}`,
         },
         channels: [channel],
+      });
+
+      // Surface Twitch chat-rejection notices so the user sees WHY a message
+      // didn't go through (e.g. unverified email, channel blocked, rate limit)
+      // instead of a silent drop + false "sent" success.
+      client.on("notice", (_ch, msgid, msg) => {
+        const friendly = TWITCH_NOTICE_MSGIDS[msgid];
+        if (friendly) {
+          toast.error(`@${session.username}: ${friendly}`, { description: msg });
+        }
       });
 
       client.on("connected", () => {
@@ -75,12 +118,31 @@ class TmiSendManager {
         this.setState("disconnected");
       });
 
-      client.on("join", () => {
-        this.setState("connected");
+      // Resolve once the bot has actually JOINED the target channel. tmi.js
+      // emits 'join' with self=true on self-join, with the channel in
+      // "#channel" form — normalize before comparing to our bare channel name.
+      const targetCh = channel.toLowerCase().replace(/^#/, "");
+      const joinPromise = new Promise<void>((jResolve) => {
+        const onJoin = (jCh: string, _user: string, self: boolean) => {
+          if (self && jCh.toLowerCase().replace(/^#/, "") === targetCh) {
+            client.removeListener("join", onJoin);
+            this.setState("connected");
+            jResolve();
+          }
+        };
+        client.on("join", onJoin);
       });
 
       client.connect().then(() => {
         this.client = client;
+        // Race the join against a timeout so we don't hang forever.
+        return Promise.race([
+          joinPromise,
+          new Promise<void>((_, jReject) =>
+            setTimeout(() => jReject(new Error(`Couldn't join #${channel} — @${session.username} may need email verification, or is blocked/banned from the channel.`)), 8000),
+          ),
+        ]);
+      }).then(() => {
         this.connectingPromise = null;
         resolve(client);
       }).catch((err) => {
@@ -111,7 +173,33 @@ class TmiSendManager {
   }
 }
 
+// Legacy singleton — uses the global single-bot session. Unchanged behavior.
 export const tmiSendManager = new TmiSendManager();
+
+// ─── Multi-Bot: per-identity send managers (additive) ───────────────────────
+// One TmiSendManager per bot account, each bound to that bot's session. The
+// registry is keyed by botId. Used only when multiBotEnabled === true.
+
+const tmiSendManagerRegistry = new Map<string, TmiSendManager>();
+
+/** Factory: create (or reuse) a TmiSendManager bound to a specific bot's session. */
+export function getTmiSendManagerForBot(botId: string): TmiSendManager {
+  let mgr = tmiSendManagerRegistry.get(botId);
+  if (!mgr) {
+    mgr = new TmiSendManager(() => getTwitchSessionForBot(botId));
+    tmiSendManagerRegistry.set(botId, mgr);
+  }
+  return mgr;
+}
+
+/** Disconnect + drop a bot's send manager (e.g. on bot removal). */
+export function disposeTmiSendManagerForBot(botId: string): void {
+  const mgr = tmiSendManagerRegistry.get(botId);
+  if (mgr) {
+    mgr.disconnect().catch(() => {});
+    tmiSendManagerRegistry.delete(botId);
+  }
+}
 
 // ─── Send Rate Limiter & Deduplication ──────────────────────────────────────
 // Twitch enforces chat limits: 20 messages per 30 seconds for regular users,
@@ -120,6 +208,13 @@ export const tmiSendManager = new TmiSendManager();
 // same message was sent within the last 60s, we block it.
 
 class SendGuard extends SendRateLimiter {
+  private doSend: (channel: string, message: string) => Promise<void>;
+
+  constructor(doSend: (channel: string, message: string) => Promise<void> = (ch, msg) => tmiSendManager.send(ch, msg)) {
+    super();
+    this.doSend = doSend;
+  }
+
   async send(channel: string, message: string): Promise<void> {
     if (message.length > 500) {
       throw new Error(`Message exceeds Twitch's 500-character limit (${message.length} chars). Trim it before sending.`);
@@ -137,11 +232,25 @@ class SendGuard extends SendRateLimiter {
     }
 
     this.recordSend(message);
-    await tmiSendManager.send(channel, message);
+    await this.doSend(channel, message);
   }
 }
 
 export const sendGuard = new SendGuard();
+
+// ─── Multi-Bot: per-bot send guards (additive) ──────────────────────────────
+// One SendGuard per bot account → independent per-account rate limit + dedup.
+const botSendGuardRegistry = new Map<string, SendGuard>();
+
+function getSendGuardForBot(botId: string): SendGuard {
+  let guard = botSendGuardRegistry.get(botId);
+  if (!guard) {
+    const mgr = getTmiSendManagerForBot(botId);
+    guard = new SendGuard((ch, msg) => mgr.send(ch, msg));
+    botSendGuardRegistry.set(botId, guard);
+  }
+  return guard;
+}
 
 const SESSION_KEY = "twitch_session";
 const TWITCH_CLIENT_ID_KEY = "twitch_client_id";
@@ -177,9 +286,42 @@ export function setTwitchSession(session: TwitchSession | null): void {
   }
 }
 
-export function buildOAuthUrl(clientId: string, redirectUri: string): string {
+// ─── Multi-Bot: per-bot session accessors (additive) ────────────────────────
+// Sessions for additional bots live in the store (bots[].session), persisted
+// via zustand. The legacy twitch_session localStorage key above is untouched
+// and remains the source of truth for single-bot mode.
+
+export function getTwitchSessionForBot(botId: string): TwitchSession | null {
+  const bot = useAppStore.getState().bots.find((b) => b.id === botId);
+  if (bot?.session?.accessToken && bot?.session?.username) {
+    return {
+      accessToken: bot.session.accessToken,
+      username: bot.session.username,
+      userId: bot.session.userId,
+      profileImageUrl: bot.session.profileImageUrl,
+    };
+  }
+  return null;
+}
+
+export function setTwitchSessionForBot(botId: string, session: TwitchSession | null): void {
+  useAppStore.getState().setBotSession(botId, session);
+}
+
+export function removeTwitchSessionForBot(botId: string): void {
+  useAppStore.getState().setBotSession(botId, null);
+}
+
+export function buildOAuthUrl(clientId: string, redirectUri: string, state?: string): string {
   const scopes = "chat:read chat:edit user:read:email";
-  return `https://id.twitch.tv/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scopes)}`;
+  const stateParam = state ? `&state=${encodeURIComponent(state)}` : "";
+  // force_verify=true makes Twitch show the authorize page every time instead
+  // of auto-redirecting with the previously-authorized (cached) account. This
+  // surfaces the account switcher / "Log Out" link so the user can pick which
+  // account to authorize — used for both the solo login and multi-bot auth so
+  // both popups behave identically.
+  const forceVerify = "&force_verify=true";
+  return `https://id.twitch.tv/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scopes)}${stateParam}${forceVerify}`;
 }
 
 export async function validateToken(accessToken: string, clientId: string): Promise<TwitchSession | null> {
@@ -223,4 +365,9 @@ export async function validateDevToken(accessToken: string, username: string): P
 
 export async function sendTwitchMessage(channel: string, message: string): Promise<void> {
   await sendGuard.send(channel, message);
+}
+
+// Multi-bot: send as a specific bot identity (independent rate limit + dedup).
+export async function sendTwitchMessageAsBot(botId: string, channel: string, message: string): Promise<void> {
+  await getSendGuardForBot(botId).send(channel, message);
 }

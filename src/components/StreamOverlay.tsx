@@ -408,7 +408,11 @@ export function StreamOverlay({
           <input
             type="text"
             value={chatMessage}
-            onChange={(e) => setChatMessage(e.target.value)}
+            onChange={(e) => {
+              setChatMessage(e.target.value);
+              // A8: Record typing activity for AutoForge pacing awareness
+              useAppStore.getState().setLastUserChatTypingMs(Date.now());
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();

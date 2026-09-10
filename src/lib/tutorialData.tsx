@@ -345,7 +345,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "Choose Your AI",
     description: (
       <>
-        Pick from Gemini, GPT-4o, Claude 3.5, or OpenRouter. Each model brings different strengths — Gemini is fast and free-tier friendly, Claude is nuanced, GPT-4o is versatile.
+        Pick from Gemini, GPT-5.6 Luna, Claude Haiku 4.5, or OpenRouter. Each model brings different strengths — Gemini is fast, Claude is nuanced, GPT-5.6 Luna is cost-efficient. Note: every provider requires a paid API key.
       </>
     ),
     position: "left",

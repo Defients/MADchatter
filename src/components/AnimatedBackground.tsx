@@ -81,9 +81,9 @@ function pickColor(type: ParticleType, palette = PALETTE): string {
 export function AnimatedBackground() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const cosmotechTheme = useAppStore((s) => s.cosmotechTheme);
-  const themeRef = useRef(cosmotechTheme);
-  themeRef.current = cosmotechTheme;
+  const theme = useAppStore((s) => s.theme);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -154,7 +154,7 @@ export function AnimatedBackground() {
       const isPulse = type === 'pulse';
       const speedRange = type === 'ambient' ? 0.18 : type === 'signal' ? 0.45 : 2.8;
       const radiusRange = type === 'ambient' ? 1.2 : type === 'signal' ? 1.6 : 2.4;
-      const palette = themeRef.current ? COSMOTECH_PALETTE : PALETTE;
+      const palette = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE : PALETTE;
 
       let x: number, y: number;
       if (atEdge && isPulse) {
@@ -200,7 +200,7 @@ export function AnimatedBackground() {
 
       // Cosmic dust orbs — very few, very large, very slow
       dustOrbs.length = 0;
-      const orbPalette = themeRef.current ? COSMOTECH_PALETTE : PALETTE;
+      const orbPalette = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE : PALETTE;
       for (let i = 0; i < 3; i++) {
         dustOrbs.push({
           x: Math.random() * width,
@@ -227,7 +227,7 @@ export function AnimatedBackground() {
       for (let i = 0; i < count; i++) {
         const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
         const speed = 1.5 + Math.random() * 3;
-        const burstPalette = themeRef.current ? COSMOTECH_PALETTE : PALETTE;
+        const burstPalette = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE : PALETTE;
         burstParticles.push({
           x: cx,
           y: cy,
@@ -251,7 +251,7 @@ export function AnimatedBackground() {
 
       energyMultiplier = Math.min(3, energyMultiplier + 0.8);
       flashAlpha = 0.08;
-      flashColor = themeRef.current ? COSMOTECH_PALETTE.cyan : PALETTE.cyan;
+      flashColor = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE.cyan : PALETTE.cyan;
     }
 
     function onChatActivity(e: Event) {
@@ -279,7 +279,7 @@ export function AnimatedBackground() {
 
     function onVisualCapture(e: Event) {
       flashAlpha = 0.12;
-      flashColor = themeRef.current ? COSMOTECH_PALETTE.cyan : PALETTE.orange;
+      flashColor = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE.cyan : PALETTE.orange;
       energyMultiplier = Math.min(2.5, energyMultiplier + 0.5);
 
       // Brief burst of signal particles
@@ -315,7 +315,7 @@ export function AnimatedBackground() {
       ctx.clearRect(0, 0, width, height);
 
       // ── 1. Deep radial gradient background ────────────────────────────────
-      const isCT = themeRef.current;
+      const isCT = themeRef.current === "cosmotech";
       const grad = ctx.createRadialGradient(
         width / 2, height * 0.45, 50,
         width / 2, height * 0.45, Math.max(width, height) * 0.85
@@ -513,7 +513,7 @@ export function AnimatedBackground() {
               if (lineAlpha < 0.003) continue;
 
               // Color: blend toward cyan/magenta when energized
-              const ctPalette = themeRef.current ? COSMOTECH_PALETTE : PALETTE;
+              const ctPalette = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE : PALETTE;
               const linkColor = combinedEnergy > 0.2
                 ? (isSignal ? ctPalette.cyan : ctPalette.magenta)
                 : ctPalette.purple;
@@ -555,7 +555,7 @@ export function AnimatedBackground() {
         const fade = Math.sin(fd.t * Math.PI); // fade in/out
         ctx.beginPath();
         ctx.arc(fx, fy, 1.5, 0, Math.PI * 2);
-        const dotColor = themeRef.current ? COSMOTECH_PALETTE.cyan : PALETTE.cyan;
+        const dotColor = themeRef.current === "cosmotech" ? COSMOTECH_PALETTE.cyan : PALETTE.cyan;
         ctx.fillStyle = `rgba(${dotColor}, ${0.4 * fade})`;
         ctx.fill();
       }

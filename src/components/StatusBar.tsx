@@ -61,6 +61,8 @@ export function StatusBar() {
     setAnalyticsPanelOpen,
     sentimentSummary,
     messageQueueDepth,
+    audioEnergy,
+    streamHealth,
   } = useAppStore();
 
   const platform = useAppStore((s) => s.platform);
@@ -257,6 +259,50 @@ export function StatusBar() {
           {enhancedStats.autoForgeActions > 0 && (
             <div className="flex items-center gap-1" title="AutoForge actions this session">
               <span className="text-[9px] font-mono text-indigo-400 font-bold">AF:{enhancedStats.autoForgeActions}</span>
+            </div>
+          )}
+
+          <div className="w-px h-3 bg-white/10" />
+
+          {/* B9: Mini Audio Visualizer */}
+          {audioEnergy && (
+            <div className="flex items-center gap-1.5" title={`Audio: ${audioEnergy.label} (RMS ${audioEnergy.rms.toFixed(2)})`}>
+              <div className="flex items-end gap-0.5 h-3">
+                {[0, 1, 2, 3].map((i) => {
+                  const baseHeight = (audioEnergy.rms * 100) * (0.5 + i * 0.2);
+                  const height = Math.min(100, Math.max(8, baseHeight));
+                  return (
+                    <motion.div
+                      key={i}
+                      className={cn(
+                        "w-0.5 rounded-full",
+                        audioEnergy.label === "spike" ? "bg-red-400" :
+                        audioEnergy.label === "loud" ? "bg-orange-400" :
+                        audioEnergy.label === "normal" ? "bg-teal-400" :
+                        audioEnergy.label === "quiet" ? "bg-blue-400" : "bg-gray-600"
+                      )}
+                      animate={{ height: `${height}%` }}
+                      transition={{ duration: 0.15 }}
+                />
+                  );
+                })}
+              </div>
+              <span className="text-[9px] font-mono text-gray-500 uppercase">{audioEnergy.label[0]}</span>
+            </div>
+          )}
+
+          {/* A10: Stream Health Score */}
+          {streamHealth && (
+            <div className="flex items-center gap-1" title={`Stream health: ${streamHealth.label} (${streamHealth.overall}/100)`}>
+              <span className={cn(
+                "w-2 h-2 rounded-full",
+                streamHealth.label === "poppin" && "bg-green-400 animate-pulse",
+                streamHealth.label === "healthy" && "bg-teal-400",
+                streamHealth.label === "active" && "bg-blue-400",
+                streamHealth.label === "slow" && "bg-yellow-400",
+                streamHealth.label === "dead" && "bg-red-400",
+              )} />
+              <span className="text-[9px] font-mono text-gray-400 font-bold">{streamHealth.overall}</span>
             </div>
           )}
 

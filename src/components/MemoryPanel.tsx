@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { ChangeEvent } from "react";
 import {
   Brain,
@@ -12,12 +12,17 @@ import {
   X,
   ChevronDown,
   ChevronUp,
+  Pencil,
+  CheckSquare,
+  Square,
+  Zap,
 } from "lucide-react";
 import { useAppStore } from "../store";
 import * as memoryStore from "../lib/memoryStore";
 import { runDecayCycle } from "../lib/memoryEngine";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
+import type { AutoMemory } from "../types";
 
 export function MemoryPanel() {
   const {
@@ -35,10 +40,76 @@ export function MemoryPanel() {
     removeAutoMemory,
     removeInsideJoke,
     removeUserProfile,
+    updateAutoMemory,
+    addAutoMemory,
   } = useAppStore();
 
   const [activeTab, setActiveTab] = useState<"memories" | "profiles" | "jokes" | "personality">("memories");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editStrength, setEditStrength] = useState(0.5);
+  const [isAddingNew, setIsAddingNew] = useState(false);
+  const [newMemory, setNewMemory] = useState<{ type: AutoMemory["type"]; subject: AutoMemory["subject"]; content: string; tags: string }>({
+    type: "fact",
+    subject: "streamer",
+    content: "",
+    tags: "",
+  });
+
+  // C8: Batch memory operations
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showStats, setShowStats] = useState(false);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(new Set(autoMemories.map((m) => m.id)));
+  }, [autoMemories]);
+
+  const deselectAll = useCallback(() => setSelectedIds(new Set()), []);
+
+  const bulkDelete = useCallback(() => {
+    for (const id of selectedIds) {
+      removeAutoMemory(id);
+    }
+    toast.success(`Deleted ${selectedIds.size} memories`);
+    setSelectedIds(new Set());
+  }, [selectedIds, removeAutoMemory]);
+
+  const bulkStrengthen = useCallback(() => {
+    for (const id of selectedIds) {
+      const mem = autoMemories.find((m) => m.id === id);
+      if (mem) {
+        updateAutoMemory(id, { strength: Math.min(1, mem.strength + 0.2) });
+      }
+    }
+    toast.success(`Strengthened ${selectedIds.size} memories`);
+    setSelectedIds(new Set());
+  }, [selectedIds, autoMemories, updateAutoMemory]);
+
+  // A5: Memory effectiveness stats
+  const memStats = useMemo(() => {
+    if (autoMemories.length === 0) return null;
+    const total = autoMemories.length;
+    const totalRefs = autoMemories.reduce((s, m) => s + m.referenceCount, 0);
+    const avgStrength = autoMemories.reduce((s, m) => s + m.strength, 0) / total;
+    const mostReferenced = [...autoMemories].sort((a, b) => b.referenceCount - a.referenceCount).slice(0, 3);
+    const strongest = [...autoMemories].sort((a, b) => b.strength - a.strength).slice(0, 3);
+    const dead = autoMemories.filter((m) => m.referenceCount === 0 && m.strength < 0.3);
+    const fading = autoMemories.filter((m) => m.strength < 0.3 && m.strength >= 0.15);
+    const byType: Record<string, number> = {};
+    for (const m of autoMemories) byType[m.type] = (byType[m.type] || 0) + 1;
+    return { total, totalRefs, avgStrength, mostReferenced, strongest, dead: dead.length, fading: fading.length, byType };
+  }, [autoMemories]);
 
   const handleClearAll = useCallback(async () => {
     await memoryStore.clearAllMemoryData();
@@ -98,6 +169,61 @@ export function MemoryPanel() {
     setInsideJokes(jokes);
     toast.success("Decay cycle run complete");
   }, [autoMemoryConfig, setAutoMemories, setInsideJokes]);
+
+  // B1: Memory editing
+  const startEdit = useCallback((mem: AutoMemory) => {
+    setEditingId(mem.id);
+    setEditContent(mem.content);
+    setEditTags(mem.tags.join(", "));
+    setEditStrength(mem.strength);
+    setExpandedId(mem.id);
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditContent("");
+    setEditTags("");
+    setEditStrength(0.5);
+  }, []);
+
+  const saveEdit = useCallback((id: string) => {
+    const tags = editTags.split(",").map(t => t.trim()).filter(Boolean);
+    updateAutoMemory(id, {
+      content: editContent,
+      tags,
+      strength: Math.max(0, Math.min(1, editStrength)),
+    });
+    setEditingId(null);
+    toast.success("Memory updated");
+  }, [editContent, editTags, editStrength, updateAutoMemory]);
+
+  // B2: Manual memory creation
+  const handleCreateMemory = useCallback(() => {
+    if (!newMemory.content.trim()) {
+      toast.error("Content is required");
+      return;
+    }
+    const tags = newMemory.tags.split(",").map(t => t.trim()).filter(Boolean);
+    const mem: AutoMemory = {
+      id: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: newMemory.type,
+      subject: newMemory.subject,
+      content: newMemory.content.trim(),
+      context: "Manually created",
+      source: "inferred",
+      confidence: 1.0,
+      createdAt: Date.now(),
+      lastReferencedAt: Date.now(),
+      referenceCount: 0,
+      strength: 0.7,
+      tags,
+      isVerified: true,
+    };
+    addAutoMemory(mem);
+    setNewMemory({ type: "fact", subject: "streamer", content: "", tags: "" });
+    setIsAddingNew(false);
+    toast.success("Memory created");
+  }, [newMemory, addAutoMemory]);
 
   if (!memoryPanelOpen) return null;
 
@@ -200,19 +326,168 @@ export function MemoryPanel() {
         <div className="flex-1 overflow-y-auto p-4">
           {activeTab === "memories" && (
             <div className="space-y-1.5">
-              {autoMemories.length === 0 ? (
+              {/* A5: Memory Effectiveness Stats */}
+              {memStats && (
+                <div className="border border-purple-500/20 rounded-lg p-2.5 bg-purple-500/5 space-y-2">
+                  <button
+                    onClick={() => setShowStats(!showStats)}
+                    className="flex items-center justify-between w-full text-[10px] font-bold uppercase tracking-wider text-purple-300"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Brain className="w-3 h-3" />
+                      Memory Health · {memStats.total} memories · avg strength {(memStats.avgStrength * 100).toFixed(0)}%
+                    </span>
+                    <ChevronDown className={cn("w-3 h-3 transition-transform", showStats && "rotate-180")} />
+                  </button>
+                  {showStats && (
+                    <div className="space-y-1.5 text-[10px]">
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div className="p-1.5 bg-black/30 rounded">
+                          <div className="text-sm font-bold text-purple-300 tabular-nums">{memStats.totalRefs}</div>
+                          <div className="text-[9px] text-gray-500">total refs</div>
+                        </div>
+                        <div className="p-1.5 bg-black/30 rounded">
+                          <div className={cn("text-sm font-bold tabular-nums", memStats.dead > 0 ? "text-red-400" : "text-green-400")}>{memStats.dead}</div>
+                          <div className="text-[9px] text-gray-500">dead memories</div>
+                        </div>
+                        <div className="p-1.5 bg-black/30 rounded">
+                          <div className={cn("text-sm font-bold tabular-nums", memStats.fading > 0 ? "text-yellow-400" : "text-green-400")}>{memStats.fading}</div>
+                          <div className="text-[9px] text-gray-500">fading</div>
+                        </div>
+                      </div>
+                      {memStats.mostReferenced[0]?.referenceCount > 0 && (
+                        <div>
+                          <span className="text-gray-500 uppercase font-bold">Top Referenced:</span>
+                          {memStats.mostReferenced.map((m) => (
+                            <div key={m.id} className="text-gray-400 truncate pl-2">
+                              <span className="text-purple-400 font-mono">{m.referenceCount}x</span> {m.content.slice(0, 60)}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div>
+                        <span className="text-gray-500 uppercase font-bold">By Type:</span>
+                        <div className="flex flex-wrap gap-1 mt-0.5">
+                          {Object.entries(memStats.byType).map(([type, count]) => (
+                            <span key={type} className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-gray-400 font-mono">
+                              {type}: {count}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* C8: Batch operations toolbar */}
+              {selectedIds.size > 0 && (
+                <div className="flex items-center gap-2 p-2 rounded-lg bg-orange-500/10 border border-orange-500/30">
+                  <span className="text-[10px] text-orange-300 font-bold">{selectedIds.size} selected</span>
+                  <button onClick={bulkStrengthen} className="text-[10px] px-2 py-1 rounded bg-green-500/20 text-green-300 hover:bg-green-500/30 flex items-center gap-1">
+                    <Zap className="w-3 h-3" /> Strengthen
+                  </button>
+                  <button onClick={bulkDelete} className="text-[10px] px-2 py-1 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30 flex items-center gap-1">
+                    <Trash2 className="w-3 h-3" /> Delete
+                  </button>
+                  <button onClick={deselectAll} className="text-[10px] text-gray-400 hover:text-white ml-auto">cancel</button>
+                </div>
+              )}
+
+              {/* C8: Select all toggle */}
+              {autoMemories.length > 0 && !isAddingNew && selectedIds.size === 0 && (
+                <button
+                  onClick={selectAll}
+                  className="text-[9px] text-gray-500 hover:text-purple-400 flex items-center gap-1 px-1"
+                >
+                  <CheckSquare className="w-3 h-3" /> Select all
+                </button>
+              )}
+
+              {/* B2: New Memory button */}
+              {!isAddingNew && (
+                <button
+                  onClick={() => setIsAddingNew(true)}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border border-dashed border-purple-500/30 text-purple-400 hover:bg-purple-500/10 hover:border-purple-500/50 transition-colors text-xs font-bold"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  New Memory
+                </button>
+              )}
+              {/* B2: New Memory form */}
+              {isAddingNew && (
+                <div className="border border-purple-500/30 rounded-lg p-3 space-y-2 bg-purple-500/5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-purple-300">Create New Memory</span>
+                    <button onClick={() => setIsAddingNew(false)} className="text-gray-500 hover:text-gray-300">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      value={newMemory.type}
+                      onChange={(e) => setNewMemory({ ...newMemory, type: e.target.value as AutoMemory["type"] })}
+                      className="bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] text-gray-200"
+                    >
+                      {["fact", "trait", "story", "event", "preference", "opinion", "milestone"].map(t => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={newMemory.subject}
+                      onChange={(e) => setNewMemory({ ...newMemory, subject: e.target.value as AutoMemory["subject"] })}
+                      className="bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] text-gray-200"
+                    >
+                      {["streamer", "chatter", "chat_general", "bot_self"].map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <textarea
+                    value={newMemory.content}
+                    onChange={(e) => setNewMemory({ ...newMemory, content: e.target.value })}
+                    placeholder="Memory content..."
+                    className="w-full bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs text-gray-200 resize-none"
+                    rows={2}
+                  />
+                  <input
+                    value={newMemory.tags}
+                    onChange={(e) => setNewMemory({ ...newMemory, tags: e.target.value })}
+                    placeholder="tags (comma-separated)"
+                    className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] text-gray-200"
+                  />
+                  <button
+                    onClick={handleCreateMemory}
+                    className="w-full py-1.5 rounded bg-purple-500/30 text-purple-200 hover:bg-purple-500/40 text-xs font-bold transition-colors"
+                  >
+                    Create Memory
+                  </button>
+                </div>
+              )}
+              {autoMemories.length === 0 && !isAddingNew ? (
                 <EmptyState icon={Sparkles} label="No memories yet. They'll form automatically as the bot watches chat." />
               ) : (
                 [...autoMemories]
                   .sort((a, b) => b.strength - a.strength)
                   .map((mem) => {
                     const isExpanded = expandedId === mem.id;
+                    const isSelected = selectedIds.has(mem.id);
                     return (
                       <div
                         key={mem.id}
-                        className="group border border-white/5 rounded-lg p-2.5 hover:border-purple-500/20 transition-colors"
+                        className={cn(
+                          "group border rounded-lg p-2.5 transition-colors",
+                          isSelected ? "border-orange-500/50 bg-orange-500/5" : "border-white/5 hover:border-purple-500/20"
+                        )}
                       >
                         <div className="flex items-start gap-2">
+                          <button
+                            onClick={() => toggleSelect(mem.id)}
+                            className="mt-0.5 shrink-0 text-gray-500 hover:text-orange-400"
+                            title={isSelected ? "Deselect" : "Select"}
+                          >
+                            {isSelected ? <CheckSquare className="w-3.5 h-3.5 text-orange-400" /> : <Square className="w-3.5 h-3.5" />}
+                          </button>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5 mb-0.5">
                               <span className={cn(
@@ -235,12 +510,55 @@ export function MemoryPanel() {
                               )}
                             </div>
                             <p className="text-xs text-gray-200 leading-snug">{mem.content}</p>
-                            {isExpanded && (
+                            {isExpanded && editingId !== mem.id && (
                               <div className="mt-1.5 space-y-1 text-[10px] text-gray-500">
                                 <p><span className="text-gray-400">Context:</span> {mem.context}</p>
                                 <p><span className="text-gray-400">Tags:</span> {mem.tags.join(", ") || "none"}</p>
                                 <p><span className="text-gray-400">Source:</span> {mem.source} · <span className="text-gray-400">Confidence:</span> {mem.confidence.toFixed(2)} · <span className="text-gray-400">Refs:</span> {mem.referenceCount}</p>
                                 <p><span className="text-gray-400">Created:</span> {new Date(mem.createdAt).toLocaleString()}</p>
+                              </div>
+                            )}
+                            {isExpanded && editingId === mem.id && (
+                              <div className="mt-1.5 space-y-1.5">
+                                <textarea
+                                  value={editContent}
+                                  onChange={(e) => setEditContent(e.target.value)}
+                                  className="w-full bg-black/40 border border-purple-500/30 rounded px-2 py-1 text-xs text-gray-200 resize-none"
+                                  rows={2}
+                                />
+                                <input
+                                  value={editTags}
+                                  onChange={(e) => setEditTags(e.target.value)}
+                                  placeholder="tags (comma-separated)"
+                                  className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[10px] text-gray-200"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-gray-500">Strength:</span>
+                                  <input
+                                    type="range"
+                                    min={0}
+                                    max={1}
+                                    step={0.05}
+                                    value={editStrength}
+                                    onChange={(e) => setEditStrength(Number(e.target.value))}
+                                    className="flex-1"
+                                  />
+                                  <span className="text-[10px] text-gray-400 font-mono">{(editStrength * 100).toFixed(0)}%</span>
+                                </div>
+                                <div className="flex gap-1.5">
+                                  <button
+                                    onClick={() => saveEdit(mem.id)}
+                                    className="px-2 py-1 rounded bg-purple-500/30 text-purple-200 hover:bg-purple-500/40 text-[10px] font-bold"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={cancelEdit}
+                                    className="px-2 py-1 rounded bg-white/5 text-gray-400 hover:bg-white/10 text-[10px]"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </div>
@@ -258,6 +576,13 @@ export function MemoryPanel() {
                                 className="p-0.5 rounded text-gray-500 hover:text-gray-300"
                               >
                                 {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              </button>
+                              <button
+                                onClick={() => startEdit(mem)}
+                                className="p-0.5 rounded text-gray-500 hover:text-purple-400"
+                                title="Edit memory"
+                              >
+                                <Pencil className="w-3 h-3" />
                               </button>
                               <button
                                 onClick={() => removeAutoMemory(mem.id)}

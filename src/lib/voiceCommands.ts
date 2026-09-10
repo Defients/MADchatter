@@ -55,15 +55,22 @@ export function parseVoiceCommand(transcript: string, commands: VoiceCommand[]):
   const normalized = transcript.toLowerCase().trim().replace(/[.,!?]/g, "");
   if (!normalized) return null;
 
+  // Pick the longest matching pattern so specific commands (e.g. "forge and send")
+  // are not shadowed by shorter ones (e.g. "forge") that happen to be registered first.
+  let best: VoiceCommandMatch | null = null;
+  let bestLen = -1;
   for (const cmd of commands) {
     for (const pattern of cmd.patterns) {
       const p = pattern.toLowerCase().trim();
       if (normalized === p || normalized.startsWith(p + " ") || normalized.includes(p)) {
-        return { command: cmd, transcript };
+        if (p.length > bestLen) {
+          best = { command: cmd, transcript };
+          bestLen = p.length;
+        }
       }
     }
   }
-  return null;
+  return best;
 }
 
 export function buildDefaultVoiceCommands(getStore: () => any): VoiceCommand[] {

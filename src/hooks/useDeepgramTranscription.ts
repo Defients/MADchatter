@@ -16,7 +16,6 @@ export function useDeepgramTranscription() {
   const onTranscriptUpdateRef = useRef<((segment: string) => void) | null>(null);
   const whisperActiveRef = useRef(false);
   const voiceEnabledRef = useRef(false);
-  const whisperChunksRef = useRef<Blob[]>([]);
   const whisperProcessingRef = useRef(false);
   const whisperQueueRef = useRef<Blob[]>([]);
   const whisperIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -38,7 +37,6 @@ export function useDeepgramTranscription() {
     mediaRecorderRef.current = null;
     audioStreamRef.current = null;
     deepgramConnectionRef.current = null;
-    whisperChunksRef.current = [];
     whisperProcessingRef.current = false;
     whisperQueueRef.current = [];
     if (whisperIntervalRef.current) {
@@ -254,7 +252,6 @@ export function useDeepgramTranscription() {
 
       audioStreamRef.current = stream;
       whisperActiveRef.current = true;
-      whisperChunksRef.current = [];
       whisperQueueRef.current = [];
       startTimeRef.current = Date.now();
       voiceEnabledRef.current = true;
@@ -301,7 +298,6 @@ export function useDeepgramTranscription() {
     }
     audioStreamRef.current = stream;
     whisperActiveRef.current = true;
-    whisperChunksRef.current = [];
     whisperQueueRef.current = [];
     startTimeRef.current = Date.now();
     voiceEnabledRef.current = true;

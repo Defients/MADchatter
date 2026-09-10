@@ -8,7 +8,7 @@ export interface FallbackResult {
 
 export function getFallbackChain(primaryProvider: string): string[] {
   const chain: string[] = [primaryProvider];
-  const all = ["gemini", "openai", "claude", "openrouter"];
+  const all = ["gemini", "openai", "claude", "openrouter", "ollama"];
   for (const p of all) {
     if (p !== primaryProvider && getApiKey(p)) {
       chain.push(p);
@@ -18,7 +18,7 @@ export function getFallbackChain(primaryProvider: string): string[] {
 }
 
 export function getNextAvailableProvider(exclude: string[]): string | null {
-  const all = ["gemini", "openai", "claude", "openrouter"];
+  const all = ["gemini", "openai", "claude", "openrouter", "ollama"];
   for (const p of all) {
     if (!exclude.includes(p) && getApiKey(p)) {
       return p;
@@ -85,6 +85,42 @@ export function getHealthyFallbackChain(primaryProvider: string): string[] {
 }
 
 export function getProviderHealthStatus(): ProviderHealth[] {
-  const all = ["gemini", "openai", "claude", "openrouter"];
+  const all = ["gemini", "openai", "claude", "openrouter", "ollama"];
   return all.map(getHealth);
+}
+
+// ─── D3: Provider fallback history ──────────────────────────────────────────
+export interface FallbackHistoryEntry {
+  timestamp: number;
+  fromProvider: string;
+  toProvider: string;
+  reason: string;
+}
+
+const fallbackHistory: FallbackHistoryEntry[] = [];
+const MAX_HISTORY = 100;
+
+export function recordFallback(fromProvider: string, toProvider: string, reason: string): void {
+  fallbackHistory.push({
+    timestamp: Date.now(),
+    fromProvider,
+    toProvider,
+    reason,
+  });
+  if (fallbackHistory.length > MAX_HISTORY) {
+    fallbackHistory.shift();
+  }
+}
+
+export function getFallbackHistory(): FallbackHistoryEntry[] {
+  return [...fallbackHistory];
+}
+
+export function getFallbackCounts(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of fallbackHistory) {
+    const key = `${entry.fromProvider}→${entry.toProvider}`;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
 }

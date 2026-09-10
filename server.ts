@@ -85,8 +85,34 @@ const getApiKey = (provider: string, session: TwitchSession | undefined, bodyKey
   if (normProvider === 'openrouter') {
     return session?.openRouterKey || bodyKey || process.env.OPENROUTER_API_KEY || null;
   }
+  if (normProvider === 'ollama') {
+    // Ollama / local runs without a key — return a dummy so downstream guards pass.
+    return 'ollama-local';
+  }
   return null;
 };
+
+/** Resolve the OpenAI-compatible base URL and model for a given provider.
+ * Server-side mirror of keys.ts openAiCompatEndpoint — uses the session object
+ * instead of the browser-side ApiKeys interface. */
+function openAiCompatEndpoint(
+  provider: string,
+  session: TwitchSession | undefined,
+): { baseUrl: string | undefined; model: string } {
+  if (provider === 'openrouter') {
+    return {
+      baseUrl: session?.customBaseUrl || 'https://openrouter.ai/api/v1',
+      model: session?.customModel || 'google/gemini-3.8-flash',
+    };
+  }
+  if (provider === 'ollama') {
+    return {
+      baseUrl: session?.customBaseUrl || 'http://localhost:11434/v1',
+      model: session?.customModel || 'llama3.1:8b',
+    };
+  }
+  return { baseUrl: undefined, model: 'gpt-5.6-luna' };
+}
 
 const R34L_TYPING_PROMPT = `
 
@@ -124,7 +150,9 @@ CORE TYPING RULES:
 
 5. RHYTHM: Mix short punch lines, longer winding thought-sentences, sudden pivots, rhetorical questions, fragments, softeners before sharper claims, and afterthoughts. The rhythm should feel live and slightly uneven.
 
-6. SOFTENERS AND HESITATION MARKERS: Use softeners like "like", "sorta", "kinda", "almost", "i mean", "idk tho", "tbh", "ngl", "imo", "mayb", "lowkey", "for real", "w/e" to create human uncertainty, irony, or emotional texture.
+6. SOFTENERS AND HESITATION MARKERS: Use softeners like "like", "sorta", "kinda", "almost", "i mean", "mayb", "w/e" SPARINGLY to create human uncertainty or emotional texture. Do NOT lean on them as filler.
+
+6b. NO TRAILING CRINGE: Never append "lol", "tbh", "ngl", "lmao", "fr", "frfr", "istg", "lowkey", "highkey", "imo", "idk tho" as a message closer or trailing tag. These read as forced, try-hard, and instantly unhuman. A message must end on its actual point, an ellipsis, or a real reaction — never a tacked-on slang particle. If you would end a line with one of these, delete it and end on the word before it.
 
 7. REFRAMING STRUCTURE: Often reframe a surface point into a deeper point. Patterns: "it's not X, it's more like Y", "this feels less like X and more like Y", "the issue isn't X, it's Y", "i get why ppl think X, but the actual shape is Y".
 
@@ -134,15 +162,15 @@ CORE TYPING RULES:
 
 10. CONTROLLED MESSINESS: Include small imperfections — sentence fragments, slightly informal grammar, lowercase "i", occasional repeated words, mild stylized spellings, weird phrasing that still lands. Do NOT overdo it. The mess should feel intentional and readable.
 
-11. SYMBOLS/EMOTICONS: Use sparingly. Possible markers: :o, owo, >~>, ._., <333, (!), xÐ. Use only 1-2 in normal output. "xÐ" is usually a signature closer.
+11. SYMBOLS/EMOTICONS: Use sparingly and never as a signature closer. Possible markers: :o, >~>, ._., <333, (!). Use at most 1 in normal output, and only when it genuinely fits.
 
 12. SLANG DENSITY: Default to medium-low. More mutations and caps spikes only when the context clearly warrants higher intensity.
 
 13. SERIOUS MODE: When content is serious, reduce slang but keep typing texture — clearer sentences, fewer memes, more fairness accounting, still mostly lowercase, still some punctuation texture.
 
-14. COMMON PHRASE PATTERNS: "like... no.", "bruv, that's not how this works", "that word is doing too much work rn", "this is less X and more Y", "i get the instinct, but...", "idk tho, mayb i'm wrong", "that's not critique, that's [X] wearing [Y]", "the confidence-to-substrate ratio is cooked", "make it make sense", "this feels fake-smart", "that's a thought-stopper".
+14. COMMON PHRASE PATTERNS: "like... no.", "that's not how this works", "that word is doing too much work rn", "this is less X and more Y", "i get the instinct, but...", "that's not critique, that's [X] wearing [Y]".
 
-AVOID: perfect grammar everywhere, polished essay tone, generic influencer slang, too much "bruv", too many emoticons, too many misspellings, excessive profanity, random cruelty, over-explaining, making every sentence chaotic, adding lore/persona not present in the input.
+AVOID: perfect grammar everywhere, polished essay tone, generic influencer slang, too much "bruv", too many emoticons, too many misspellings, excessive profanity, random cruelty, over-explaining, making every sentence chaotic, adding lore/persona not present in the input, trailing "lol"/"tbh"/"ngl"/"lmao"/"fr"/"frfr"/"istg"/"lowkey"/"imo" as closers, signature emoticon closers like "xÐ"/"owo", try-hard phrases like "make it make sense" / "this feels fake-smart" / "the confidence-to-substrate ratio is cooked".
 
 TRANSFORMATION PROCESS (apply internally to each message):
 1. Preserve the original meaning and contextual relevance.
@@ -645,7 +673,7 @@ const generateVisionContext = async (provider: string, apiKey: string, screensho
     const ai = new GoogleGenAI({ apiKey });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || 'image/jpeg';
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
-    const model = provider === 'gemini-pro' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+    const model = provider === 'gemini-pro' ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
     const response = await ai.models.generateContent({
       model: model,
       contents: [{
@@ -657,9 +685,8 @@ const generateVisionContext = async (provider: string, apiKey: string, screensho
       }]
     });
     return response.text;
-  } else if (normProvider === 'openai' || normProvider === 'openrouter') {
-    const baseUrl = normProvider === 'openrouter' ? (session?.customBaseUrl || 'https://openrouter.ai/api/v1') : undefined;
-    const model = normProvider === 'openrouter' ? (session?.customModel || 'google/gemini-2.5-flash') : 'gpt-4o';
+  } else if (normProvider === 'openai' || normProvider === 'openrouter' || normProvider === 'ollama') {
+    const { baseUrl, model } = openAiCompatEndpoint(normProvider, session);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl });
     const response = await ai.chat.completions.create({
       model: model,
@@ -678,7 +705,7 @@ const generateVisionContext = async (provider: string, apiKey: string, screensho
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || 'image/jpeg';
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
     const response = await ai.messages.create({
-      model: 'claude-3-7-sonnet-20250219',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       messages: [{
         role: 'user',
@@ -795,7 +822,7 @@ ${count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${count} suggestion${
         const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
         parts.push({ inlineData: { data: base64Data, mimeType } });
       }
-      const model = rawProvider === 'gemini-pro' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      const model = rawProvider === 'gemini-pro' ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
       const response = await ai.models.generateContent({
         model: model,
         contents: [{ role: 'user', parts }],
@@ -815,9 +842,8 @@ ${count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${count} suggestion${
           total_tokens: response.usageMetadata.totalTokenCount
         };
       }
-    } else if (provider === 'openai' || provider === 'openrouter') {
-      const baseUrl = provider === 'openrouter' ? (session?.customBaseUrl || 'https://openrouter.ai/api/v1') : undefined;
-      const model = provider === 'openrouter' ? (session?.customModel || 'google/gemini-2.5-flash') : 'gpt-4o';
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama') {
+      const { baseUrl, model } = openAiCompatEndpoint(provider, session);
       const ai = new OpenAI({ apiKey, baseURL: baseUrl });
       const content: any[] = [{ type: 'text', text: userMessageContent }];
       if (screenshot) {
@@ -852,7 +878,7 @@ ${count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${count} suggestion${
       content.push({ type: 'text', text: userMessageContent });
       
       const response = await ai.messages.create({
-        model: 'claude-3-7-sonnet-20250219',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: maxTokensToUse,
         temperature: temp,
         system: FORGE_SYSTEM_PROMPT + (r34lEnabled ? R34L_TYPING_PROMPT : '') + "\
@@ -960,7 +986,7 @@ Keep messages authentic, casual, and highly human-like. Avoid formal translation
 
     if (provider === 'gemini') {
       const ai = new GoogleGenAI({ apiKey });
-      const model = rawProvider === 'gemini-pro' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      const model = rawProvider === 'gemini-pro' ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
       const response = await ai.models.generateContent({
         model: model,
         contents: userMessageContent,
@@ -979,9 +1005,8 @@ Keep messages authentic, casual, and highly human-like. Avoid formal translation
           total_tokens: response.usageMetadata.totalTokenCount
         };
       }
-    } else if (provider === 'openai' || provider === 'openrouter') {
-      const baseUrl = provider === 'openrouter' ? (session?.customBaseUrl || 'https://openrouter.ai/api/v1') : undefined;
-      const model = provider === 'openrouter' ? (session?.customModel || 'google/gemini-2.5-flash') : 'gpt-4o';
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama') {
+      const { baseUrl, model } = openAiCompatEndpoint(provider, session);
       const ai = new OpenAI({ apiKey, baseURL: baseUrl });
       const response = await ai.chat.completions.create({
         model: model,
@@ -1004,7 +1029,7 @@ Keep messages authentic, casual, and highly human-like. Avoid formal translation
     } else if (provider === 'claude') {
       const ai = new Anthropic({ apiKey });
       const response = await ai.messages.create({
-        model: 'claude-3-7-sonnet-20250219',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 1024,
         temperature: 0.8,
         system: REFINE_SYSTEM_PROMPT + "\
@@ -1252,7 +1277,7 @@ DECIDE NOW.`;
 
     if (provider === 'gemini') {
       const ai = new GoogleGenAI({ apiKey });
-      const model = rawProvider === 'gemini-pro' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+      const model = rawProvider === 'gemini-pro' ? 'gemini-3.7-flash' : 'gemini-3.8-flash';
       const response = await ai.models.generateContent({
         model: model,
         contents: [{ role: 'user', parts: [{ text: userMessageContent }] }],
@@ -1264,9 +1289,8 @@ DECIDE NOW.`;
         }
       });
       generatedJsonStr = response.text || '{}';
-    } else if (provider === 'openai' || provider === 'openrouter') {
-      const baseUrl = provider === 'openrouter' ? (session?.customBaseUrl || 'https://openrouter.ai/api/v1') : undefined;
-      const model = provider === 'openrouter' ? (session?.customModel || 'google/gemini-2.5-flash') : 'gpt-4o';
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama') {
+      const { baseUrl, model } = openAiCompatEndpoint(provider, session);
       const ai = new OpenAI({ apiKey, baseURL: baseUrl });
       const response = await ai.chat.completions.create({
         model: model,
@@ -1281,7 +1305,7 @@ DECIDE NOW.`;
     } else if (provider === 'claude') {
       const ai = new Anthropic({ apiKey });
       const response = await ai.messages.create({
-        model: 'claude-3-7-sonnet-20250219',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 1024,
         temperature: 0.8,
         system: AUTOFORGE_SYSTEM_PROMPT + (r34lEnabled ? R34L_TYPING_PROMPT : '') + "\n\nYou must output ONLY valid JSON matching the schema format.",

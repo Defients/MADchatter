@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../store";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
@@ -6,6 +6,7 @@ import { Slider } from "./ui/slider";
 import { cn } from "../lib/utils";
 import { generateChat } from "../lib/ai";
 import { getActiveProvider } from "../lib/keys";
+import { getPlatformSendFn } from "../lib/platformSend";
 import { playSfx } from "../lib/sfx";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { SettingsPanel } from "./SettingsPanel";
@@ -50,14 +51,20 @@ import {
   Scale,
   BookOpen,
   Target,
+  Layers,
+  GitBranch,
+  EyeOff,
+  RefreshCw,
 } from "lucide-react";
 import { playMessageSound, enumerateAudioOutputs, setAudioOutputSink, setSoundUrl, setSoundVolume as setSoundVolumeFn } from "../lib/sound";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
-import { speakMessage, stopSpeaking, testVoice, getWebSpeechVoices, onVoicesChanged, groupVoicesByLanguage, isWebSpeechAvailable, ELEVENLABS_VOICES, type VoiceGroup } from "../lib/tts";
+import { speakMessage, stopSpeaking, testVoice, getWebSpeechVoices, onVoicesChanged, groupVoicesByLanguage, isWebSpeechAvailable, ELEVENLABS_VOICES, fetchElevenLabsVoices, type VoiceGroup, type ElevenLabsUserVoice } from "../lib/tts";
 import { Mic2, AudioLines, Square, Mic, Radio } from "lucide-react";
 import { usePushToTalk } from "../hooks/usePushToTalk";
 import { VOICE_COMMAND_REFERENCE } from "../lib/voiceCommands";
+import { AutoForgeSequencesOverlay } from "./AutoForgeSequencesOverlay";
+import { RuleBuilderOverlay } from "./RuleBuilder";
 
 export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   const {
@@ -128,10 +135,47 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     removeKeywordTriggerRule,
     clearKeywordTriggerRules,
     incrementTriggerMatch,
+    forgeTemplates,
+    addForgeTemplate,
+    removeForgeTemplate,
+    applyForgeTemplate,
+    moodLock,
+    setMoodLock,
+    variantHistory,
+    rateVariantHistory,
+    clearVariantHistory,
+    reactionSequences,
+    addReactionSequence,
+    removeReactionSequence,
+    autoForgeSequences,
+    autoForgeRules,
+    perActionRateLimits,
+    setPerActionRateLimits,
+    botIdentityMode,
+    setBotIdentityMode,
+    botIdentityStory,
+    setBotIdentityStory,
   } = useAppStore();
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  // Creative Tools inline input state
+  const [showTemplateInput, setShowTemplateInput] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+  const [showMoodPicker, setShowMoodPicker] = useState(false);
+  const [showSequenceInput, setShowSequenceInput] = useState(false);
+  const [sequenceName, setSequenceName] = useState("");
+  const [sequenceReactions, setSequenceReactions] = useState("");
+  // C5: Per-action rate limit editing state
+  const [showRateLimitEditor, setShowRateLimitEditor] = useState(false);
+  // C3: Full-page overlay
+  const [showSequencesOverlay, setShowSequencesOverlay] = useState(false);
+  // C1: Rule Engine overlay
+  const [showRuleBuilderOverlay, setShowRuleBuilderOverlay] = useState(false);
   const [soundPanelOpen, setSoundPanelOpen] = useState(false);
   const [sfxPanelOpen, setSfxPanelOpen] = useState(false);
+  // ElevenLabs user voices
+  const [elevenlabsUserVoices, setElevenlabsUserVoices] = useState<ElevenLabsUserVoice[]>([]);
+  const [elevenlabsVoicesLoading, setElevenlabsVoicesLoading] = useState(false);
+  const [elevenlabsVoicesError, setElevenlabsVoicesError] = useState<string | null>(null);
   const [notificationsPanelOpen, setNotificationsPanelOpen] = useState(false);
   const [rateLimitOpen, setRateLimitOpen] = useState(false);
   const [triggersPanelOpen, setTriggersPanelOpen] = useState(false);
@@ -200,6 +244,37 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   useEffect(() => {
     enumerateAudioOutputs().then(setAudioOutputs);
   }, []);
+
+  // Fetch user's ElevenLabs voices when API key is present
+  const loadElevenLabsVoices = useCallback(async () => {
+    const key = useAppStore.getState().elevenlabsApiKey;
+    if (!key) {
+      setElevenlabsUserVoices([]);
+      setElevenlabsVoicesError(null);
+      return;
+    }
+    setElevenlabsVoicesLoading(true);
+    setElevenlabsVoicesError(null);
+    try {
+      const voices = await fetchElevenLabsVoices(key);
+      setElevenlabsUserVoices(voices);
+    } catch (e: any) {
+      setElevenlabsVoicesError(e?.message || "Failed to fetch voices");
+      setElevenlabsUserVoices([]);
+    } finally {
+      setElevenlabsVoicesLoading(false);
+    }
+  }, []);
+
+  // Auto-fetch when API key changes or when switching to elevenlabs provider
+  useEffect(() => {
+    if (ttsProvider === "elevenlabs" && elevenlabsApiKey) {
+      loadElevenLabsVoices();
+    } else {
+      setElevenlabsUserVoices([]);
+      setElevenlabsVoicesError(null);
+    }
+  }, [ttsProvider, elevenlabsApiKey, loadElevenLabsVoices]);
 
   // Local slider state for smooth dragging — synced to store on commit
   const [localHumor, setLocalHumor] = useState(config.humorLevel);
@@ -281,12 +356,13 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   const handleProviderChange = (v: string) => {
     setProvider(v);
     localStorage.setItem("active_api_provider", v);
-    let displayName = "Gemini 2.5 Flash";
-    if (v === "gemini-env") displayName = "Gemini (Strict Environment API)";
-    else if (v === "gemini-pro") displayName = "Gemini Pro";
-    else if (v === "openai") displayName = "GPT-4o";
-    else if (v === "anthropic") displayName = "Claude 3.5 Sonnet";
+    let displayName = "Gemini 3.8 Flash";
+    if (v === "gemini-env") displayName = "Gemini 3.8 Flash (Strict Environment API)";
+    else if (v === "gemini-pro") displayName = "Gemini 3.7 Flash";
+    else if (v === "openai") displayName = "GPT-5.6 Luna";
+    else if (v === "anthropic") displayName = "Claude Haiku 4.5";
     else if (v === "openrouter") displayName = "OpenRouter / Custom API";
+    else if (v === "ollama") displayName = "Ollama / Local";
     toast.success(`Active AI Model set to ${displayName}`);
   };
 
@@ -340,14 +416,18 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         memoryContext,
       });
 
-      setVariants(data.suggestions || []);
+      const suggestions = (data.suggestions || []).filter((s: any) => s && typeof s.message === "string" && s.message.trim().length > 0);
+      if (suggestions.length === 0) {
+        throw new Error("Forge produced no usable variants. Try again or lower the effort level.");
+      }
+      setVariants(suggestions);
       useAppStore.getState().incrementForgeCount();
       toast.success("Co-pilot variants forged successfully!", { id: "forging-variants" });
       window.dispatchEvent(new CustomEvent('bg-forge-pulse', { detail: { count: 14 } }));
-      
-      if (autoSend && data.suggestions && data.suggestions.length > 0) {
+
+      if (autoSend && suggestions.length > 0) {
         setTimeout(() => {
-          const bestVariant = data.suggestions[0].message;
+          const bestVariant = suggestions[0].message;
           toast.loading("AutoForge is selecting and sending...", { id: "autoforge-send" });
           useAppStore.getState().addSentMessage({
             message: bestVariant,
@@ -464,7 +544,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   <span className="text-[11px] font-bold uppercase font-mono tracking-wider text-emerald-300">R34L Human Typing Mode</span>
                 </div>
                 <p className="text-[11px] leading-relaxed text-gray-300">
-                  When enabled, all Forge outputs are transformed to type like a real person — lowercase, loose spelling, punctuation as emotion, softeners, and controlled messiness. Meaning is preserved; only the typing texture changes.
+                  When enabled, all Forge outputs are transformed to type like a real person — lowercase, loose spelling, punctuation as emotion, softeners, and controlled messiness. R34L also <span className="text-emerald-300">adapts to the channel's chat</span>: it mirrors the casing, slang, punctuation, and emote rhythm of the current chatters (texture only — it keeps its own content and language, and never escalates profanity). Falls back to a default human texture when chat is quiet. Meaning is preserved; only the typing texture changes.
                 </p>
                 <div className="rounded-md bg-black/30 border border-white/5 p-2 space-y-1.5">
                   <div>
@@ -706,131 +786,6 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             )}
           </div>
 
-          {/* Keyword Triggers panel */}
-          {triggersPanelOpen && (
-            <div className="absolute top-full mt-1 right-0 z-50 w-80 bg-[#12121a] border border-amber-500/30 rounded-lg p-3 space-y-3 shadow-2xl max-h-[60vh] overflow-y-auto analytics-scroll">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-400 font-mono">
-                  <Target className="w-3 h-3" />
-                  Keyword Triggers
-                </div>
-                {keywordTriggerRules.length > 0 && (
-                  <button
-                    onClick={() => { clearKeywordTriggerRules(); toast.info("All triggers cleared"); }}
-                    className="text-[9px] text-gray-500 hover:text-red-400"
-                  >
-                    clear all
-                  </button>
-                )}
-              </div>
-
-              {/* Existing rules */}
-              {keywordTriggerRules.length > 0 && (
-                <div className="space-y-1.5">
-                  {keywordTriggerRules.map((rule) => (
-                    <div key={rule.id} className="flex items-center gap-1.5 p-1.5 rounded bg-black/30 border border-white/5 group">
-                      <button
-                        onClick={() => updateKeywordTriggerRule(rule.id, { enabled: !rule.enabled })}
-                        className={cn(
-                          "w-3 h-3 rounded-full shrink-0 transition-colors",
-                          rule.enabled ? "bg-amber-400" : "bg-gray-700"
-                        )}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1">
-                          <span className={cn("text-[10px] font-bold truncate", rule.enabled ? "text-gray-200" : "text-gray-500")}>{rule.label}</span>
-                          {rule.matchCount > 0 && (
-                            <span className="text-[8px] text-amber-400 font-mono shrink-0">{rule.matchCount}x</span>
-                          )}
-                        </div>
-                        <span className="text-[9px] text-gray-500 font-mono truncate block">{rule.pattern}</span>
-                      </div>
-                      <button
-                        onClick={() => removeKeywordTriggerRule(rule.id)}
-                        className="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Add new trigger form */}
-              <div className="space-y-1.5 pt-1.5 border-t border-white/5">
-                <div className="text-[9px] text-gray-500 font-bold uppercase">Add New Trigger</div>
-                <input
-                  type="text"
-                  value={newTriggerLabel}
-                  onChange={(e) => setNewTriggerLabel(e.target.value)}
-                  placeholder="Label (e.g. Raid Alert)"
-                  maxLength={30}
-                  className="w-full text-[10px] px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 placeholder:text-gray-600 outline-none focus:border-amber-500/40"
-                />
-                <input
-                  type="text"
-                  value={newTriggerPattern}
-                  onChange={(e) => setNewTriggerPattern(e.target.value)}
-                  placeholder="Pattern (e.g. raid or ^raid\\b)"
-                  className="w-full text-[10px] px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 placeholder:text-gray-600 outline-none focus:border-amber-500/40 font-mono"
-                />
-                <div className="flex items-center gap-2 text-[9px]">
-                  <label className="flex items-center gap-0.5 cursor-pointer">
-                    <input type="checkbox" checked={newTriggerRegex} onChange={(e) => setNewTriggerRegex(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
-                    <span className="text-gray-400">Regex</span>
-                  </label>
-                  <label className="flex items-center gap-0.5 cursor-pointer">
-                    <input type="checkbox" checked={newTriggerCase} onChange={(e) => setNewTriggerCase(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
-                    <span className="text-gray-400">Case-sensitive</span>
-                  </label>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap text-[9px]">
-                  <label className="flex items-center gap-0.5 cursor-pointer">
-                    <input type="checkbox" checked={newTriggerNotify} onChange={(e) => setNewTriggerNotify(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
-                    <span className="text-gray-400">Notify</span>
-                  </label>
-                  <label className="flex items-center gap-0.5 cursor-pointer">
-                    <input type="checkbox" checked={newTriggerToast} onChange={(e) => setNewTriggerToast(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
-                    <span className="text-gray-400">Toast</span>
-                  </label>
-                  <label className="flex items-center gap-0.5 cursor-pointer">
-                    <input type="checkbox" checked={newTriggerSound} onChange={(e) => setNewTriggerSound(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
-                    <span className="text-gray-400">Sound</span>
-                  </label>
-                  <label className="flex items-center gap-0.5 cursor-pointer">
-                    <input type="checkbox" checked={newTriggerForce} onChange={(e) => setNewTriggerForce(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
-                    <span className="text-gray-400">Force AutoForge</span>
-                  </label>
-                </div>
-                <button
-                  onClick={() => {
-                    if (!newTriggerLabel.trim() || !newTriggerPattern.trim()) return;
-                    addKeywordTriggerRule({
-                      label: newTriggerLabel.trim(),
-                      pattern: newTriggerPattern.trim(),
-                      isRegex: newTriggerRegex,
-                      caseSensitive: newTriggerCase,
-                      actions: { notify: newTriggerNotify, toast: newTriggerToast, sound: newTriggerSound, forceAutoForge: newTriggerForce },
-                      enabled: true,
-                    });
-                    setNewTriggerLabel("");
-                    setNewTriggerPattern("");
-                    setNewTriggerRegex(false);
-                    setNewTriggerCase(false);
-                    setNewTriggerNotify(true);
-                    setNewTriggerToast(true);
-                    setNewTriggerSound(false);
-                    setNewTriggerForce(false);
-                    toast.success("Trigger added!");
-                  }}
-                  className="w-full text-[10px] py-1.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-bold uppercase tracking-wider transition-colors"
-                >
-                  + Add Trigger
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Settings cog — far right */}
           <Dialog>
             <DialogTrigger
@@ -845,7 +800,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             >
               <Settings className="w-4 h-4 group-hover:animate-spin-slow group-hover:drop-shadow-[0_0_6px_rgba(249,115,22,0.8)] transition-all duration-300" />
             </DialogTrigger>
-            <DialogContent className="sm:max-w-[450px] bg-[#0a0a0f] border-white/10 text-white shadow-2xl">
+            <DialogContent className="sm:max-w-[750px] bg-[#0a0a0f] border-white/10 text-white shadow-2xl">
               <DialogHeader>
                 <DialogTitle className="text-white font-black uppercase tracking-wider text-sm font-mono border-b border-white/5 pb-2">
                   <div className="flex flex-col gap-2">
@@ -1196,19 +1151,56 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                                 </p>
                               </div>
                               <div className="space-y-1.5">
-                                <span className="text-[10px] font-bold text-gray-400">Voice</span>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-gray-400">Voice</span>
+                                  <button
+                                    onClick={loadElevenLabsVoices}
+                                    disabled={elevenlabsVoicesLoading}
+                                    className="flex items-center gap-1 text-[9px] text-purple-400 hover:text-purple-300 disabled:opacity-50 font-bold uppercase tracking-wider transition-colors"
+                                    title="Refresh voices from your ElevenLabs account"
+                                  >
+                                    <RefreshCw className={cn("w-3 h-3", elevenlabsVoicesLoading && "animate-spin")} />
+                                    {elevenlabsVoicesLoading ? "Loading..." : "Refresh"}
+                                  </button>
+                                </div>
+                                {elevenlabsVoicesError && (
+                                  <p className="text-[9px] text-red-400">{elevenlabsVoicesError}</p>
+                                )}
                                 <select
                                   value={ttsVoice || ""}
                                   onChange={(e) => setTtsVoice(e.target.value || null)}
                                   className="w-full bg-[#1E1E2A] border border-purple-500/40 rounded p-2 text-xs font-bold focus:outline-none focus:border-purple-500 text-white cursor-pointer"
                                 >
                                   <option value="" className="bg-[#1E1E2A] text-white">Select a voice...</option>
-                                  {ELEVENLABS_VOICES.map((v) => (
-                                    <option key={v.id} value={v.id} className="bg-[#1E1E2A] text-white">
-                                      {v.name} — {v.desc}
-                                    </option>
-                                  ))}
+                                  {elevenlabsUserVoices.length > 0 && (
+                                    <optgroup label="Your Voices" className="bg-[#1E1E2A] text-white">
+                                      {elevenlabsUserVoices.map((v) => {
+                                        const labelParts = [v.name];
+                                        if (v.category) labelParts.push(v.category);
+                                        if (v.labels?.gender) labelParts.push(v.labels.gender);
+                                        if (v.labels?.age) labelParts.push(v.labels.age);
+                                        if (v.labels?.accent) labelParts.push(v.labels.accent);
+                                        return (
+                                          <option key={v.voice_id} value={v.voice_id} className="bg-[#1E1E2A] text-white">
+                                            {labelParts.join(" · ")}
+                                          </option>
+                                        );
+                                      })}
+                                    </optgroup>
+                                  )}
+                                  <optgroup label="Default Presets" className="bg-[#1E1E2A] text-white">
+                                    {ELEVENLABS_VOICES.map((v) => (
+                                      <option key={v.id} value={v.id} className="bg-[#1E1E2A] text-white">
+                                        {v.name} — {v.desc}
+                                      </option>
+                                    ))}
+                                  </optgroup>
                                 </select>
+                                {elevenlabsUserVoices.length === 0 && !elevenlabsVoicesLoading && !elevenlabsVoicesError && elevenlabsApiKey && (
+                                  <p className="text-[9px] text-gray-600 italic">
+                                    Click Refresh to load voices from your account.
+                                  </p>
+                                )}
                               </div>
                             </>
                           )}
@@ -1429,6 +1421,131 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                     </Tooltip>
                     </div>
                   </div>
+
+                  {/* Keyword Triggers panel — inline within dialog */}
+                  {triggersPanelOpen && (
+                    <div className="bg-[#12121a] border border-amber-500/30 rounded-lg p-3 space-y-3 mt-1">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-400 font-mono">
+                          <Target className="w-3 h-3" />
+                          Keyword Triggers
+                        </div>
+                        {keywordTriggerRules.length > 0 && (
+                          <button
+                            onClick={() => { clearKeywordTriggerRules(); toast.info("All triggers cleared"); }}
+                            className="text-[9px] text-gray-500 hover:text-red-400"
+                          >
+                            clear all
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Existing rules */}
+                      {keywordTriggerRules.length > 0 && (
+                        <div className="space-y-1.5">
+                          {keywordTriggerRules.map((rule) => (
+                            <div key={rule.id} className="flex items-center gap-1.5 p-1.5 rounded bg-black/30 border border-white/5 group">
+                              <button
+                                onClick={() => updateKeywordTriggerRule(rule.id, { enabled: !rule.enabled })}
+                                className={cn(
+                                  "w-3 h-3 rounded-full shrink-0 transition-colors",
+                                  rule.enabled ? "bg-amber-400" : "bg-gray-700"
+                                )}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1">
+                                  <span className={cn("text-[10px] font-bold truncate", rule.enabled ? "text-gray-200" : "text-gray-500")}>{rule.label}</span>
+                                  {rule.matchCount > 0 && (
+                                    <span className="text-[8px] text-amber-400 font-mono shrink-0">{rule.matchCount}x</span>
+                                  )}
+                                </div>
+                                <span className="text-[9px] text-gray-500 font-mono truncate block">{rule.pattern}</span>
+                              </div>
+                              <button
+                                onClick={() => removeKeywordTriggerRule(rule.id)}
+                                className="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Add new trigger form */}
+                      <div className="space-y-1.5 pt-1.5 border-t border-white/5">
+                        <div className="text-[9px] text-gray-500 font-bold uppercase">Add New Trigger</div>
+                        <input
+                          type="text"
+                          value={newTriggerLabel}
+                          onChange={(e) => setNewTriggerLabel(e.target.value)}
+                          placeholder="Label (e.g. Raid Alert)"
+                          maxLength={30}
+                          className="w-full text-[10px] px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 placeholder:text-gray-600 outline-none focus:border-amber-500/40"
+                        />
+                        <input
+                          type="text"
+                          value={newTriggerPattern}
+                          onChange={(e) => setNewTriggerPattern(e.target.value)}
+                          placeholder="Pattern (e.g. raid or ^raid\\b)"
+                          className="w-full text-[10px] px-2 py-1 rounded bg-black/40 border border-white/10 text-gray-200 placeholder:text-gray-600 outline-none focus:border-amber-500/40 font-mono"
+                        />
+                        <div className="flex items-center gap-2 text-[9px]">
+                          <label className="flex items-center gap-0.5 cursor-pointer">
+                            <input type="checkbox" checked={newTriggerRegex} onChange={(e) => setNewTriggerRegex(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
+                            <span className="text-gray-400">Regex</span>
+                          </label>
+                          <label className="flex items-center gap-0.5 cursor-pointer">
+                            <input type="checkbox" checked={newTriggerCase} onChange={(e) => setNewTriggerCase(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
+                            <span className="text-gray-400">Case-sensitive</span>
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap text-[9px]">
+                          <label className="flex items-center gap-0.5 cursor-pointer">
+                            <input type="checkbox" checked={newTriggerNotify} onChange={(e) => setNewTriggerNotify(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
+                            <span className="text-gray-400">Notify</span>
+                          </label>
+                          <label className="flex items-center gap-0.5 cursor-pointer">
+                            <input type="checkbox" checked={newTriggerToast} onChange={(e) => setNewTriggerToast(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
+                            <span className="text-gray-400">Toast</span>
+                          </label>
+                          <label className="flex items-center gap-0.5 cursor-pointer">
+                            <input type="checkbox" checked={newTriggerSound} onChange={(e) => setNewTriggerSound(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
+                            <span className="text-gray-400">Sound</span>
+                          </label>
+                          <label className="flex items-center gap-0.5 cursor-pointer">
+                            <input type="checkbox" checked={newTriggerForce} onChange={(e) => setNewTriggerForce(e.target.checked)} className="w-2.5 h-2.5 accent-amber-500" />
+                            <span className="text-gray-400">Force AutoForge</span>
+                          </label>
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (!newTriggerLabel.trim() || !newTriggerPattern.trim()) return;
+                            addKeywordTriggerRule({
+                              label: newTriggerLabel.trim(),
+                              pattern: newTriggerPattern.trim(),
+                              isRegex: newTriggerRegex,
+                              caseSensitive: newTriggerCase,
+                              actions: { notify: newTriggerNotify, toast: newTriggerToast, sound: newTriggerSound, forceAutoForge: newTriggerForce },
+                              enabled: true,
+                            });
+                            setNewTriggerLabel("");
+                            setNewTriggerPattern("");
+                            setNewTriggerRegex(false);
+                            setNewTriggerCase(false);
+                            setNewTriggerNotify(true);
+                            setNewTriggerToast(true);
+                            setNewTriggerSound(false);
+                            setNewTriggerForce(false);
+                            toast.success("Trigger added!");
+                          }}
+                          className="w-full text-[10px] py-1.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 hover:bg-amber-500/30 font-bold uppercase tracking-wider transition-colors"
+                        >
+                          + Add Trigger
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </DialogTitle>
               </DialogHeader>
               <SettingsPanel
@@ -1448,9 +1565,62 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       </div>
 
       {/* Scrollable middle section */}
-      <div className="flex-1 overflow-y-auto flex flex-col gap-3 min-h-0 forge-scroll">
+      <div className="flex-1 overflow-y-auto flex flex-col gap-3 min-h-0 forge-scroll pb-3">
 
-      {/* 0. Persona Presets */}
+      {/* 0. Bot Identity — AI denial / custom persona story */}
+      <div className="space-y-1.5 shrink-0">
+        <div className="flex justify-between items-center text-xs font-bold text-gray-300 px-0.5">
+          <span className="flex items-center gap-1">
+            <EyeOff className="w-3.5 h-3.5 text-red-400" />
+            Bot Identity
+          </span>
+        </div>
+        <div className="flex gap-1.5">
+          <button
+            onClick={() => setBotIdentityMode("admit")}
+            className={cn(
+              "flex-1 py-1.5 rounded-lg border text-[10px] font-bold transition-all",
+              botIdentityMode === "admit"
+                ? "bg-green-500/20 border-green-500/50 text-green-200"
+                : "bg-[#0a0a0f] border-white/5 text-gray-400 hover:border-green-500/30 hover:text-green-300"
+            )}
+          >
+            Admit AI
+          </button>
+          <button
+            onClick={() => setBotIdentityMode("custom")}
+            className={cn(
+              "flex-1 py-1.5 rounded-lg border text-[10px] font-bold transition-all",
+              botIdentityMode === "custom"
+                ? "bg-red-500/20 border-red-500/50 text-red-200"
+                : "bg-[#0a0a0f] border-white/5 text-gray-400 hover:border-red-500/30 hover:text-red-300"
+            )}
+          >
+            Deny AI
+          </button>
+        </div>
+        {botIdentityMode === "custom" && (
+          <div className="space-y-1">
+            <textarea
+              value={botIdentityStory}
+              onChange={(e) => setBotIdentityStory(e.target.value)}
+              placeholder="Write a persona backstory the bot will use when accused of being AI. e.g. 'I'm a 24-year-old gamer from Ohio who dropped out of college to stream full-time. I love pizza and hate Mondays.'"
+              rows={4}
+              className="w-full text-[11px] bg-black/30 border border-red-500/20 rounded-lg px-2 py-1.5 text-gray-200 placeholder:text-gray-600 outline-none focus:border-red-500/40 resize-none leading-relaxed"
+            />
+            <p className="text-[9px] text-gray-600 italic">
+              When someone asks if the bot is AI, it will stay in character using this story. Keep it brief and believable.
+            </p>
+          </div>
+        )}
+        {botIdentityMode === "admit" && (
+          <p className="text-[9px] text-gray-600 italic">
+            Bot will honestly admit it's an AI when asked. Playful but never denies it.
+          </p>
+        )}
+      </div>
+
+      {/* 1. Persona Presets */}
       <div className="space-y-1.5 shrink-0">
         <div className="flex justify-between items-center text-xs font-bold text-gray-300 px-0.5">
           <span className="flex items-center gap-1">
@@ -2123,6 +2293,443 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         </CardContent>
       </Card>
 
+      {/* E1/E4: Creative Tools — Templates & Mood Lock */}
+      <Card className="bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0">
+        <CardHeader className="p-1.5 pb-0 flex flex-col space-y-0 gap-1">
+          <CardTitle className="text-xs font-bold uppercase tracking-wider text-gray-300 shrink-0 text-center w-full flex items-center justify-center gap-2">
+            <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+            Creative Tools
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-1.5 pt-0.5 grid grid-cols-2 gap-x-2 gap-y-3">
+          {/* E1: Templates */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wide text-gray-400">Forge Templates</span>
+              <button
+                onClick={() => setShowTemplateInput(!showTemplateInput)}
+                className={cn(
+                  "text-[9px] px-1.5 py-0.5 rounded font-bold transition-colors",
+                  showTemplateInput
+                    ? "bg-pink-500/30 text-pink-200"
+                    : "bg-pink-500/20 text-pink-300 hover:bg-pink-500/30",
+                )}
+              >
+                {showTemplateInput ? "Cancel" : "+ Save Current"}
+              </button>
+            </div>
+            {showTemplateInput && (
+              <div className="bg-white/[0.03] border border-pink-500/20 rounded-lg p-2 space-y-1.5">
+                <input
+                  type="text"
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  placeholder="Template name..."
+                  className="w-full bg-black/40 border border-pink-500/20 rounded px-2 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 outline-none focus:border-pink-500/40"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && templateName.trim()) {
+                      addForgeTemplate({
+                        name: templateName.trim(),
+                        description: "Custom template",
+                        directives: config.additionalInstructions || "",
+                        humorLevel: config.humorLevel,
+                        chaosLevel: config.chaosLevel,
+                        emoteDensity: config.emoteDensity,
+                        lengthPreference: config.lengthPreference,
+                      });
+                      setTemplateName("");
+                      setShowTemplateInput(false);
+                      toast.success("Template saved");
+                    }
+                    if (e.key === "Escape") { setTemplateName(""); setShowTemplateInput(false); }
+                  }}
+                />
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => {
+                      if (!templateName.trim()) return;
+                      addForgeTemplate({
+                        name: templateName.trim(),
+                        description: "Custom template",
+                        directives: config.additionalInstructions || "",
+                        humorLevel: config.humorLevel,
+                        chaosLevel: config.chaosLevel,
+                        emoteDensity: config.emoteDensity,
+                        lengthPreference: config.lengthPreference,
+                      });
+                      setTemplateName("");
+                      setShowTemplateInput(false);
+                      toast.success("Template saved");
+                    }}
+                    disabled={!templateName.trim()}
+                    className="flex-1 py-1 rounded text-[10px] font-bold bg-pink-500/20 text-pink-300 hover:bg-pink-500/30 transition-colors disabled:opacity-40"
+                  >
+                    Save Template
+                  </button>
+                </div>
+              </div>
+            )}
+            {forgeTemplates.length === 0 ? (
+              <p className="text-[10px] text-gray-600 italic">No templates yet. Save your current config as a template.</p>
+            ) : (
+              <div className="space-y-1 max-h-32 overflow-y-auto forge-scroll">
+                {forgeTemplates.map((t) => (
+                  <div key={t.id} className="flex items-center gap-1.5 bg-white/[0.02] rounded px-2 py-1 group">
+                    <button
+                      onClick={() => { applyForgeTemplate(t.id); toast.success(`Applied template: ${t.name}`); }}
+                      className="flex-1 text-left text-[10px] text-gray-300 hover:text-pink-300 font-bold truncate"
+                    >
+                      {t.name}
+                    </button>
+                    <span className="text-[8px] text-gray-600">H{t.humorLevel} C{t.chaosLevel}</span>
+                    <button
+                      onClick={() => removeForgeTemplate(t.id)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-opacity"
+                    >
+                      <Trash2 className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* E4: Mood Lock */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wide text-gray-400">Mood Lock</span>
+              <button
+                onClick={() => {
+                  if (moodLock.locked) {
+                    setMoodLock(false, null);
+                    setShowMoodPicker(false);
+                    toast.success("Mood lock released");
+                  } else {
+                    setShowMoodPicker(!showMoodPicker);
+                  }
+                }}
+                className={cn(
+                  "text-[9px] px-1.5 py-0.5 rounded font-bold transition-colors",
+                  moodLock.locked
+                    ? "bg-orange-500/20 text-orange-300 hover:bg-orange-500/30"
+                    : showMoodPicker
+                      ? "bg-orange-500/30 text-orange-200"
+                      : "bg-white/5 text-gray-400 hover:bg-white/10",
+                )}
+              >
+                {moodLock.locked ? `Locked: ${moodLock.mood}` : showMoodPicker ? "Cancel" : "Lock Mood"}
+              </button>
+            </div>
+            {showMoodPicker && !moodLock.locked && (
+              <div className="bg-white/[0.03] border border-orange-500/20 rounded-lg p-2 space-y-1.5">
+                <span className="text-[9px] text-gray-500">Select mood to lock:</span>
+                <div className="flex flex-wrap gap-1">
+                  {(["hyped", "gremlin", "chill", "thoughtful", "chaotic", "sentimental"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => {
+                        setMoodLock(true, m);
+                        setShowMoodPicker(false);
+                        toast.success(`Mood locked to: ${m}`);
+                      }}
+                      className="px-2 py-1 rounded text-[10px] font-bold bg-orange-500/10 text-orange-300 hover:bg-orange-500/25 border border-orange-500/20 transition-colors capitalize"
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="text-[9px] text-gray-600 italic">
+              {moodLock.locked
+                ? "Mood is locked — personality engine will use this mood regardless of chat signals."
+                : "Lock the bot's mood to prevent it from changing based on chat signals."}
+            </p>
+          </div>
+
+          {/* E3: Variant History */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wide text-gray-400">Variant History</span>
+              {variantHistory.length > 0 && (
+                <button
+                  onClick={() => clearVariantHistory()}
+                  className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-gray-400 hover:bg-white/10 font-bold"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            {variantHistory.length === 0 ? (
+              <p className="text-[10px] text-gray-600 italic">No variants yet. Forge some messages to build history.</p>
+            ) : (
+              <div className="space-y-1 max-h-32 overflow-y-auto forge-scroll">
+                {[...variantHistory].reverse().slice(0, 15).map((v) => (
+                  <div key={v.id} className="flex items-start gap-1.5 bg-white/[0.02] rounded px-2 py-1 group">
+                    <span className="text-[10px] text-gray-300 flex-1 truncate">{v.message}</span>
+                    <div className="flex gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => rateVariantHistory(v.id, "good")}
+                        className={cn("text-[10px]", v.rating === "good" ? "text-green-400" : "text-gray-600 hover:text-green-400")}
+                        title="Good"
+                      >👍</button>
+                      <button
+                        onClick={() => rateVariantHistory(v.id, "bad")}
+                        className={cn("text-[10px]", v.rating === "bad" ? "text-red-400" : "text-gray-600 hover:text-red-400")}
+                        title="Bad"
+                      >👎</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* E5: Reaction Sequences */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wide text-gray-400">Reaction Sequences</span>
+              <button
+                onClick={() => setShowSequenceInput(!showSequenceInput)}
+                className={cn(
+                  "text-[9px] px-1.5 py-0.5 rounded font-bold transition-colors",
+                  showSequenceInput
+                    ? "bg-pink-500/30 text-pink-200"
+                    : "bg-pink-500/20 text-pink-300 hover:bg-pink-500/30",
+                )}
+              >
+                {showSequenceInput ? "Cancel" : "+ Add"}
+              </button>
+            </div>
+            {showSequenceInput && (
+              <div className="bg-white/[0.03] border border-pink-500/20 rounded-lg p-2 space-y-1.5">
+                <input
+                  type="text"
+                  value={sequenceName}
+                  onChange={(e) => setSequenceName(e.target.value)}
+                  placeholder="Sequence name (e.g. Hype Train)..."
+                  className="w-full bg-black/40 border border-pink-500/20 rounded px-2 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 outline-none focus:border-pink-500/40"
+                  autoFocus
+                />
+                <input
+                  type="text"
+                  value={sequenceReactions}
+                  onChange={(e) => setSequenceReactions(e.target.value)}
+                  placeholder="Reactions separated by | (e.g. POG|KEKW|EZ)..."
+                  className="w-full bg-black/40 border border-pink-500/20 rounded px-2 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 outline-none focus:border-pink-500/40"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && sequenceName.trim() && sequenceReactions.trim()) {
+                      const reactions = sequenceReactions.split("|").map(r => r.trim()).filter(Boolean);
+                      if (reactions.length > 0) {
+                        addReactionSequence({ name: sequenceName.trim(), reactions });
+                        setSequenceName("");
+                        setSequenceReactions("");
+                        setShowSequenceInput(false);
+                        toast.success("Reaction sequence saved");
+                      }
+                    }
+                    if (e.key === "Escape") { setSequenceName(""); setSequenceReactions(""); setShowSequenceInput(false); }
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    if (!sequenceName.trim() || !sequenceReactions.trim()) return;
+                    const reactions = sequenceReactions.split("|").map(r => r.trim()).filter(Boolean);
+                    if (reactions.length > 0) {
+                      addReactionSequence({ name: sequenceName.trim(), reactions });
+                      setSequenceName("");
+                      setSequenceReactions("");
+                      setShowSequenceInput(false);
+                      toast.success("Reaction sequence saved");
+                    }
+                  }}
+                  disabled={!sequenceName.trim() || !sequenceReactions.trim()}
+                  className="w-full py-1 rounded text-[10px] font-bold bg-pink-500/20 text-pink-300 hover:bg-pink-500/30 transition-colors disabled:opacity-40"
+                >
+                  Save Sequence
+                </button>
+              </div>
+            )}
+            {reactionSequences.length === 0 ? (
+              <p className="text-[10px] text-gray-600 italic">No sequences yet. Create quick multi-emote reactions.</p>
+            ) : (
+              <div className="space-y-1 max-h-24 overflow-y-auto forge-scroll">
+                {reactionSequences.map((seq) => (
+                  <div key={seq.id} className="flex items-center gap-1.5 bg-white/[0.02] rounded px-2 py-1 group">
+                    <span className="text-[10px] text-pink-300 font-bold">{seq.name}</span>
+                    <span className="text-[10px] text-gray-400 truncate flex-1">{seq.reactions.join(" → ")}</span>
+                    <button
+                      onClick={() => {
+                        const platform = useAppStore.getState().platform;
+                        const channel = useAppStore.getState().streamMetadata?.channelName;
+                        const sendFn = getPlatformSendFn(platform);
+                        if (sendFn && channel) {
+                          seq.reactions.forEach((r, i) => {
+                            setTimeout(() => sendFn(channel, r).catch(console.error), i * 1500);
+                          });
+                          toast.success(`Sending sequence: ${seq.name}`);
+                        } else {
+                          toast.error("No platform connection available");
+                        }
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-[9px] px-1 rounded bg-green-500/20 text-green-300 hover:bg-green-500/30 font-bold transition-opacity"
+                    >
+                      Send
+                    </button>
+                    <button
+                      onClick={() => removeReactionSequence(seq.id)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-opacity"
+                    >
+                      <Trash2 className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+            {/* C3: AutoForge Multi-Action Sequences — launcher */}
+            <div className="space-y-1.5">
+              <button
+                onClick={() => { setShowSequencesOverlay(true); playSfx("hud_open"); }}
+                className="w-full flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-orange-400 hover:text-orange-300 transition-colors group"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Layers className="w-3 h-3" />
+                  AutoForge Sequences
+                  {autoForgeSequences.length > 0 && (
+                    <span className="text-[9px] text-gray-500 normal-case font-mono">
+                      {autoForgeSequences.length} · {autoForgeSequences.filter(s => s.enabled).length} active
+                    </span>
+                  )}
+                </span>
+                <span className="text-gray-500 group-hover:text-orange-300">open →</span>
+              </button>
+              {autoForgeSequences.length === 0 ? (
+                <p className="text-[10px] text-gray-600 italic mt-0.5">No sequences yet. Click to open the sequence builder.</p>
+              ) : (
+                <div className="space-y-0.5 max-h-16 overflow-y-auto forge-scroll mt-1">
+                  {autoForgeSequences.slice(0, 4).map((seq) => (
+                    <div key={seq.id} className="flex items-center gap-1.5 text-[9px]">
+                      <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", seq.enabled ? "bg-green-400" : "bg-gray-600")} />
+                      <span className="text-orange-300 font-bold truncate">{seq.name}</span>
+                      <span className="text-gray-600 shrink-0">{seq.steps.length} steps</span>
+                    </div>
+                  ))}
+                  {autoForgeSequences.length > 4 && (
+                    <p className="text-[9px] text-gray-600 italic">+{autoForgeSequences.length - 4} more...</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* C1: AutoForge Rule Engine — launcher */}
+            <div className="space-y-1.5">
+              <button
+                onClick={() => { setShowRuleBuilderOverlay(true); playSfx("hud_open"); }}
+                className="w-full flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-cyan-400 hover:text-cyan-300 transition-colors group"
+              >
+                <span className="flex items-center gap-1.5">
+                  <GitBranch className="w-3 h-3" />
+                  Rule Engine
+                  {autoForgeRules.length > 0 && (
+                    <span className="text-[9px] text-gray-500 normal-case font-mono">
+                      {autoForgeRules.length} · {autoForgeRules.filter(r => r.enabled).length} active
+                    </span>
+                  )}
+                </span>
+                <span className="text-gray-500 group-hover:text-cyan-300">open →</span>
+              </button>
+              {autoForgeRules.length === 0 ? (
+                <p className="text-[10px] text-gray-600 italic mt-0.5">No rules yet. Create IF-THEN automations.</p>
+              ) : (
+                <div className="space-y-0.5 max-h-16 overflow-y-auto forge-scroll mt-1">
+                  {autoForgeRules.slice(0, 4).map((rule) => (
+                    <div key={rule.id} className="flex items-center gap-1.5 text-[9px]">
+                      <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", rule.enabled ? "bg-green-400" : "bg-gray-600")} />
+                      <span className="text-cyan-300 font-bold truncate">{rule.name}</span>
+                      {rule.fireCount > 0 && <span className="text-orange-400 shrink-0">🔥{rule.fireCount}</span>}
+                      <span className="text-gray-600 shrink-0">{rule.conditions.length}c · {rule.actions.length}a</span>
+                    </div>
+                  ))}
+                  {autoForgeRules.length > 4 && (
+                    <p className="text-[9px] text-gray-600 italic">+{autoForgeRules.length - 4} more...</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* C5: Advanced Rate Limiting Controls — full width */}
+            <div className="space-y-1.5 col-span-2 pt-2 border-t border-white/5">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">Per-Action Rate Limits</span>
+                <button
+                  onClick={() => setShowRateLimitEditor(!showRateLimitEditor)}
+                  className="text-[9px] text-gray-500 hover:text-cyan-400"
+                >
+                  {showRateLimitEditor ? "done" : "edit"}
+                </button>
+              </div>
+              {showRateLimitEditor && (
+                <div className="space-y-1.5 mb-2">
+                  {Object.entries(perActionRateLimits).map(([actionType, limits]) => (
+                    <div key={actionType} className="flex items-center gap-1.5 text-[9px]">
+                      <span className="text-gray-400 w-20 truncate font-mono">{actionType}</span>
+                      <label className="flex items-center gap-0.5">
+                        <span className="text-gray-600">/hr</span>
+                        <input
+                          type="number"
+                          value={limits.maxPerHour}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 0;
+                            setPerActionRateLimits({
+                              ...perActionRateLimits,
+                              [actionType]: { ...limits, maxPerHour: val },
+                            });
+                          }}
+                          className="w-10 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-gray-200 font-mono"
+                        />
+                      </label>
+                      <label className="flex items-center gap-0.5">
+                        <span className="text-gray-600">/10m</span>
+                        <input
+                          type="number"
+                          value={limits.maxPerTenMinutes}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 0;
+                            setPerActionRateLimits({
+                              ...perActionRateLimits,
+                              [actionType]: { ...limits, maxPerTenMinutes: val },
+                            });
+                          }}
+                          className="w-10 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-gray-200 font-mono"
+                        />
+                      </label>
+                      <label className="flex items-center gap-0.5">
+                        <span className="text-gray-600">cd</span>
+                        <input
+                          type="number"
+                          value={limits.cooldownMs / 1000}
+                          onChange={(e) => {
+                            const val = (parseInt(e.target.value) || 0) * 1000;
+                            setPerActionRateLimits({
+                              ...perActionRateLimits,
+                              [actionType]: { ...limits, cooldownMs: val },
+                            });
+                          }}
+                          className="w-10 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-gray-200 font-mono"
+                        />
+                        <span className="text-gray-600">s</span>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+        </CardContent>
+      </Card>
+
       </div>
 
       {/* 4. Big Forge Button — locked to bottom */}
@@ -2136,7 +2743,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               className="h-11 px-2.5 flex items-center gap-1 rounded-lg bg-green-900/30 border border-green-700/30 text-green-500 hover:bg-green-900/50 hover:border-green-600/40 transition-all text-[10px] font-bold uppercase tracking-wider font-mono whitespace-nowrap"
               title="Active Provider Model"
             >
-              {provider === 'gemini' ? 'Gem' : provider === 'gemini-env' ? 'Gem-E' : provider === 'gemini-pro' ? 'Gem+' : provider === 'openai' ? 'GPT' : provider === 'anthropic' ? 'Claude' : 'OR'}
+              {provider === 'gemini' ? 'Gem' : provider === 'gemini-env' ? 'Gem-E' : provider === 'gemini-pro' ? 'Gem+' : provider === 'openai' ? 'GPT' : provider === 'anthropic' ? 'Claude' : provider === 'ollama' ? 'Ollama' : 'OR'}
               <ChevronDown className="w-3 h-3 opacity-60" />
             </button>
             {modelMenuOpen && (
@@ -2144,12 +2751,13 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 <div className="fixed inset-0 z-40" onClick={() => setModelMenuOpen(false)} />
                 <div className="absolute bottom-full left-0 mb-1 z-50 w-56 bg-[#0a0a0f] border border-white/10 rounded-lg shadow-2xl py-1 font-mono">
                   {[
-                    { value: 'gemini', label: 'Gemini 2.5 Flash', desc: 'Recommended' },
-                    { value: 'gemini-env', label: 'Gemini (Strict Env)', desc: 'Environment API' },
-                    { value: 'gemini-pro', label: 'Gemini Pro', desc: 'Advanced reasoning' },
-                    { value: 'openai', label: 'GPT-4o', desc: 'Standard latency' },
-                    { value: 'anthropic', label: 'Claude 3.5 Sonnet', desc: 'Advanced reasoning' },
+                    { value: 'gemini', label: 'Gemini 3.8 Flash', desc: 'Recommended' },
+                    { value: 'gemini-env', label: 'Gemini 3.8 Flash (Strict Env)', desc: 'Environment API' },
+                    { value: 'gemini-pro', label: 'Gemini 3.7 Flash', desc: 'Alternate Flash' },
+                    { value: 'openai', label: 'GPT-5.6 Luna', desc: 'Fast & cost-efficient' },
+                    { value: 'anthropic', label: 'Claude Haiku 4.5', desc: 'Fast & affordable' },
                     { value: 'openrouter', label: 'OpenRouter / Custom', desc: 'Custom API' },
+                    { value: 'ollama', label: 'Ollama / Local', desc: 'No key needed' },
                   ].map((m) => (
                     <button
                       key={m.value}
@@ -2200,6 +2808,12 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           ))}
         </div>
       </div>
+
+      {/* C3: AutoForge Sequences Full-Page Overlay */}
+      <AutoForgeSequencesOverlay open={showSequencesOverlay} onClose={() => setShowSequencesOverlay(false)} />
+
+      {/* C1: AutoForge Rule Engine Full-Page Overlay */}
+      <RuleBuilderOverlay open={showRuleBuilderOverlay} onClose={() => setShowRuleBuilderOverlay(false)} />
 
     </div>
   );

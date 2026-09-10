@@ -29,8 +29,6 @@ export function usePushToTalk() {
   const [pttLoading, setPttLoading] = useState(false);
   const [pttNeedsDownload, setPttNeedsDownload] = useState(false);
 
-  const [pttToggleMode, setPttToggleMode] = useState(false);
-
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -180,7 +178,6 @@ export function usePushToTalk() {
     pttActive,
     pttLoading,
     pttNeedsDownload,
-    pttToggleMode,
     startPtt,
     stopPtt,
     togglePtt,

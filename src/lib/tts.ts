@@ -10,6 +10,14 @@ export interface ElevenLabsVoicePreset {
   desc: string;
 }
 
+export interface ElevenLabsUserVoice {
+  voice_id: string;
+  name: string;
+  category?: string;
+  labels?: Record<string, string>;
+  preview_url?: string;
+}
+
 // ─── ElevenLabs Voice Presets ────────────────────────────────────────────────
 
 export const ELEVENLABS_VOICES: ElevenLabsVoicePreset[] = [
@@ -27,6 +35,25 @@ export const ELEVENLABS_VOICES: ElevenLabsVoicePreset[] = [
   { id: "XBzWfohLFCbzjxAf7bk2", name: "Charlotte",  desc: "Female · American · Mature, confident" },
   { id: "iP95p4xoKVk53Go1jGh5", name: "Matthew",    desc: "Male · American · Clear, professional" },
 ];
+
+// ─── Fetch User Voices from ElevenLabs ──────────────────────────────────────
+
+export async function fetchElevenLabsVoices(apiKey: string): Promise<ElevenLabsUserVoice[]> {
+  const response = await fetch("https://api.elevenlabs.io/v1/voices", {
+    method: "GET",
+    headers: {
+      "xi-api-key": apiKey,
+      "Accept": "application/json",
+    },
+  });
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Invalid ElevenLabs API key");
+    if (response.status === 429) throw new Error("ElevenLabs rate limit exceeded");
+    throw new Error(`ElevenLabs API error ${response.status}`);
+  }
+  const data = await response.json();
+  return (data.voices || []) as ElevenLabsUserVoice[];
+}
 
 // ─── Emote & Emoji Stripping ─────────────────────────────────────────────────
 
@@ -60,7 +87,7 @@ const COMMON_EMOTES = new Set([
   "catPat", "catComfy", "PepegaBox", "FeelingKachow", "FeelingKneemo",
   "FeelingLewd", "FeelingPopular", "FeelingScared", "FeelingTouch",
   "PauseChamp", "WeirdChamp", "WeirdChamping", "ChadChamp",
-  "ChadBoard", "YesBut", "NoBut", "ModCheck", "PogChamp", "PogChampCool",
+  "ChadBoard", "YesBut", "NoBut", "ModCheck", "PogChampCool",
   "WICKED", "xqcL", "xqcCheat", "xqcDab", "xqcPaint", "xqcSlap", "xqcSpin",
   "xqcLove", "xqcREE", "xqcRage", "xqcSmash", "xqcClap", "xqcDance",
   "xqcFall", "xqcFeet", "xqcFrog", "xqcGiggle", "xqcGrin", "xqcHands",
@@ -179,6 +206,14 @@ function speakWeb(text: string, voiceName: string | null, rate: number, volume: 
 // ─── ElevenLabs ──────────────────────────────────────────────────────────────
 
 let elevenlabsAudioEl: HTMLAudioElement | null = null;
+let elevenlabsCurrentUrl: string | null = null;
+
+function revokeElevenLabsUrl(): void {
+  if (elevenlabsCurrentUrl) {
+    URL.revokeObjectURL(elevenlabsCurrentUrl);
+    elevenlabsCurrentUrl = null;
+  }
+}
 
 async function speakElevenLabs(
   text: string,
@@ -223,7 +258,10 @@ async function speakElevenLabs(
   }
 
   const blob = await response.blob();
+  // Revoke any previous blob URL before creating a new one to avoid leaks
+  revokeElevenLabsUrl();
   const audioUrl = URL.createObjectURL(blob);
+  elevenlabsCurrentUrl = audioUrl;
 
   if (elevenlabsAudioEl) {
     elevenlabsAudioEl.pause();
@@ -247,10 +285,16 @@ async function speakElevenLabs(
 
   // Clean up object URL after playback to avoid memory leaks
   elevenlabsAudioEl.addEventListener("ended", () => {
-    URL.revokeObjectURL(audioUrl);
+    revokeElevenLabsUrl();
   }, { once: true });
 
-  await elevenlabsAudioEl.play();
+  try {
+    await elevenlabsAudioEl.play();
+  } catch (e) {
+    // If playback fails, revoke the URL immediately so it doesn't leak
+    revokeElevenLabsUrl();
+    throw e;
+  }
 }
 
 // ─── Main Entry Point ────────────────────────────────────────────────────────
@@ -281,6 +325,8 @@ export function stopSpeaking(): void {
   if (elevenlabsAudioEl) {
     elevenlabsAudioEl.pause();
   }
+  // Revoke any pending blob URL since playback is being stopped
+  revokeElevenLabsUrl();
 }
 
 export async function testVoice(): Promise<void> {

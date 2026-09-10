@@ -6,7 +6,7 @@
 export interface Emote {
   name: string;
   url: string;
-  provider: "7tv" | "ffz";
+  provider: "7tv" | "ffz" | "bttv";
   width?: number;
   height?: number;
 }
@@ -160,19 +160,77 @@ async function fetchFFZChannel(channelName: string): Promise<Emote[]> {
   }
 }
 
+// ─── BetterTTV ────────────────────────────────────────────────────────────────
+
+interface BTTVEmote {
+  id: string;
+  code: string;
+  imageType: string;
+  userId?: string;
+}
+
+interface BTTVChannelResponse {
+  channelEmotes: BTTVEmote[];
+  sharedEmotes: BTTVEmote[];
+}
+
+async function fetchBTTVGlobal(): Promise<Emote[]> {
+  try {
+    const res = await fetch("https://api.betterttv.net/3/emotes/global");
+    if (!res.ok) return [];
+    const data: BTTVEmote[] = await res.json();
+    return data.map((e) => ({
+      name: e.code,
+      url: `https://cdn.betterttv.net/emote/${e.id}/1x.${e.imageType || "webp"}`,
+      provider: "bttv" as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchBTTVChannel(twitchUserId: string): Promise<Emote[]> {
+  try {
+    const res = await fetch(`https://api.betterttv.net/3/users/twitch/${encodeURIComponent(twitchUserId)}`);
+    if (!res.ok) return [];
+    const data: BTTVChannelResponse = await res.json();
+    const all = [...(data.channelEmotes || []), ...(data.sharedEmotes || [])];
+    return all.map((e) => ({
+      name: e.code,
+      url: `https://cdn.betterttv.net/emote/${e.id}/1x.${e.imageType || "webp"}`,
+      provider: "bttv" as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ─── Combined API ─────────────────────────────────────────────────────────────
 
-async function loadGlobalEmotes(): Promise<EmoteMap> {
+export interface EmoteProviderConfig {
+  sevenTV: boolean;
+  ffz: boolean;
+  bttv: boolean;
+}
+
+const DEFAULT_PROVIDERS: EmoteProviderConfig = {
+  sevenTV: true,
+  ffz: true,
+  bttv: true,
+};
+
+async function loadGlobalEmotes(providers: EmoteProviderConfig = DEFAULT_PROVIDERS): Promise<EmoteMap> {
   if (globalEmotes) return globalEmotes;
   if (globalEmotesPromise) return globalEmotesPromise;
 
   globalEmotesPromise = (async () => {
-    const [sevenTv, ffz] = await Promise.all([
-      fetch7TVGlobal(),
-      fetchFFZGlobal(),
-    ]);
+    const tasks: Promise<Emote[]>[] = [];
+    if (providers.sevenTV) tasks.push(fetch7TVGlobal());
+    if (providers.ffz) tasks.push(fetchFFZGlobal());
+    if (providers.bttv) tasks.push(fetchBTTVGlobal());
+    const results = await Promise.all(tasks);
     const map: EmoteMap = new Map();
-    for (const e of [...sevenTv, ...ffz]) {
+    for (const e of results.flat()) {
       if (!map.has(e.name)) map.set(e.name, e);
     }
     globalEmotes = map;
@@ -182,22 +240,31 @@ async function loadGlobalEmotes(): Promise<EmoteMap> {
   return globalEmotesPromise;
 }
 
-export async function loadChannelEmotes(channelName: string): Promise<EmoteMap> {
+export async function loadChannelEmotes(
+  channelName: string,
+  options?: { providers?: EmoteProviderConfig; twitchUserId?: string },
+): Promise<EmoteMap> {
   const key = channelName.toLowerCase();
   const cached = channelCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.emotes;
   }
 
-  const [global, sevenTvChannel, ffzChannel] = await Promise.all([
-    loadGlobalEmotes(),
-    fetch7TVChannel(channelName),
-    fetchFFZChannel(channelName),
-  ]);
+  const providers = options?.providers ?? DEFAULT_PROVIDERS;
+  const twitchUserId = options?.twitchUserId;
+
+  const tasks: Promise<EmoteMap | Emote[]>[] = [loadGlobalEmotes(providers)];
+  if (providers.sevenTV) tasks.push(fetch7TVChannel(channelName));
+  if (providers.ffz) tasks.push(fetchFFZChannel(channelName));
+  if (providers.bttv && twitchUserId) tasks.push(fetchBTTVChannel(twitchUserId));
+
+  const results = await Promise.all(tasks);
+  const global = results[0] as EmoteMap;
+  const channelEmotes = results.slice(1).flat() as Emote[];
 
   const map: EmoteMap = new Map(global);
   // Channel emotes override globals (same name → channel-specific version)
-  for (const e of [...ffzChannel, ...sevenTvChannel]) {
+  for (const e of channelEmotes) {
     map.set(e.name, e);
   }
 
@@ -216,6 +283,8 @@ export function getCachedChannelEmotes(channelName: string): EmoteMap | null {
   if (cached && cached.expiresAt > Date.now()) {
     return cached.emotes;
   }
+  // Remove expired entry so the Map doesn't grow unbounded
+  if (cached) channelCache.delete(key);
   return null;
 }
 
@@ -235,22 +304,51 @@ export type TextSegment =
   | { type: "text"; content: string }
   | { type: "emote"; name: string; url: string; provider: string };
 
+/**
+ * Returns up to `limit` emote names from the cached channel emotes,
+ * prioritizing channel-specific emotes first, then globals.
+ * Used to inform the AI what emotes are available to use.
+ */
+export function getAvailableEmoteNames(channelName: string, limit = 50): string[] {
+  const map = getCachedChannelEmotes(channelName);
+  if (!map || map.size === 0) return [];
+  const all = Array.from(map.values());
+  // Channel emotes first (non-global providers take priority by name specificity)
+  const channelEmotes = all.filter((e) => e.provider !== "7tv" || !globalEmotes?.has(e.name));
+  const names = channelEmotes.length > 0 ? channelEmotes : all;
+  return names.slice(0, limit).map((e) => e.name);
+}
+
+// Memoized emote regex — avoids rebuilding on every parse call
+let _emoteRegexCache: { key: string; regex: RegExp } | null = null;
+
+function getEmoteRegex(emoteMap: EmoteMap): RegExp | null {
+  if (emoteMap.size === 0) return null;
+  const names = Array.from(emoteMap.keys()).sort((a, b) => b.length - a.length);
+  if (names.length === 0) return null;
+  // Cache key: joined names — if the set hasn't changed, reuse the regex
+  const key = names.join("|");
+  if (_emoteRegexCache && _emoteRegexCache.key === key) {
+    return _emoteRegexCache.regex;
+  }
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const regex = new RegExp(`(${escaped.join("|")})`, "g");
+  _emoteRegexCache = { key, regex };
+  return regex;
+}
+
 export function parseEmotes(text: string, emoteMap: EmoteMap | null): TextSegment[] {
   if (!emoteMap || emoteMap.size === 0) return [{ type: "text", content: text }];
 
-  // Build a regex that matches any emote name as a whole word
-  // Sort by length descending so longer emote names match first
-  const names = Array.from(emoteMap.keys()).sort((a, b) => b.length - a.length);
-  if (names.length === 0) return [{ type: "text", content: text }];
-
-  // Escape regex special characters in emote names
-  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(`(${escaped.join("|")})`, "g");
+  const pattern = getEmoteRegex(emoteMap);
+  if (!pattern) return [{ type: "text", content: text }];
 
   const segments: TextSegment[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
+  // Reset regex state for each use (shared regex with /g flag)
+  pattern.lastIndex = 0;
   while ((match = pattern.exec(text)) !== null) {
     // Add preceding text
     if (match.index > lastIndex) {

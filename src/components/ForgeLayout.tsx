@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { PanelImperativeHandle } from "react-resizable-panels";
 import {
@@ -11,11 +11,14 @@ import { TuningDeck } from "./TuningDeck";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { useAppStore } from "../store";
 import { buttonVariants } from "./ui/button";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
+import { MultiBotPanel, MultiBotButton, SendAsPicker, MultiBotModeBadge } from "./MultiBotPanel";
 import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useDeepgramTranscription } from "../hooks/useDeepgramTranscription";
 import { ensureMicPermission } from "../hooks/usePushToTalk";
+import { useAudioEnergy } from "../hooks/useAudioEnergy";
 import { 
   Users, 
   Tv, 
@@ -48,9 +51,13 @@ import {
   Send,
   Sparkles,
   Search,
+  Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
+import { motion, AnimatePresence } from "motion/react";
+import { SENTIMENT_DOT_COLORS } from "../lib/sentiment";
+import type { SentimentLabel } from "../types";
 import { visionRequest } from "../lib/ai";
 import { getActiveProvider } from "../lib/keys";
 import { getPlatformSendFn } from "../lib/platformSend";
@@ -60,6 +67,7 @@ import { playSfx } from "../lib/sfx";
 import { computeFrameDelta, DELTA_THRESHOLD } from "../lib/frameDiff";
 import { createMarker } from "../lib/chatUtils";
 import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
+import { getTwitchSession } from "../lib/twitch";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
@@ -120,12 +128,16 @@ function CollapseButtonPortal({ targetRef, onClick }: { targetRef: React.RefObje
 }
 
 export function ForgeLayout() {
+  const isMobile = useIsMobile();
+  const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
   const {
     streamMetadata,
     updateStreamMetadata,
     setVisualSnapshot,
     visualSnapshotUrl,
     visualContextTags,
+    visualSnapshotHistory,
+    setVisualHistoryOpen,
     config,
     updateConfig,
     isForging,
@@ -143,10 +155,10 @@ export function ForgeLayout() {
     goldenMemoryId,
     setGoldenMemory,
     clearAllContext,
-    cosmotechTheme,
-    setCosmotechTheme,
+    theme,
     setStreamCaptureActive,
     sentMessages,
+    bots,
     appendChatLog,
     messageSoundEnabled,
     chatSearchQuery,
@@ -154,6 +166,15 @@ export function ForgeLayout() {
     smartReplies,
     setSmartReplies,
     smartRepliesLoading,
+    isAutoForgeThinking,
+    sentimentHistory,
+    addSentMessage,
+    incrementMessagesSent,
+    addAutoForgeEvent,
+    setLastManualSendMs,
+    addBotSentMessage,
+    incrementBotStat,
+    addBotAutoForgeEvent,
   } = useAppStore();
 
   const {
@@ -286,6 +307,8 @@ export function ForgeLayout() {
   }, [smartCapture]);
   const [isMicCapturing, setIsMicCapturing] = useState(false);
   const [visualContextExpanded, setVisualContextExpanded] = useState(false);
+  const [micStreamForEnergy, setMicStreamForEnergy] = useState<MediaStream | null>(null);
+  useAudioEnergy(micStreamForEnergy);
 
   useEffect(() => {
     localStorage.setItem("forge-visual-auto", visualAutoCapture.toString());
@@ -356,10 +379,12 @@ export function ForgeLayout() {
   useEffect(() => {
     if (!chatAnchored) return;
     if (expandedChatRef.current) {
-      expandedChatRef.current.scrollTop = expandedChatRef.current.scrollHeight;
+      const scrollEl = expandedChatRef.current.querySelector('.forge-scroll') as HTMLElement | null;
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
     }
     if (flyoutChatRef.current) {
-      flyoutChatRef.current.scrollTop = flyoutChatRef.current.scrollHeight;
+      const scrollEl = flyoutChatRef.current.querySelector('.forge-scroll') as HTMLElement | null;
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
     }
   }, [chatLog, chatAnchored, leftCollapsed]);
 
@@ -382,15 +407,15 @@ export function ForgeLayout() {
 
   useEffect(() => {
     const streamOpen = openWidgets.has("stream");
-    if (windowSelected && !streamOpen) {
+    if (tabCaptureMode && windowSelected && !streamOpen) {
       toast.warning(
-        "Stream Embed is closed while capturing! Visual frames may be wrong — open the Stream Embed widget to ensure proper crop alignment.",
+        "Stream Embed is closed while same-tab capturing! Visual frames may be wrong — open the Stream Embed widget to ensure proper crop alignment.",
         { id: streamCaptureWarningId, duration: Infinity }
       );
     } else {
       toast.dismiss(streamCaptureWarningId);
     }
-  }, [windowSelected, openWidgets]);
+  }, [tabCaptureMode, windowSelected, openWidgets]);
   const dragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const iconBarRef = useRef<HTMLDivElement>(null);
   const [streamOverlaySize, setStreamOverlaySize] = useState(() => {
@@ -420,6 +445,7 @@ export function ForgeLayout() {
   const [draggingIcon, setDraggingIcon] = useState<WidgetType | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [memoryClearConfirm, setMemoryClearConfirm] = useState(false);
+  const [multiBotPanelOpen, setMultiBotPanelOpen] = useState(false);
   const memoryClearTimerRef = useRef<number | null>(null);
   const iconRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const iconDragStartRef = useRef<{ x: number; y: number; widget: WidgetType } | null>(null);
@@ -476,6 +502,35 @@ export function ForgeLayout() {
     prevSentCountRef.current = sentMessages.length;
   }, [sentMessages, appendChatLog]);
 
+  // Multi-bot: insert a colored marker into the chat log when ANY bot's own
+  // runtime.sentMessages grows (per-bot manual ChatSender sends + per-bot
+  // AutoForge sends). Per-bot sends are recorded against bots[i].runtime, not
+  // the global sentMessages, so without this the Chat Pulse line never appears
+  // for multi-bot activity.
+  const prevBotSentCountsRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    let appended = false;
+    for (const bot of bots) {
+      const prev = prevBotSentCountsRef.current[bot.id] ?? 0;
+      const cur = bot.runtime.sentMessages.length;
+      if (cur > prev) {
+        const lastSent = bot.runtime.sentMessages[cur - 1];
+        if (lastSent?.source === "manual") {
+          appendChatLog(createMarker("manual"));
+          appended = true;
+        } else if (lastSent?.source === "autoforge" || lastSent?.source === "followup") {
+          appendChatLog(createMarker("autoforge"));
+          appended = true;
+        }
+      }
+      prevBotSentCountsRef.current[bot.id] = cur;
+    }
+    // Bumping chat activity so the pulse ring fires for our own sends too.
+    if (appended) {
+      chatMsgTimesRef.current.push(Date.now());
+    }
+  }, [bots, appendChatLog]);
+
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
@@ -526,12 +581,17 @@ export function ForgeLayout() {
     }
   }, [streamMetadata?.channelName]);
 
-  // Load 7TV + FrankerFaceZ emotes for the current channel
+  // Load 7TV + FrankerFaceZ + BTTV emotes for the current channel
   useEffect(() => {
     const channel = streamMetadata?.channelName;
     if (!channel) return;
     let cancelled = false;
-    loadChannelEmotes(channel).then(() => {
+    const state = useAppStore.getState();
+    const twitchUserId = getTwitchSession()?.userId || undefined;
+    loadChannelEmotes(channel, {
+      providers: state.emoteProviders,
+      twitchUserId,
+    }).then(() => {
       if (cancelled) return;
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -544,6 +604,56 @@ export function ForgeLayout() {
     }
   }, [editingChannel]);
 
+  // Send a smart reply and record it in the sent log / stats so anti-repetition
+  // and analytics see it (previously smart replies were sent but not tracked).
+  const sendSmartReply = async (text: string) => {
+    const channel = streamMetadata?.channelName;
+    if (!channel) return;
+    const state = useAppStore.getState();
+    const selectedBotId = state.multiBotEnabled && state.manualSendBotId ? state.manualSendBotId : undefined;
+    const sendFn = getPlatformSendFn(state.platform, selectedBotId);
+    try {
+      await sendFn(channel, text);
+      state.setLastManualSendMs(Date.now());
+      if (state.messageSoundEnabled) playMessageSound();
+      const sentBot = selectedBotId ? state.bots.find((b) => b.id === selectedBotId) : null;
+      if (state.multiBotEnabled && sentBot) {
+        state.addBotSentMessage(sentBot.id, {
+          message: text,
+          channel,
+          timestamp: Date.now(),
+          source: "manual",
+          botId: sentBot.id,
+        });
+        state.incrementBotStat(sentBot.id, "messagesSent");
+        state.addBotAutoForgeEvent(sentBot.id, {
+          timestamp: Date.now(),
+          type: "action_sent",
+          severity: "high",
+          summary: `Smart reply as @${sentBot.session?.username}: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
+          details: { source: "smart_reply", message: text, channel, botId: sentBot.id },
+        });
+      } else {
+        addSentMessage({ message: text, channel, timestamp: Date.now(), source: "manual" });
+        incrementMessagesSent();
+        useAppStore.getState().incrementStat("manualActions");
+        addAutoForgeEvent({
+          timestamp: Date.now(),
+          type: "action_sent",
+          severity: "high",
+          summary: `Smart reply: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
+          details: { source: "smart_reply", message: text, channel },
+        });
+      }
+      toast.success("Reply sent!");
+      playSfx('send_message');
+    } catch (e: any) {
+      toast.error(e.message || "Failed to send reply");
+      playSfx('error');
+    }
+    setSmartReplies([]);
+  };
+
   // Smart reply keyboard shortcuts (1/2/3 to send)
   useEffect(() => {
     if (smartReplies.length === 0) return;
@@ -551,15 +661,8 @@ export function ForgeLayout() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const idx = parseInt(e.key, 10) - 1;
       if (idx >= 0 && idx < smartReplies.length) {
-        const reply = smartReplies[idx];
-        const channel = streamMetadata?.channelName;
-        if (!channel) return;
         e.preventDefault();
-        if (platform === 'joystick') getPlatformSendFn('joystick')(channel, reply.text);
-        else if (platform === 'kick') getPlatformSendFn('kick')(channel, reply.text);
-        else getPlatformSendFn('twitch')(channel, reply.text);
-        toast.success("Reply sent!");
-        setSmartReplies([]);
+        sendSmartReply(smartReplies[idx].text);
       }
     };
     window.addEventListener('keydown', handler);
@@ -1085,6 +1188,7 @@ export function ForgeLayout() {
         stopDeepgram();
       }
       setIsMicCapturing(false);
+      setMicStreamForEnergy(null);
       toast.success("Microphone capture stopped");
       return;
     }
@@ -1097,6 +1201,7 @@ export function ForgeLayout() {
       }
 
       const sharedStream = new MediaStream(micStream.getTracks().map((t) => t.clone()));
+      setMicStreamForEnergy(sharedStream);
       toast.info("Starting microphone transcription via Whisper...");
       const showedPrompt = await startEmbedWhisper(sharedStream, (formattedSegment) => {
         appendAudioTranscript(formattedSegment);
@@ -1198,7 +1303,7 @@ export function ForgeLayout() {
       // Don't stop the stream — keep it cached for reuse
       // captureStream.getTracks().forEach((track) => track.stop());
 
-      setVisualSnapshot(dataUrl, ["Captured"]);
+      setVisualSnapshot(dataUrl, ["Captured"], isManual ? "manual" : "auto", undefined, true);
       window.dispatchEvent(new CustomEvent('bg-visual-capture'));
 
       // Trigger icon animation
@@ -1213,7 +1318,7 @@ export function ForgeLayout() {
       }
 
       // Frame diffing — skip vision API call if scene hasn't meaningfully changed
-      const { delta, imageData } = computeFrameDelta(canvas, prevFrameDataRef.current);
+      const { delta, imageData, isFirstFrame } = computeFrameDelta(canvas, prevFrameDataRef.current);
       prevFrameDataRef.current = imageData;
 
       // Smart capture: dynamically adjust interval based on scene change rate
@@ -1233,8 +1338,17 @@ export function ForgeLayout() {
         }
       }
 
+      // C3: Skip vision API on first frame (no baseline to compare against),
+      // but still store the snapshot. Only manual captures force a vision call on first frame.
+      if (isFirstFrame && !isManual) {
+        console.log(`[Visual] First frame captured — storing baseline, skipping vision API`);
+        setVisualSnapshot(dataUrl, ["First frame — baseline"], "auto", delta);
+        return;
+      }
+
       if (!isManual && delta < DELTA_THRESHOLD) {
         console.log(`[Visual] Frame unchanged (delta: ${(delta * 100).toFixed(1)}%), skipping vision API`);
+        setVisualSnapshot(dataUrl, ["Unchanged frame"], "auto", delta);
         return;
       }
 
@@ -1246,7 +1360,9 @@ export function ForgeLayout() {
         const data = await visionRequest(dataUrl, provider, prevVisualContextRef.current);
         if (data.visualContext) {
           prevVisualContextRef.current = data.visualContext;
-          setVisualSnapshot(dataUrl, [data.visualContext]);
+          setVisualSnapshot(dataUrl, [data.visualContext], isManual ? "manual" : "auto", delta);
+        } else {
+          setVisualSnapshot(dataUrl, ["Captured — no analysis"], isManual ? "manual" : "auto", delta);
         }
       } catch (visionErr: any) {
         const vErrMsg = visionErr?.message || String(visionErr);
@@ -1254,6 +1370,7 @@ export function ForgeLayout() {
           console.error("[Visual] Vision API error:", visionErr);
           toast.error("Vision API failed", { description: vErrMsg });
         }
+        setVisualSnapshot(dataUrl, ["Captured — vision failed"], isManual ? "manual" : "auto", delta);
       }
     } catch (e: any) {
       console.error("[Visual] Capture error:", e);
@@ -1265,7 +1382,17 @@ export function ForgeLayout() {
     if (widget === "audio") {
       return (
         <div className="text-xs text-gray-300 space-y-1.5 font-mono">
-          {whisperPrompt && (
+          {isMobile && (
+            <div className="flex flex-col gap-2 p-3 rounded-lg bg-orange-500/10 border border-orange-500/20">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-orange-400 shrink-0" />
+                <span className="text-[11px] text-orange-200 leading-snug">
+                  Audio transcription isn't available on mobile. System audio capture and in-browser Whisper both require a desktop Chromium browser (Chrome or Edge) with WebGPU support.
+                </span>
+              </div>
+            </div>
+          )}
+          {!isMobile && whisperPrompt && (
             <div className="flex flex-col gap-2 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
               <div className="flex items-center gap-2">
                 <AudioLines className="w-4 h-4 text-purple-400 shrink-0" />
@@ -1291,7 +1418,7 @@ export function ForgeLayout() {
               </div>
             </div>
           )}
-          {whisperDownloading && (
+          {!isMobile && whisperDownloading && (
             <div className="flex items-center gap-2 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
               <AudioLines className="w-4 h-4 text-purple-400 shrink-0 animate-pulse" />
               <span className="text-[11px] text-purple-200">
@@ -1299,7 +1426,7 @@ export function ForgeLayout() {
               </span>
             </div>
           )}
-          {audioTranscript ? (
+          {!isMobile && audioTranscript ? (
             audioTranscript.split("\n").map((line, i) => {
               const match = line.match(/^\[(.*?)\]\s*(.*)$/);
               const time = match ? match[1] : "Audio";
@@ -1325,14 +1452,14 @@ export function ForgeLayout() {
                 </div>
               );
             })
-          ) : (
+          ) : !isMobile ? (
             <div className="flex flex-col items-center justify-center py-10 gap-2">
               <AudioLines className="w-8 h-8 text-purple-500/30" />
               <span className="text-[11px] text-gray-600 italic text-center">
                 Audio sync inactive.
               </span>
             </div>
-          )}
+          ) : null}
         </div>
       );
     }
@@ -1366,6 +1493,18 @@ export function ForgeLayout() {
               </button>
             )}
           </div>
+          {/* E2: Chat Sentiment Heatmap Overlay — pinned to top with search */}
+          {sentimentHistory.length > 0 && (
+            <div className="flex items-center gap-px h-1.5 mb-1 rounded overflow-hidden bg-black/30 shrink-0" title="Recent chat sentiment heatmap">
+              {sentimentHistory.slice(-40).map((r, idx) => (
+                <div
+                  key={idx}
+                  className={cn("flex-1 h-full transition-colors", SENTIMENT_DOT_COLORS[r.label as SentimentLabel])}
+                  style={{ opacity: 0.3 + (r.score * 0.7) }}
+                />
+              ))}
+            </div>
+          )}
           {/* Smart Reply Chips */}
           {(smartReplies.length > 0 || smartRepliesLoading) && (
             <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/5 bg-cyan-500/5 shrink-0 flex-wrap">
@@ -1378,15 +1517,7 @@ export function ForgeLayout() {
                     <button
                       key={reply.id}
                       type="button"
-                      onClick={() => {
-                        const channel = streamMetadata?.channelName;
-                        if (!channel) return;
-                        if (platform === 'joystick') getPlatformSendFn('joystick')(channel, reply.text);
-                        else if (platform === 'kick') getPlatformSendFn('kick')(channel, reply.text);
-                        else getPlatformSendFn('twitch')(channel, reply.text);
-                        toast.success("Reply sent!");
-                        setSmartReplies([]);
-                      }}
+                      onClick={() => sendSmartReply(reply.text)}
                       className="text-[10px] px-2 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-400/50 transition-all max-w-[200px] truncate flex items-center gap-1"
                       title={reply.text}
                     >
@@ -1405,12 +1536,40 @@ export function ForgeLayout() {
               )}
             </div>
           )}
-          <div className="text-xs text-gray-300 space-y-1 font-mono flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="text-xs text-gray-300 space-y-1 font-mono flex-1 overflow-y-auto overflow-x-hidden forge-scroll">
+          {/* B5: Bot Typing Indicator */}
+          <AnimatePresence>
+            {isAutoForgeThinking && (
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                className="flex items-center gap-1.5 py-1 px-2 my-0.5 rounded-md bg-orange-500/10 border border-orange-500/20"
+              >
+                <span className="text-[8px] font-bold uppercase tracking-wider text-orange-400 shrink-0">AutoForge</span>
+                <div className="flex items-center gap-0.5">
+                  {[0, 1, 2].map((i) => (
+                    <motion.span
+                      key={i}
+                      className="w-1 h-1 rounded-full bg-orange-400"
+                      animate={{ opacity: [0.3, 1, 0.3] }}
+                      transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+                    />
+                  ))}
+                </div>
+                <span className="text-[9px] text-orange-300/70 italic">thinking...</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
           {filteredChatLog.length > 0 ? (
-            filteredChatLog.map((msg, i) => {
+            <>
+            {filteredChatLog.map((msg, i) => {
               if (msg.marker === "manual") {
                 return (
-                  <div key={i} className="flex items-center gap-1.5 py-0.5 my-0.5">
+                  <div
+                    key={`manual-${i}`}
+                    className="flex items-center gap-1.5 py-0.5 my-0.5"
+                  >
                     <div className="flex-1 h-0.5 bg-yellow-400/80 rounded-full" />
                     <span className="text-[8px] font-bold uppercase tracking-wider text-yellow-400/90 shrink-0">Forge</span>
                     <div className="flex-1 h-0.5 bg-yellow-400/80 rounded-full" />
@@ -1419,7 +1578,10 @@ export function ForgeLayout() {
               }
               if (msg.marker === "autoforge") {
                 return (
-                  <div key={i} className="flex items-center gap-1.5 py-0.5 my-0.5">
+                  <div
+                    key={`af-${i}`}
+                    className="flex items-center gap-1.5 py-0.5 my-0.5"
+                  >
                     <div className="flex-1 h-0.5 bg-orange-500/80 rounded-full" />
                     <span className="text-[8px] font-bold uppercase tracking-wider text-orange-400/90 shrink-0">AutoForge</span>
                     <div className="flex-1 h-0.5 bg-orange-500/80 rounded-full" />
@@ -1430,10 +1592,11 @@ export function ForgeLayout() {
               const text = msg.text;
               const badges = msg.badges || [];
               const isBanned = msg.banned;
+              const sentimentColor = msg.sentiment ? SENTIMENT_DOT_COLORS[msg.sentiment as SentimentLabel] : null;
               return (
                 <div
-                  key={i}
-                  className={`group relative flex items-start hover:bg-teal-500/5 p-1.5 rounded-md transition-colors border-b border-white/[0.02]${isBanned ? ' banned-message' : ''}`}
+                  key={msg.id || `msg-${i}`}
+                  className={`group relative flex items-start hover:bg-teal-500/5 p-1.5 rounded-md border-b border-white/[0.02]${isBanned ? ' banned-message' : ''}`}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     navigator.clipboard.writeText(`${username}: ${text}`).then(() => {
@@ -1444,31 +1607,18 @@ export function ForgeLayout() {
                   <div className="flex items-center gap-1 shrink-0 mr-1.5">
                     {badges.includes('broadcaster') && <span className="text-[8px] text-purple-400" title="Broadcaster">📹</span>}
                     {badges.includes('moderator') && (
-                      <Tooltip>
-                        <TooltipTrigger render={<span className="text-[8px] text-green-400 cursor-help">🛡️</span>} />
-                        <TooltipContent side="top" className="bg-[#1a1a1f] border border-green-500/20 text-green-300 text-[10px] font-semibold rounded-lg px-2.5 py-1 shadow-xl">
-                          <div className="flex flex-col gap-0.5">
-                            <span className="font-bold uppercase tracking-wider">Moderator</span>
-                            <span className="text-[9px] text-gray-400 normal-case">Channel moderator with chat privileges</span>
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
+                      <span className="text-[8px] text-green-400 cursor-help" title="Moderator">🛡️</span>
                     )}
                     {badges.includes('vip') && <span className="text-[8px] text-pink-400" title="VIP">💎</span>}
                     {badges.includes('subscriber') && (
-                      <Tooltip>
-                        <TooltipTrigger render={<span className="text-[8px] text-purple-400 cursor-help">⭐</span>} />
-                        <TooltipContent side="top" className="bg-[#1a1a1f] border border-purple-500/20 text-purple-300 text-[10px] font-semibold rounded-lg px-2.5 py-1 shadow-xl">
-                          <div className="flex flex-col gap-0.5">
-                            <span className="font-bold uppercase tracking-wider">Subscriber</span>
-                            <span className="text-[9px] text-gray-400 normal-case">Active channel subscriber</span>
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
+                      <span className="text-[8px] text-purple-400 cursor-help" title="Subscriber">⭐</span>
                     )}
                   </div>
                   <span className={`font-bold text-[10px] shrink-0${isBanned ? ' banned-username' : ' text-teal-400'}`}>@{username}:</span>
                   <EmoteText text={text} channel={streamMetadata?.channelName} className={`leading-snug break-words flex-1 min-w-0 ml-1.5${isBanned ? ' banned-text' : ' text-gray-200'}`} />
+                  {sentimentColor && (
+                    <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 self-center', sentimentColor)} title={`Sentiment: ${msg.sentiment}`} />
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -1483,7 +1633,8 @@ export function ForgeLayout() {
                   </button>
                 </div>
               );
-            })
+            })}
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center py-10 gap-2">
               <MessageSquare className="w-8 h-8 text-teal-500/30" />
@@ -1556,13 +1707,23 @@ export function ForgeLayout() {
                 {visualCountdown}s
               </span>
             )}
+            {visualSnapshotHistory.length > 0 && (
+              <button
+                onClick={() => { setVisualHistoryOpen(true); playSfx('hud_open'); }}
+                className="flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-orange-400 py-1.5 rounded-md border border-white/10 hover:border-orange-500/30 hover:bg-orange-500/5 transition-all"
+                title="View visual snapshot history"
+              >
+                <Clock className="w-3 h-3" />
+                History · {visualSnapshotHistory.length}
+              </button>
+            )}
           </div>
         </div>
       );
     }
     if (widget === "memory") {
       return (
-        <div className="flex flex-col gap-1.5 text-xs font-mono">
+        <div className="flex flex-col gap-1 text-xs font-mono">
           {pinnedMemories.length > 0 ? (
             pinnedMemories.map((mem) => {
               const isGolden = goldenMemoryId === mem.id;
@@ -1617,7 +1778,7 @@ export function ForgeLayout() {
             <div className="flex flex-col items-center justify-center py-10 gap-2">
               <Brain className="w-8 h-8 text-blue-500/30" />
               <span className="text-[11px] text-gray-600 italic text-center">
-                No pinned context yet. Pin key moments from chat, audio transcripts, or visual snapshots to build a running memory of this stream session.
+                No pinned context yet. Pin key moments from chat, audio transcripts, or visual snapshots to build a running memory.
               </span>
             </div>
           )}
@@ -1651,6 +1812,136 @@ export function ForgeLayout() {
 
   return (
     <TooltipProvider>
+      {isMobile ? (
+        /* ═══ Mobile Layout — tabbed, bottom bar, single panel at a time ═══ */
+        <div className="flex flex-col h-full w-full bg-transparent relative z-10 overflow-hidden">
+          {/* Compact Header — logo + login only */}
+          <div className="shrink-0 h-[42px] border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-2 z-40 safe-top">
+            <div className="flex items-center shrink-0 gap-2">
+              <img src={logoUrl} alt="MADchatter" className="relative z-10 h-[28px] w-auto forge-logo-glow cursor-pointer select-none" style={{ opacity: 0.8 }} />
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {activeUser ? (
+                <div className="flex items-center h-7 rounded-md overflow-hidden border bg-[#18181B] border-white/10">
+                  <span className="text-[11px] font-bold tracking-wide text-white truncate max-w-[80px] px-2">
+                    @{activeUser.display_name || activeUser.login || activeUser.username}
+                  </span>
+                  <button onClick={activeLogout} className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors" title="Disconnect">
+                    <LogOut className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={activeLogin}
+                  disabled={activeLoginInProgress}
+                  className={cn(
+                    "h-8 px-3 flex items-center gap-1.5 disabled:opacity-70 text-white text-[11px] font-bold uppercase tracking-wider rounded-md transition-colors touch-target",
+                    platform === 'kick' ? "bg-[#53fc18] hover:bg-[#44d014] text-black"
+                      : platform === 'joystick' ? "bg-[#FF6B35] hover:bg-[#e55a25]"
+                        : "bg-[#9146FF] hover:bg-[#772ce8]"
+                  )}
+                >
+                  {activeLoginInProgress ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <LogIn className="w-3.5 h-3.5" />}
+                  <span>Login</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Tab Content — single panel visible at a time */}
+          <div className="mobile-panel-stack">
+            {mobileTab === "forge" && (
+              <div className="mobile-panel">
+                <TheForge />
+              </div>
+            )}
+            {mobileTab === "tuning" && (
+              <div className="mobile-panel">
+                <TuningDeck rightSize={22} />
+              </div>
+            )}
+            {mobileTab === "context" && (
+              <div className="mobile-panel forge-scroll-main select-text p-3 space-y-3">
+                {iconOrder.map((widget) => {
+                  const widgetIcon: Record<WidgetType, React.ReactNode> = {
+                    audio: <AudioLines className="w-3.5 h-3.5 text-purple-400" />,
+                    chat: <MessageSquare className="w-3.5 h-3.5 text-teal-400" />,
+                    visual: <Eye className="w-3.5 h-3.5 text-orange-400" />,
+                    memory: <Brain className="w-3.5 h-3.5 text-blue-400" />,
+                    stream: <Tv className="w-3.5 h-3.5 text-[#9146FF]" />,
+                  };
+                  const widgetLabel: Record<WidgetType, string> = {
+                    audio: "Audio Transcript",
+                    chat: "Chat Pulse",
+                    visual: "Visual Snapshot",
+                    memory: "Long-Term Memory",
+                    stream: "Stream Embed",
+                  };
+                  const widgetBorder: Record<WidgetType, string> = {
+                    audio: "border-purple-500/20",
+                    chat: "border-teal-500/20",
+                    visual: "border-orange-500/20",
+                    memory: "border-blue-500/20",
+                    stream: "border-[#9146FF]/20",
+                  };
+                  return (
+                    <div key={widget} className={`bg-[#0F0F12] border ${widgetBorder[widget]} rounded-xl overflow-hidden flex flex-col`}>
+                      <div className="flex items-center px-3 py-2 border-b border-white/5 bg-white/[0.02] shrink-0">
+                        <span className="text-xs font-bold uppercase tracking-wider text-gray-300 flex items-center gap-2">
+                          {widgetIcon[widget]} {widgetLabel[widget]}
+                        </span>
+                      </div>
+                      <div className="flex-1 overflow-y-auto p-3 min-h-0 forge-scroll">
+                        {renderWidgetContent(widget)}
+                      </div>
+                    </div>
+                  );
+                })}
+                {variants.length > 0 && (
+                  <div className="flex flex-col items-center gap-1 py-4">
+                    <FidgetSpinner size={48} />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Tab Bar */}
+          <div className="mobile-tab-bar" role="tablist" aria-label="Main navigation">
+            <button
+              role="tab"
+              aria-selected={mobileTab === "context"}
+              data-active={mobileTab === "context"}
+              onClick={() => setMobileTab("context")}
+              className="touch-target"
+            >
+              <Brain className="w-5 h-5" />
+              <span>Context</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={mobileTab === "forge"}
+              data-active={mobileTab === "forge"}
+              onClick={() => setMobileTab("forge")}
+              className="touch-target"
+            >
+              <Zap className="w-5 h-5" />
+              <span>Forge</span>
+            </button>
+            <button
+              role="tab"
+              aria-selected={mobileTab === "tuning"}
+              data-active={mobileTab === "tuning"}
+              onClick={() => setMobileTab("tuning")}
+              className="touch-target"
+            >
+              <Sparkles className="w-5 h-5" />
+              <span>Tuning</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+      <>
       <div className="flex h-full w-full overflow-hidden bg-transparent relative z-10">
         <ResizablePanelGroup
           key={`left-${leftCollapsed}`}
@@ -1813,7 +2104,7 @@ export function ForgeLayout() {
                                     onIconClick(widget);
                                   }}
                                   style={{ width: `${40 * iconScale}px`, height: `${40 * iconScale}px` }}
-                                  className={`relative rounded-lg flex items-center justify-center ${colorClass[widget]} cursor-default active:cursor-default transition-all focus-visible:ring-2 ${ringClass[widget]} focus-visible:outline-none ${openWidgets.has(widget) ? activeBg[widget] : inactiveBg[widget]} ${isDraggingThis ? "icon-dragging" : ""} ${widget === "visual" && visualAutoFlash ? "visual-auto-flash" : ""} ${widget === "visual" && visualManualFlash ? "visual-manual-flash" : ""} ${widget === "stream" && windowSelected && !openWidgets.has("stream") ? "stream-capture-warning" : ""}`}
+                                  className={`relative rounded-lg flex items-center justify-center ${colorClass[widget]} cursor-default active:cursor-default transition-all focus-visible:ring-2 ${ringClass[widget]} focus-visible:outline-none ${openWidgets.has(widget) ? activeBg[widget] : inactiveBg[widget]} ${isDraggingThis ? "icon-dragging" : ""} ${widget === "visual" && visualAutoFlash ? "visual-auto-flash" : ""} ${widget === "visual" && visualManualFlash ? "visual-manual-flash" : ""} ${widget === "stream" && tabCaptureMode && windowSelected && !openWidgets.has("stream") ? "stream-capture-warning" : ""}`}
                                   aria-label={iconLabel[widget]}
                                   aria-pressed={openWidgets.has(widget)}
                                 >
@@ -2060,15 +2351,15 @@ export function ForgeLayout() {
                             )}
                           </div>
                           {widget === "audio" ? (
-                            <div ref={expandedAudioRef} className="p-3 min-h-0 overflow-y-auto forge-scroll-audio" style={{ maxHeight: '170px' }}>
+                            <div ref={expandedAudioRef} className="p-3 min-h-0 overflow-y-auto forge-scroll-audio" style={{ maxHeight: '195px' }}>
                               {renderWidgetContent(widget)}
                             </div>
                           ) : widget === "chat" ? (
-                            <div ref={expandedChatRef} className="p-3 min-h-0 overflow-y-auto overflow-x-hidden forge-scroll" style={{ maxHeight: `280px` }}>
+                            <div ref={expandedChatRef} className="p-3 min-h-0 overflow-hidden flex flex-col" style={{ height: `330px` }}>
                               {renderWidgetContent(widget)}
                             </div>
                           ) : widget === "memory" ? (
-                            <div className="p-3 min-h-0 overflow-y-auto forge-scroll" style={{ height: '225px' }}>
+                            <div className="px-2 py-1 min-h-0 overflow-y-auto forge-scroll" style={{ height: '150px' }}>
                               {renderWidgetContent(widget)}
                             </div>
                           ) : widget === "stream" ? (
@@ -2238,6 +2529,22 @@ export function ForgeLayout() {
                     </div>
                   </div>
 
+                  {/* Multi-Bot launcher + panel */}
+                  <div className="relative shrink-0">
+                    <MultiBotButton active={multiBotPanelOpen} onClick={() => setMultiBotPanelOpen((v) => !v)} />
+                    {multiBotPanelOpen && (
+                      <div className="fixed top-16 right-4 z-50">
+                        <MultiBotPanel onClose={() => setMultiBotPanelOpen(false)} />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Mode indicator: appears only when multi-bot is actually engaged */}
+                  <MultiBotModeBadge />
+
+                  {/* Send-as identity picker (multi-bot mode only) */}
+                  <SendAsPicker />
+
                   {/* Far-Right: Platform Login */}
                   <div className="flex items-center gap-2 shrink-0 relative">
                     {/* CosmoTech Theme Toggle */}
@@ -2249,23 +2556,29 @@ export function ForgeLayout() {
                             {...props}
                             type="button"
                             onClick={() => {
-                              const newVal = !cosmotechTheme;
-                              setCosmotechTheme(newVal);
-                              toast.success(`CosmoTech™ theme ${newVal ? 'enabled' : 'disabled'}`);
+                              const s = useAppStore.getState();
+                              const themes: ("default" | "cosmotech" | "corrupture")[] = ["default", "cosmotech", "corrupture"];
+                              const currentIdx = themes.indexOf(s.theme);
+                              const nextTheme = themes[(currentIdx + 1) % themes.length];
+                              s.setTheme(nextTheme);
+                              const themeName = nextTheme === "default" ? "Default" : nextTheme === "cosmotech" ? "CosmoTech™" : "Corrupture™";
+                              toast.success(`${themeName} theme enabled`);
                             }}
                             className={cn(
                               "h-7 w-7 flex items-center justify-center rounded-md border transition-all",
-                              cosmotechTheme
-                                ? "bg-cyan-500/15 border-cyan-400/40 text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.2)]"
+                              theme !== "default"
+                                ? theme === "corrupture"
+                                  ? "bg-amber-500/15 border-amber-400/40 text-amber-300 shadow-[0_0_12px_rgba(201,161,74,0.2)]"
+                                  : "bg-cyan-500/15 border-cyan-400/40 text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.2)]"
                                 : "bg-black/30 border-white/5 text-gray-600 hover:text-gray-400 hover:border-white/10"
                             )}
-                            title="Toggle CosmoTech™ Theme"
+                            title="Cycle Theme (Default / CosmoTech™ / Corrupture™)"
                           >
-                            <Orbit className={cn("w-3.5 h-3.5", cosmotechTheme && "animate-spin-slow")} />
+                            <Orbit className={cn("w-3.5 h-3.5", theme !== "default" && "animate-spin-slow")} />
                           </button>
                         )}
                       />
-                      <TooltipContent side="bottom">CosmoTech™ Theme</TooltipContent>
+                      <TooltipContent side="bottom">Cycle Theme (Default / CosmoTech™ / Corrupture™)</TooltipContent>
                     </Tooltip>
                     </span>
 
@@ -2667,7 +2980,7 @@ export function ForgeLayout() {
               </>
             ) : widget === "chat" ? (
               <>
-                <div ref={flyoutChatRef} className="flex-1 overflow-y-auto overflow-x-hidden p-3 min-h-0 forge-scroll">
+                <div ref={flyoutChatRef} className="flex-1 overflow-hidden overflow-x-hidden p-3 min-h-0 flex flex-col">
                   {renderWidgetContent(widget)}
                 </div>
                 <div
@@ -2694,6 +3007,8 @@ export function ForgeLayout() {
           document.body
         );
       })}
+      </>
+      )}
     </TooltipProvider>
   );
 }

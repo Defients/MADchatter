@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useAppStore } from "../store";
+import { useAppStore, selectMultiBotActive } from "../store";
 import { toast } from "sonner";
 import { autoforgeDecide } from "../lib/ai";
 import { getTwitchSession } from "../lib/twitch";
@@ -13,12 +13,18 @@ import { getActiveProvider, getApiKey, hasAnyApiKey, getProviderWithKey } from "
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
-import { recordJokeUsage } from "../lib/jokeEngine";
+import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/jokeEngine";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
 import { actionRateLimiter } from "../lib/actionRateLimiter";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { notifyMention, notifyAutoForgeError, notifyActivitySpike } from "../lib/notifications";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
+import { getAvailableEmoteNames } from "../lib/emotes";
+import { evaluateAllRules } from "../lib/ruleEngine";
+import type { RuleEngineContext } from "../types";
+
+// D4: Post-send engagement correlation — delay before evaluating chat response
+const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
 
 export function useAutoForge() {
   const {
@@ -64,18 +70,28 @@ export function useAutoForge() {
     autoForgeDryRun,
     autoForgeConfidenceThreshold,
     sessionGoals,
+    perActionRateLimits,
+    setIsAutoForgeThinking,
+    recordActionEngagement,
+    setStreamHealth,
+    setHypeLevel,
   } = useAppStore();
 
   const lastChatLengthRef = useRef(0);
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
   const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals });
+  // Concurrency guard: prevents overlapping checkAutoForge executions
+  const isAutoForgingRef = useRef(false);
+  // Track engagement-check timers for cleanup on unmount
+  const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits });
 
-  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals };
+  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits };
 
   // Sync rate limiter config
   actionRateLimiter.updateConfig(rateLimitConfig);
+  actionRateLimiter.updatePerActionConfig(perActionRateLimits);
   const addEventRef = useRef(addAutoForgeEvent);
   addEventRef.current = addAutoForgeEvent;
   const addSentMsgRef = useRef(addSentMessage);
@@ -90,12 +106,21 @@ export function useAutoForge() {
   markActionBucketRef.current = markAutoForgeActionBucket;
 
   const checkAutoForge = async (force = false) => {
+    // Multi-bot guard: the legacy single-bot loop stands down ONLY when
+    // multi-bot is actively engaged (toggle on AND ≥2 bots authenticated).
+    // With 0–1 authed bots the legacy loop keeps running so there's no dead zone.
+    // (Placed inside the callback so React's rules of hooks are unaffected.)
+    if (selectMultiBotActive(useAppStore.getState())) return;
+    // Concurrency guard: skip if a previous check is still in-flight
+    if (isAutoForgingRef.current) return;
     const state = storeRef.current;
     if (!state.autoForgeEnabled || state.isForging) return;
-    
+
     // Only trigger if we've passed the next scheduled action time
     if (!force && Date.now() < state.autoForgeNextActionMs) return;
 
+    isAutoForgingRef.current = true;
+    setIsAutoForgeThinking(true);
     try {
       const activeProvider = getActiveProvider();
 
@@ -197,6 +222,30 @@ export function useAutoForge() {
         overall: engagementOverall,
       });
 
+      // A10: Compute stream health score
+      const es = useAppStore.getState().enhancedStats;
+      const mentionScore = Math.min(100, (isMentioned ? 30 : 0) + (es.mentionsDetected * 5));
+      const visualScore = state.visualContextTags.length > 0 ? 70 : 0;
+      const healthOverall = Math.round(velocityScore * 30 + sentimentScore * 25 + diversityScore * 20 + (mentionScore / 100) * 15 + (visualScore / 100) * 10);
+      const healthLabel: "dead" | "slow" | "active" | "healthy" | "poppin" =
+        healthOverall >= 80 ? "poppin" : healthOverall >= 60 ? "healthy" : healthOverall >= 40 ? "active" : healthOverall >= 20 ? "slow" : "dead";
+      setStreamHealth({
+        velocityScore: Math.round(velocityScore * 100),
+        sentimentScore: Math.round(sentimentScore * 100),
+        diversityScore: Math.round(diversityScore * 100),
+        mentionScore,
+        visualScore,
+        overall: healthOverall,
+        label: healthLabel,
+        updatedAt: now,
+      });
+
+      // B12: Set hype level based on activity spike and chat velocity
+      if (activitySpike || chatVelocity >= 30) setHypeLevel(3);
+      else if (chatVelocity >= 15) setHypeLevel(2);
+      else if (chatVelocity >= 5) setHypeLevel(1);
+      else setHypeLevel(0);
+
       // Detect likely offline stream: 0 viewers + no chat activity for 5+ minutes
       const viewerCount = state.streamMetadata?.viewerCount || 0;
       const noChatForLongTime = newMessages === 0 && elapsedMs > 300000;
@@ -212,6 +261,51 @@ export function useAutoForge() {
       const repetitionAnalysis = analyzeRepetition(state.sentMessages);
       const antiRepetitionContext = formatRepetitionContext(repetitionAnalysis);
 
+      // C1: AutoForge Rule Engine — evaluate user-defined rules
+      const autoForgeRules = useAppStore.getState().autoForgeRules;
+      if (autoForgeRules.length > 0) {
+        const recentChatText = state.chatLog
+          .slice(-30)
+          .filter((m) => !m.marker)
+          .map((m) => m.text)
+          .join(" ");
+        const sentimentHistoryForRules = useAppStore.getState().sentimentHistory;
+        const currentSentiment = sentimentHistoryForRules.length > 0
+          ? sentimentHistoryForRules[sentimentHistoryForRules.length - 1].label
+          : null;
+        const streamHealthState = useAppStore.getState().streamHealth;
+        const audioEnergyState = useAppStore.getState().audioEnergy;
+        const timeSinceLastAction = state.autoForgeLastActionMs
+          ? now - state.autoForgeLastActionMs
+          : Infinity;
+
+        const ruleCtx: RuleEngineContext = {
+          chatVelocity,
+          sentimentLabel: currentSentiment,
+          timeSinceLastActionMs: timeSinceLastAction,
+          recentChatText,
+          isMentioned,
+          activitySpike,
+          streamHealthLabel: streamHealthState?.label ?? null,
+          hypeLevel: useAppStore.getState().hypeLevel,
+          uniqueChatters,
+          viewerCount,
+          audioEnergyRms: audioEnergyState?.rms ?? 0,
+        };
+
+        const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx);
+        const firedRules = ruleResults.filter((r) => r.fired);
+        if (firedRules.length > 0) {
+          console.log(`[AutoForge] Rule engine: ${firedRules.length} rule(s) fired`);
+          // If any rule sent a message or triggered forge, record activity
+          const ruleActions = firedRules.reduce((s, r) => s + r.actionsExecuted, 0);
+          if (ruleActions > 0) {
+            // Update last action time so manual-activity delay applies
+            useAppStore.getState().setAutoForgeLastActionMs(now);
+          }
+        }
+      }
+
       if (isMentioned) {
         incrementStat("mentionsDetected");
         if (useAppStore.getState().desktopNotificationsEnabled) {
@@ -225,6 +319,14 @@ export function useAutoForge() {
           duration: 5000,
         });
         playSfx('mention_alert');
+        // C5: Dispatch prominent mention overlay event
+        window.dispatchEvent(new CustomEvent("bot-mentioned", {
+          detail: {
+            lines: allMentionedLines.slice(0, 5),
+            timestamp: Date.now(),
+            channel: state.streamMetadata.channelName,
+          },
+        }));
         addEventRef.current({
           timestamp: Date.now(),
           type: "mention",
@@ -233,8 +335,8 @@ export function useAutoForge() {
           details: { mentionedLines: allMentionedLines, botUsername, channelName },
         });
 
-        // Smart reply generation — only when AutoForge is off and smart replies are enabled
-        if (smartRepliesEnabled && !state.autoForgeEnabled && canGenerateSmartReplies()) {
+        // Smart reply generation — when smart replies are enabled (works alongside AutoForge)
+        if (smartRepliesEnabled && canGenerateSmartReplies()) {
           setSmartRepliesLoading(true);
           generateSmartReplies(allMentionedLines)
             .then((replies) => {
@@ -330,6 +432,13 @@ export function useAutoForge() {
         memoryContext,
         antiRepetitionContext,
         sentimentContext,
+        availableEmotes: useAppStore.getState().emoteAwarenessEnabled
+          ? getAvailableEmoteNames(state.streamMetadata.channelName, 50)
+          : undefined,
+        botIdentityMode: useAppStore.getState().botIdentityMode,
+        botIdentityStory: useAppStore.getState().botIdentityStory,
+        audioEnergyLabel: useAppStore.getState().audioEnergy?.label,
+        streamEvents: useAppStore.getState().streamEvents.slice(-5),
       });
       const responseTimeMs = Date.now() - decisionStartTime;
       console.log("[AutoForge] Decision:", decision);
@@ -375,21 +484,26 @@ export function useAutoForge() {
 
       // Confidence threshold check — skip autonomous actions below threshold (unless forced or full_forge)
       const confThreshold = state.autoForgeConfidenceThreshold ?? 0.5;
-      if (!force && decision.confidence < confThreshold && decision.decision !== "deliberate_silence" && decision.decision !== "meta_observation") {
-        console.log(`[AutoForge] Confidence ${decision.confidence.toFixed(2)} below threshold ${confThreshold} — downgrading to silence`);
+      const rawConfidence = decision.confidence;
+      const conf = typeof rawConfidence === "number" && !isNaN(rawConfidence)
+        ? rawConfidence
+        : Number(rawConfidence) || 0;
+      decision.confidence = conf;
+      if (!force && conf < confThreshold && decision.decision !== "deliberate_silence") {
+        console.log(`[AutoForge] Confidence ${conf.toFixed(2)} below threshold ${confThreshold} — downgrading to silence`);
         addEventRef.current({
           timestamp: Date.now(),
           type: "silence",
           severity: "low",
-          summary: `Below confidence threshold (${decision.confidence.toFixed(2)} < ${confThreshold}): ${decision.reason}`,
-          details: { decision: decision.decision, confidence: decision.confidence, threshold: confThreshold, reason: decision.reason },
+          summary: `Below confidence threshold (${conf.toFixed(2)} < ${confThreshold}): ${decision.reason}`,
+          details: { decision: decision.decision, confidence: conf, threshold: confThreshold, reason: decision.reason },
         });
         decision.decision = "deliberate_silence";
-        decision.reason = `Confidence ${decision.confidence.toFixed(2)} below threshold ${confThreshold}. Original intent: ${decision.decision}.`;
+        decision.reason = `Confidence ${conf.toFixed(2)} below threshold ${confThreshold}. Original intent: ${decision.decision}.`;
       }
 
       // Dry run mode — log the decision but don't send anything
-      if (state.autoForgeDryRun && decision.decision !== "deliberate_silence" && decision.decision !== "meta_observation") {
+      if (state.autoForgeDryRun && decision.decision !== "deliberate_silence") {
         console.log(`[AutoForge] DRY RUN: would have sent ${decision.decision}: ${decision.action_payload || "(full forge)"}`);
         toast.info(`AutoForge DRY RUN: ${decision.decision}`, { description: decision.action_payload || decision.reason, icon: "🧪" });
         addEventRef.current({
@@ -402,6 +516,7 @@ export function useAutoForge() {
         updateDecisionRef.current(decisionLogId, { outcome: "queued" });
         setAutoForgeLastActionMs(Date.now());
         let nextMinutes = decision.estimated_next_action_minutes || 1.5;
+        if (!Number.isFinite(nextMinutes) || nextMinutes < 0) nextMinutes = 1.5;
         setAutoForgeNextActionMs(Date.now() + nextMinutes * 60 * 1000);
         return;
       }
@@ -423,34 +538,233 @@ export function useAutoForge() {
       }
 
       if (decision.decision === "full_forge") {
+        // C5: Per-action rate limit check
+        if (!force && !actionRateLimiter.canAct("full_forge")) {
+          console.log("[AutoForge] full_forge rate limited — downgrading to silence");
+          addEventRef.current({
+            timestamp: Date.now(),
+            type: "silence",
+            severity: "low",
+            summary: `full_forge per-action rate limited`,
+          });
+          decision.decision = "deliberate_silence";
+          decision.reason = "full_forge per-action rate limit reached.";
+        } else {
         toast.info("AutoForge triggered a full co-pilot Forge!", { description: decision.reason });
         playSfx('autoforge_action');
-        actionRateLimiter.recordAction();
+        actionRateLimiter.recordAction("full_forge");
         incrementStat("autoForgeActions");
         markActionBucketRef.current();
-        updateDecisionRef.current(decisionLogId, { outcome: "sent" });
-        // dispatch custom event to trigger forge
-        window.dispatchEvent(new CustomEvent("forge-trigger", { detail: { autoSend: true } }));
-        setAutoForgeLastActionMs(Date.now());
-        addActionHistoryEntry({
-          timestamp: Date.now(),
-          actionType: "full_forge",
-          message: decision.action_payload || "(generating variants...)",
-          provider: activeProvider,
-          success: true,
-        });
-        addEventRef.current({
-          timestamp: Date.now(),
-          type: "action_sent",
-          severity: "high",
-          summary: `Full Forge triggered: ${decision.action_payload || "(generating variants...)"}`,
-          details: { decision: decision.decision, confidence: decision.confidence, reason: decision.reason, action_payload: decision.action_payload },
-        });
-      } else if (decision.decision === "short_reaction" || decision.decision === "emote_only" || decision.decision === "joke_callback") {
+
+        // A3: Self-contained full_forge — generate variants, rank, and send the best one directly
+        try {
+          const { generateChat, rankVariants } = await import("../lib/ai");
+          const memoryContextStr = memoryContext;
+          const sentimentContextStr = sentimentContext;
+
+          const chatResult = await generateChat({
+            streamMetadata: state.streamMetadata,
+            visualContext: state.visualContextTags.join(" "),
+            screenshot: state.visualSnapshotUrl || undefined,
+            recentChatLog: formatChatLog(state.chatLog),
+            audioTranscript: state.audioTranscript,
+            longTermContext: state.longTermMemory || [
+              ...state.pinnedMemories.filter(m => m.id !== state.goldenMemoryId).map(m => m.label),
+              ...state.pinnedMemories.filter(m => m.id === state.goldenMemoryId).map(m => `[GOLDEN MEMORY — PRIORITIZE THIS]: ${m.label}`),
+            ].join("\n"),
+            config: state.config,
+            activeProvider,
+            count: 3,
+            r34lEnabled: state.r34lEnabled,
+            botUsername,
+            memoryContext: memoryContextStr,
+            sentimentContext: sentimentContextStr,
+            availableEmotes: useAppStore.getState().emoteAwarenessEnabled
+              ? getAvailableEmoteNames(state.streamMetadata.channelName, 50)
+              : undefined,
+          });
+
+          const variants = chatResult.suggestions || [];
+          if (variants.length === 0) {
+            throw new Error("No variants generated");
+          }
+
+          const ranked = rankVariants(variants, {
+            config: state.config,
+            recentSentMessages: state.sentMessages.map(m => m.message).slice(-20),
+          });
+          const bestVariant = ranked.find(v => v.best) || ranked[0];
+          const messageToSend = bestVariant.message;
+
+          if (!messageToSend) {
+            throw new Error("Best variant had no message");
+          }
+
+          // Send the best variant directly
+          const sendFn = getPlatformSendFn(state.platform);
+          const sendPromise = sendFn(state.streamMetadata.channelName, messageToSend);
+          sendPromise
+            .then(() => {
+              updateDecisionRef.current(decisionLogId, { outcome: "sent" });
+            })
+            .catch((e) => {
+              updateDecisionRef.current(decisionLogId, { outcome: "failed" });
+              console.error("[AutoForge] full_forge send failed:", e);
+              addEventRef.current({
+                timestamp: Date.now(),
+                type: "error",
+                severity: "high",
+                summary: `Full Forge send FAILED: ${e.message || e}`,
+                details: { decision: "full_forge", message: messageToSend },
+              });
+            });
+
+          if (state.messageSoundEnabled && state.platform === 'joystick') playMessageSound();
+          speakMessage(messageToSend);
+          addSentMsgRef.current({
+            message: messageToSend,
+            channel: state.streamMetadata.channelName,
+            timestamp: Date.now(),
+            source: "autoforge",
+          });
+          incrSentRef.current();
+
+          // Record token usage if available
+          if (chatResult.tokenUsage) {
+            useAppStore.getState().setLastTokenUsage({
+              prompt_tokens: chatResult.tokenUsage.prompt_tokens,
+              completion_tokens: chatResult.tokenUsage.completion_tokens,
+              total_tokens: chatResult.tokenUsage.total_tokens,
+              effort_given: state.config?.effortLevel || "medium",
+            });
+          }
+
+          addActionHistoryEntry({
+            timestamp: Date.now(),
+            actionType: "full_forge",
+            message: messageToSend,
+            provider: activeProvider,
+            success: true,
+          });
+          // D4: Schedule post-send engagement check
+          const sentAt = Date.now();
+          const engTimer = setTimeout(() => {
+            const entries = useAppStore.getState().actionHistory;
+            // Find the most recent full_forge entry matching this send
+            const target = [...entries].reverse().find(e =>
+              e.actionType === "full_forge" &&
+              e.message === messageToSend &&
+              Math.abs(e.timestamp - sentAt) < 5000
+            );
+            if (!target) return;
+            const currentChat = useAppStore.getState().chatLog;
+            const linesAfter = currentChat.filter(m => m.timestamp > sentAt && !m.marker).length;
+            const session = state.platform === 'kick' ? getKickSession() : state.platform === 'joystick' ? getJoystickSession() : getTwitchSession();
+            const botName = (session?.username || "").toLowerCase();
+            const mentionsAfter = botName
+              ? currentChat.filter(m => m.timestamp > sentAt && !m.marker && m.text.toLowerCase().includes(`@${botName}`)).length
+              : 0;
+            const reactionsAfter = currentChat.filter(m => m.timestamp > sentAt && !m.marker && m.text.length < 20 && /^[A-Z\s!?]+$/.test(m.text)).length;
+            const totalEngagement = linesAfter + mentionsAfter * 2 + reactionsAfter;
+            let label: "ignored" | "low" | "moderate" | "high";
+            if (totalEngagement === 0) label = "ignored";
+            else if (totalEngagement < 3) label = "low";
+            else if (totalEngagement < 8) label = "moderate";
+            else label = "high";
+            useAppStore.getState().updateActionHistoryEntry(target.id, {
+              engagement: { chatLinesAfter: linesAfter, mentionsAfter, reactionsAfter, label, evaluatedAt: Date.now() },
+            });
+            // A9: Record accuracy metric
+            useAppStore.getState().recordActionEngagement("full_forge", label);
+            engagementTimersRef.current.delete(engTimer);
+          }, ENGAGEMENT_CHECK_DELAY_MS);
+          engagementTimersRef.current.add(engTimer);
+
+          // Boost referenced memories
+          if (state.autoMemoryConfig?.enabled && decision.referenced_memory_ids) {
+            for (const mid of decision.referenced_memory_ids) {
+              boostMemory(mid).catch(console.error);
+            }
+          }
+
+          setAutoForgeLastActionMs(Date.now());
+          addEventRef.current({
+            timestamp: Date.now(),
+            type: "action_sent",
+            severity: "high",
+            summary: `Full Forge sent: "${messageToSend}"`,
+            details: {
+              decision: "full_forge",
+              confidence: decision.confidence,
+              reason: decision.reason,
+              action_payload: messageToSend,
+              variantsGenerated: variants.length,
+              bestVariantId: bestVariant.variant_id,
+            },
+          });
+        } catch (e: any) {
+          console.error("[AutoForge] full_forge generation failed:", e);
+          updateDecisionRef.current(decisionLogId, { outcome: "failed" });
+          addEventRef.current({
+            timestamp: Date.now(),
+            type: "error",
+            severity: "high",
+            summary: `Full Forge generation FAILED: ${e.message || e}`,
+            details: { decision: "full_forge", reason: decision.reason },
+          });
+          toast.error(`AutoForge full_forge failed: ${e.message || e}`);
+        }
+        } // end else (not rate limited)
+      } else if (decision.decision === "short_reaction" || decision.decision === "emote_only" || decision.decision === "joke_callback" || decision.decision === "meta_observation") {
         if (decision.action_payload) {
+          // A2: For joke_callback, consult the joke engine to verify the joke is real and active
+          let effectiveDecision = decision.decision;
+          if (decision.decision === "joke_callback" && state.autoMemoryConfig?.enabled) {
+            try {
+              const activeJokes = getActiveJokes(state.insideJokes);
+              if (activeJokes.length > 0) {
+                const contextText = `${state.chatLog.slice(-10).map(m => m.text).join(" ")} ${state.audioTranscript?.slice(-200) || ""} ${state.visualContextTags.join(" ")}`;
+                const scored = activeJokes
+                  .map(j => ({ joke: j, score: scoreJokeRelevance(j, contextText) }))
+                  .sort((a, b) => b.score - a.score);
+                const bestMatch = scored[0];
+                // Fuzzy match: check if payload contains the joke punchline or vice versa
+                const payloadLower = (decision.action_payload || "").toLowerCase();
+                const punchlineLower = (bestMatch.joke.punchline || "").toLowerCase();
+                const matchesJoke = bestMatch.score > 0.1 ||
+                  payloadLower.includes(punchlineLower) ||
+                  punchlineLower.includes(payloadLower);
+                if (matchesJoke) {
+                  // Record usage of the matched joke
+                  recordJokeUsage(bestMatch.joke.id, decision.action_payload).catch(console.error);
+                } else {
+                  // No active joke matches — downgrade to short_reaction
+                  console.log("[AutoForge] joke_callback payload doesn't match any active joke — downgrading to short_reaction");
+                  effectiveDecision = "short_reaction";
+                  updateDecisionRef.current(decisionLogId, {
+                    outcome: "sent",
+                    action: "short_reaction",
+                    reasoning: `${decision.reason} (downgraded from joke_callback — no matching active joke)`,
+                  });
+                }
+              } else {
+                // No active jokes at all — downgrade to short_reaction
+                console.log("[AutoForge] joke_callback but no active jokes — downgrading to short_reaction");
+                effectiveDecision = "short_reaction";
+                updateDecisionRef.current(decisionLogId, {
+                  outcome: "sent",
+                  action: "short_reaction",
+                  reasoning: `${decision.reason} (downgraded from joke_callback — no active jokes)`,
+                });
+              }
+            } catch (e) {
+              console.error("[AutoForge] Joke engine lookup failed:", e);
+            }
+          }
+
           toast.info(`AutoForge autonomous reaction`, { description: decision.action_payload });
           playSfx('autoforge_action');
-          actionRateLimiter.recordAction();
+          actionRateLimiter.recordAction(effectiveDecision);
           incrementStat("autoForgeActions");
           markActionBucketRef.current();
           
@@ -473,7 +787,7 @@ export function useAutoForge() {
 
           addActionHistoryEntry({
             timestamp: Date.now(),
-            actionType: decision.decision,
+            actionType: effectiveDecision,
             message: decision.action_payload,
             provider: activeProvider,
             success: true,
@@ -495,12 +809,15 @@ export function useAutoForge() {
           }
 
           setAutoForgeLastActionMs(Date.now());
+          const summaryPrefix = effectiveDecision === "emote_only" ? "Emote" :
+            effectiveDecision === "joke_callback" ? "Joke callback" :
+            effectiveDecision === "meta_observation" ? "Meta observation" : "Reaction";
           addEventRef.current({
             timestamp: Date.now(),
             type: "action_sent",
             severity: "high",
-            summary: `${decision.decision === "emote_only" ? "Emote" : decision.decision === "joke_callback" ? "Joke callback" : "Reaction"}: "${decision.action_payload}"`,
-            details: { decision: decision.decision, confidence: decision.confidence, reason: decision.reason, action_payload: decision.action_payload },
+            summary: `${summaryPrefix}: "${decision.action_payload}"`,
+            details: { decision: effectiveDecision, confidence: decision.confidence, reason: decision.reason, action_payload: decision.action_payload },
           });
         }
       } else if (decision.decision === "quick_followup") {
@@ -509,10 +826,15 @@ export function useAutoForge() {
             decision.action_payload.length * 65));
           toast.info(`AutoForge quick follow-up in ${(delayMs / 1000).toFixed(1)}s`, { description: decision.action_payload });
           playSfx('autoforge_action');
-          actionRateLimiter.recordAction();
+          actionRateLimiter.recordAction("quick_followup");
           incrementStat("followupActions");
           markActionBucketRef.current();
-          
+
+          // Clear any pending follow-up before scheduling a new one to avoid timer leaks
+          if (followupTimerRef.current) {
+            clearTimeout(followupTimerRef.current);
+            followupTimerRef.current = null;
+          }
           followupTimerRef.current = setTimeout(() => {
             const sendFn2 = getPlatformSendFn(state.platform);
             sendFn2(state.streamMetadata.channelName, decision.action_payload)
@@ -549,9 +871,9 @@ export function useAutoForge() {
             followupTimerRef.current = null;
           }, delayMs);
         }
-      } else if (decision.decision === "deliberate_silence" || decision.decision === "meta_observation") {
-        if (decision.decision === "deliberate_silence") incrementStat("silenceDecisions");
-        console.log(`[AutoForge] ${decision.decision}:`, decision.reason);
+      } else if (decision.decision === "deliberate_silence") {
+        incrementStat("silenceDecisions");
+        console.log(`[AutoForge] deliberate_silence:`, decision.reason);
         addEventRef.current({
           timestamp: Date.now(),
           type: "silence",
@@ -602,11 +924,34 @@ export function useAutoForge() {
 
       // Schedule next check — accelerate if a spike was detected
       let nextMinutes = decision.estimated_next_action_minutes || 1.5;
+      if (!Number.isFinite(nextMinutes) || nextMinutes < 0) nextMinutes = 1.5;
       if (activitySpike && decision.decision === "deliberate_silence") {
         // Even if AI chose silence, a spike means re-check sooner to catch the moment
         nextMinutes = Math.min(nextMinutes, 0.5);
       }
-      setAutoForgeNextActionMs(Date.now() + nextMinutes * 60 * 1000);
+
+      // A8: Manual activity awareness — delay next AutoForge action if user recently acted or is typing
+      const nowMs = Date.now();
+      const lastManual = useAppStore.getState().lastManualSendMs;
+      const lastTyping = useAppStore.getState().lastUserChatTypingMs;
+      const recentManualActivity = Math.max(lastManual, lastTyping);
+      const msSinceManual = nowMs - recentManualActivity;
+      const MANUAL_COOLDOWN_MS = 30_000; // 30 seconds after manual activity
+      if (msSinceManual < MANUAL_COOLDOWN_MS && decision.decision !== "deliberate_silence") {
+        const delayMs = MANUAL_COOLDOWN_MS - msSinceManual;
+        const delayMin = delayMs / 60000;
+        console.log(`[AutoForge] Manual activity ${Math.round(msSinceManual / 1000)}s ago — delaying next action by ${Math.round(delayMs / 1000)}s`);
+        nextMinutes = Math.max(nextMinutes, delayMin);
+        addEventRef.current({
+          timestamp: nowMs,
+          type: "silence",
+          severity: "low",
+          summary: `AutoForge delayed — manual activity detected (${Math.round(msSinceManual / 1000)}s ago)`,
+          details: { delayMs, msSinceManual },
+        });
+      }
+
+      setAutoForgeNextActionMs(nowMs + nextMinutes * 60 * 1000);
 
     } catch (e: any) {
       const errMsg = e?.message || 'Unknown error';
@@ -627,6 +972,10 @@ export function useAutoForge() {
       }
       // Backoff on error
       setAutoForgeNextActionMs(Date.now() + 60000);
+    } finally {
+      // Release concurrency guard
+      isAutoForgingRef.current = false;
+      setIsAutoForgeThinking(false);
     }
   };
 
@@ -664,6 +1013,9 @@ export function useAutoForge() {
         clearTimeout(followupTimerRef.current);
         followupTimerRef.current = null;
       }
+      // Clean up any pending engagement-check timers
+      engagementTimersRef.current.forEach(t => clearTimeout(t));
+      engagementTimersRef.current.clear();
     };
   }, []);
 

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { useAppStore } from "../store";
+import { useAppStore, selectMultiBotActive } from "../store";
 import { Button } from "./ui/button";
 import { VariantCard } from "./VariantCard";
 import { toast } from "sonner";
-import { generateChat, refineSuggestion } from "../lib/ai";
+import { generateChat, refineSuggestion, rankVariants } from "../lib/ai";
 import { getTwitchSession } from "../lib/twitch";
 import { getKickSession } from "../lib/kick";
 import { getJoystickSession } from "../lib/joystick";
@@ -11,30 +11,21 @@ import { getPlatformSendFn } from "../lib/platformSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
-import { getActiveProvider, getApiKey, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
+import { getActiveProvider, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
-import { 
-  Flame, 
-  Terminal, 
-  Zap, 
-  Sparkles, 
-  RefreshCw, 
-  AlertCircle, 
-  X,
-  Volume2,
+import { getAvailableEmoteNames } from "../lib/emotes";
+import {
+  Flame,
   Tv,
-  ChevronRight,
   Coins,
-  Activity,
   CheckCircle2,
   Circle,
   LogIn,
   Radio,
   Key,
-  Keyboard,
   Copy,
-  Check,
+  X,
 } from "lucide-react";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { motion } from "motion/react";
@@ -75,8 +66,19 @@ export function TheForge() {
   } = useAppStore();
 
   const platform = useAppStore((s) => s.platform);
+  const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const streamCaptureActive = useAppStore((s) => s.streamCaptureActive);
   const authTick = useAppStore((s) => s.authTick);
+  // Multi-bot: active authenticated bots for per-bot send squares on variant cards.
+  const multiBotActive = useAppStore(selectMultiBotActive);
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+  const bots = useAppStore((s) => s.bots);
+  const activeBots = useMemo(
+    () => (multiBotEnabled ? bots.filter((b) => b.active && b.session) : []),
+    [multiBotEnabled, bots],
+  );
+  // Multi-bot: the manual-send identity (manualSendBotId) lives in the store so
+  // the header picker (ForgeLayout → SendAsPicker) and this send path share it.
 
   const setupStatus = useMemo(() => {
     const loggedIn = platform === "kick" ? !!getKickSession() : platform === "joystick" ? !!getJoystickSession() : !!getTwitchSession();
@@ -132,6 +134,11 @@ export function TheForge() {
         activeProvider: provider,
         botUsername: platform === "kick" ? getKickSession()?.username : platform === "joystick" ? getJoystickSession()?.username : getTwitchSession()?.username,
         memoryContext,
+        availableEmotes: useAppStore.getState().emoteAwarenessEnabled
+          ? getAvailableEmoteNames(streamMetadata?.channelName || "", 50)
+          : undefined,
+        botIdentityMode: useAppStore.getState().botIdentityMode,
+        botIdentityStory: useAppStore.getState().botIdentityStory,
       });
 
       if (data.tokenUsage) {
@@ -152,8 +159,24 @@ export function TheForge() {
         });
       }
 
-      setVariants(data.suggestions || []);
+      const rankedVariants = rankVariants(data.suggestions || [], {
+        config,
+        recentSentMessages: useAppStore.getState().sentMessages.map(m => m.message).slice(-20),
+      });
+      if (rankedVariants.length === 0) {
+        throw new Error("Forge produced no usable variants. Try again or lower the effort level.");
+      }
+      setVariants(rankedVariants);
+      // E3: Record variants in history
+      for (const variant of rankedVariants) {
+        useAppStore.getState().addVariantHistoryEntry({
+          message: variant.message,
+          source: "forge",
+          rating: null,
+        });
+      }
       incrementForgeCount();
+      useAppStore.getState().setHasForgedOnce(true);
       toast.success("Co-pilot variants forged successfully!", { id: toastId });
       playSfx('forge_complete');
       window.dispatchEvent(new CustomEvent('bg-forge-pulse', { detail: { count: 14 } }));
@@ -165,30 +188,56 @@ export function TheForge() {
     }
   };
 
-  const handleSend = async (message: string) => {
+  const handleSend = async (message: string, botId?: string) => {
     const toastId = toast.loading("Sending message to stream chat...", {
       description: `Message: "${message.substring(0, 30)}..."`
     });
     try {
-      const platform = useAppStore.getState().platform;
-      const sendFn = getPlatformSendFn(platform);
+      const state = useAppStore.getState();
+      const platform = state.platform;
+      // Multi-bot: send as the specified bot, or the selected manual-send identity; otherwise legacy path.
+      const selectedBotId = botId ?? (state.multiBotEnabled && state.manualSendBotId ? state.manualSendBotId : undefined);
+      const sendFn = getPlatformSendFn(platform, selectedBotId);
       await sendFn(streamMetadata.channelName, message);
-      if (useAppStore.getState().messageSoundEnabled) playMessageSound();
+      // A8: Record manual send time for AutoForge pacing awareness
+      state.setLastManualSendMs(Date.now());
+      if (state.messageSoundEnabled) playMessageSound();
       speakMessage(message);
-      addSentMessage({
-        message,
-        channel: streamMetadata.channelName,
-        timestamp: Date.now(),
-        source: "manual",
-      });
-      incrementMessagesSent();
-      addAutoForgeEvent({
-        timestamp: Date.now(),
-        type: "action_sent",
-        severity: "high",
-        summary: `Manual Forge send: "${message.substring(0, 60)}${message.length > 60 ? "..." : ""}"`,
-        details: { source: "manual", message, channel: streamMetadata.channelName },
-      });
+      const sentBot = selectedBotId ? state.bots.find((b) => b.id === selectedBotId) : null;
+      if (state.multiBotEnabled && sentBot) {
+        // Record into the chosen bot's runtime (independent history).
+        state.addBotSentMessage(sentBot.id, {
+          message,
+          channel: streamMetadata.channelName,
+          timestamp: Date.now(),
+          source: "manual",
+          botId: sentBot.id,
+        });
+        state.incrementBotStat(sentBot.id, "messagesSent");
+        state.addBotAutoForgeEvent(sentBot.id, {
+          timestamp: Date.now(),
+          type: "action_sent",
+          severity: "high",
+          summary: `Manual send as @${sentBot.session?.username}: "${message.substring(0, 60)}${message.length > 60 ? "..." : ""}"`,
+          details: { source: "manual", message, channel: streamMetadata.channelName, botId: sentBot.id },
+        });
+      } else {
+        addSentMessage({
+          message,
+          channel: streamMetadata.channelName,
+          timestamp: Date.now(),
+          source: "manual",
+        });
+        incrementMessagesSent();
+        useAppStore.getState().incrementStat("manualActions");
+        addAutoForgeEvent({
+          timestamp: Date.now(),
+          type: "action_sent",
+          severity: "high",
+          summary: `Manual Forge send: "${message.substring(0, 60)}${message.length > 60 ? "..." : ""}"`,
+          details: { source: "manual", message, channel: streamMetadata.channelName },
+        });
+      }
       toast.success("Sent to chat!", { id: toastId });
       playSfx('send_message');
     } catch (e: any) {
@@ -292,6 +341,8 @@ export function TheForge() {
                   onSend={handleSend}
                   onRefine={handleRefine}
                   onClose={handleCloseVariant}
+                  multiBotActive={multiBotActive}
+                  activeBots={activeBots}
                 />
               ))}
             </div>
@@ -428,11 +479,11 @@ export function TheForge() {
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[11px] text-gray-500">
-                          Use <code className="text-[10px] font-mono bg-white/5 px-1.5 py-0.5 rounded text-gray-300 border border-white/10">google/gemini-2.5-flash-lite</code>
+                          Use <code className="text-[10px] font-mono bg-white/5 px-1.5 py-0.5 rounded text-gray-300 border border-white/10">google/gemini-3.8-flash</code>
                         </span>
                         <button
                           onClick={() => {
-                            navigator.clipboard.writeText("google/gemini-2.5-flash-lite");
+                            navigator.clipboard.writeText("google/gemini-3.8-flash");
                             toast.success("Model name copied!");
                           }}
                           className="text-gray-500 hover:text-orange-400 transition-colors"
@@ -490,15 +541,29 @@ export function TheForge() {
                 </div>
               </div>
             </div>
+
+            {/* Shortcut reminder — while setup checks are still being made */}
+            <div className="w-full flex items-center justify-center gap-2.5 mt-1">
+              <span className="text-[10px] text-gray-600 uppercase tracking-wider">While you wait:</span>
+              <span className="flex items-center gap-1.5">
+                <kbd className="px-2 py-1 rounded-md bg-[#121217]/80 border border-white/10 text-[10px] font-mono text-gray-400">Ctrl+K</kbd>
+                <span className="text-[11px] text-gray-500">command palette</span>
+              </span>
+              <span className="text-gray-700">·</span>
+              <span className="flex items-center gap-1.5">
+                <kbd className="px-2 py-1 rounded-md bg-[#121217]/80 border border-white/10 text-[10px] font-mono text-gray-400">?</kbd>
+                <span className="text-[11px] text-gray-500">all shortcuts</span>
+              </span>
+            </div>
           </div>
         ) : (
           /* Ready to Forge — shown when setup is complete but no variants yet */
           <div className="flex flex-col items-center justify-center text-center max-w-lg mx-auto py-10">
-            <div className="-mt-16 overflow-visible">
-              <FidgetSpinner size={360} showSpinCount={true} />
+            <div className="-mt-8 overflow-visible">
+              <FidgetSpinner size={300} showSpinCount={true} />
             </div>
 
-            <div className="text-lg font-black text-gray-100 tracking-tight mb-1">
+            <div className="text-lg font-black text-gray-100 tracking-tight mb-1 mt-6">
               Ready to Forge
             </div>
             <div className="text-xs text-gray-500 mb-4">
@@ -517,14 +582,16 @@ export function TheForge() {
               <span className="text-[11px] text-gray-500">command palette</span>
             </div>
 
-            <button
-              onClick={handleForge}
-              disabled={isForging}
-              className="group relative px-6 py-2.5 rounded-xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 hover:border-orange-400/50 text-orange-300 hover:text-orange-200 font-bold text-sm transition-all shadow-lg hover:shadow-orange-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Flame className="w-4 h-4 inline-block mr-2 group-hover:animate-pulse" />
-              {isForging ? "Forging..." : "Forge First Batch"}
-            </button>
+            {!hasForgedOnce && (
+              <button
+                onClick={handleForge}
+                disabled={isForging}
+                className="group relative px-6 py-2.5 rounded-xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 hover:border-orange-400/50 text-orange-300 hover:text-orange-200 font-bold text-sm transition-all shadow-lg hover:shadow-orange-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Flame className="w-4 h-4 inline-block mr-2 group-hover:animate-pulse" />
+                {isForging ? "Forging..." : "Forge First Batch"}
+              </button>
+            )}
           </div>
         )}
       </div>

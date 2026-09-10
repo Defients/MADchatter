@@ -10,8 +10,10 @@ const SHORTCUTS = [
   { keys: ['A'], label: 'Toggle AutoForge on/off', category: 'AutoForge' },
   { keys: ['H'], label: 'Toggle AutoForge HUD', category: 'AutoForge' },
   { keys: ['D'], label: 'Toggle Analytics Dashboard', category: 'AutoForge' },
-  { keys: ['T'], label: 'Toggle CosmoTech™ theme', category: 'Theme' },
+  { keys: ['V'], label: 'Open Visual Snapshot History', category: 'Capture' },
+  { keys: ['T'], label: 'Cycle Theme (Default → CosmoTech → Corrupture)', category: 'Theme' },
   { keys: ['Ctrl', 'B'], label: 'Collapse/Expand Context Rail', category: 'Layout' },
+  { keys: ['1', '-', '9'], label: 'Toggle bot 1–9 on/off (multi-bot)', category: 'Multi-Bot' },
   { keys: ['?'], label: 'Show this shortcut help', category: 'Global' },
   { keys: ['Esc'], label: 'Close dialogs / overlays', category: 'Global' },
 ];

@@ -11,6 +11,7 @@ import {
   Globe,
   Bot,
   Copy,
+  Wand2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { getKeys, saveKeys, getActiveProvider, setActiveProvider, getProviderWithKey, getApiKey } from "../lib/keys";
@@ -40,7 +41,7 @@ export function SettingsPanel({
   const showConfig = variant === "config" || variant === "full";
 
   const [activeProvider, setActiveProviderState] = useState<
-    "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter"
+    "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter" | "ollama"
   >("gemini");
   const [keys, setKeys] = useState({
     geminiKey: "",
@@ -67,7 +68,7 @@ export function SettingsPanel({
     const savedProvider = getActiveProvider();
     if (
       savedProvider &&
-      ["gemini", "gemini-pro", "gemini-env", "openai", "claude", "openrouter"].includes(savedProvider)
+      ["gemini", "gemini-pro", "gemini-env", "openai", "claude", "openrouter", "ollama"].includes(savedProvider)
     ) {
       setActiveProviderState(savedProvider as any);
     }
@@ -93,9 +94,18 @@ export function SettingsPanel({
     setJoystickBotUsernameState(getJoystickBotUsername());
   }, [user]);
 
-  const handleProviderSelect = (p: "gemini" | "openai" | "claude" | "openrouter") => {
+  const handleProviderSelect = (p: "gemini" | "openai" | "claude" | "openrouter" | "ollama") => {
     setActiveProviderState(p);
     setActiveProvider(p);
+    // Selecting Ollama pre-fills the local endpoint + a default model tag so the
+    // user doesn't have to know the URL. They can still edit both fields after.
+    if (p === "ollama") {
+      setKeys((k) => ({
+        ...k,
+        customBaseUrl: k.customBaseUrl || "http://localhost:11434/v1",
+        customModel: k.customModel || "llama3.1:8b",
+      }));
+    }
   };
 
   const handleKeyChange = (keyField: "geminiKey" | "chatGptKey" | "claudeKey" | "openRouterKey", value: string) => {
@@ -164,7 +174,7 @@ export function SettingsPanel({
       {showKeys && (
         <section className="flex flex-col min-h-0 flex-1 gap-4">
           <div className="flex gap-2 flex-wrap shrink-0">
-            {(["openrouter", "gemini", "openai", "claude"] as const).map((p) => (
+            {(["openrouter", "ollama", "gemini", "openai", "claude"] as const).map((p) => (
               <button
                 key={p}
                 onClick={() => handleProviderSelect(p)}
@@ -174,27 +184,28 @@ export function SettingsPanel({
                     ? "bg-[#FF6321]/20 border-[#FF6321]/30 text-[#FF6321]"
                     : p === "openrouter"
                       ? "bg-orange-500/10 border-orange-500/30 text-orange-300 hover:bg-orange-500/15"
-                      : "bg-white/5 border-white/10 text-gray-500 opacity-50 hover:opacity-100",
+                      : p === "ollama"
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/15"
+                        : "bg-white/5 border-white/10 text-gray-500 opacity-50 hover:opacity-100",
                 )}
               >
-                {p === "openrouter" && (
-                  <span className="absolute -top-1.5 -right-1 text-[7px] font-black uppercase bg-gradient-to-r from-orange-500 to-red-500 text-white px-1 py-0.5 rounded-full shadow-lg leading-none">
-                    Free
-                  </span>
-                )}
                 <div
                   className={cn(
                     "w-1.5 h-1.5 rounded-full",
                     p === "openrouter"
                       ? (keys.openRouterKey ? "bg-green-500" : "bg-gray-700")
-                      : keys[
-                          `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
-                        ]
-                          ? "bg-green-500"
-                          : "bg-gray-700",
+                      : p === "ollama"
+                        // Ollama needs no key — always show as ready (green) so the
+                        // status dot reflects that it's usable without credentials.
+                        ? "bg-green-500"
+                        : keys[
+                            `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
+                          ]
+                            ? "bg-green-500"
+                            : "bg-gray-700",
                   )}
                 />
-                {p === "openai" ? "GPT" : (p === "openrouter" ? "OpenRouter" : p)}
+                {p === "openai" ? "GPT" : (p === "openrouter" ? "OpenRouter" : p === "ollama" ? "Ollama" : p)}
               </button>
             ))}
           </div>
@@ -204,6 +215,19 @@ export function SettingsPanel({
           </span>
 
           <div className="flex-1 overflow-y-auto pr-1 space-y-3 settings-scroll-area">
+            {/* Ollama info banner — shown when Ollama is the active provider */}
+            {activeProvider === "ollama" && (
+              <div className="bg-emerald-500/[0.08] border border-emerald-500/25 rounded-lg p-2.5 space-y-1">
+                <span className="text-[10px] font-bold text-emerald-300 flex items-center gap-1.5">
+                  <Bot className="w-3 h-3 text-emerald-400" />
+                  Ollama / Local — no API key required
+                </span>
+                <p className="text-[10px] text-gray-400 leading-relaxed">
+                  Set your <span className="text-emerald-300 font-semibold">Custom API Base URL</span> to your Ollama endpoint (default <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">http://localhost:11434/v1</code>) and <span className="text-emerald-300 font-semibold">Custom Model Name</span> to a pulled model tag (e.g. <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">llama3.1:8b</code>). Start Ollama with <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">OLLAMA_ORIGINS=* ollama serve</code> so the browser can reach it.
+                </p>
+              </div>
+            )}
+
             {/* Twitch Client ID Block */}
             <div className="bg-white/5 border border-white/10 rounded-lg p-2.5 space-y-1.5">
               <span className="text-[10px] font-bold text-gray-400 flex items-center gap-1.5">
@@ -296,14 +320,14 @@ export function SettingsPanel({
                   rel="noopener noreferrer"
                   className="text-[10px] font-bold text-orange-400 hover:text-orange-300 underline decoration-orange-500/40 hover:decoration-orange-400 transition-colors"
                 >
-                  Get free key ↗
+                  Get key ↗
                 </a>
                 <span className="text-[10px] text-gray-500">
-                  Use <code className="text-[9px] font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300 border border-white/10">google/gemini-2.5-flash-lite</code>
+                  Use <code className="text-[9px] font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300 border border-white/10">google/gemini-3.8-flash</code>
                 </span>
                 <button
                   onClick={() => {
-                    navigator.clipboard.writeText("google/gemini-2.5-flash-lite");
+                    navigator.clipboard.writeText("google/gemini-3.8-flash");
                     addToast("Model name copied!", "success");
                   }}
                   className="text-gray-500 hover:text-orange-400 transition-colors"
@@ -380,9 +404,23 @@ export function SettingsPanel({
                 className="w-full bg-black/30 border border-white/10 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-emerald-500/50 text-white placeholder-gray-700 font-mono"
                 placeholder="https://openrouter.ai/api/v1 (or Ollama/Local)"
               />
-              <p className="text-[9px] text-gray-500 font-sans leading-relaxed">
-                Optional. Defaults to OpenRouter. Set to your local endpoint (e.g., <code>http://localhost:11434/v1</code> for Ollama) if desired.
-              </p>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-[9px] text-gray-500 font-sans leading-relaxed flex-1 min-w-0">
+                  Optional. Defaults to OpenRouter. Set to your local endpoint (e.g., <code>http://localhost:11434/v1</code> for Ollama) if desired.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeys((k) => ({ ...k, customBaseUrl: "http://localhost:11434/v1" }));
+                    addToast("Filled with Ollama local endpoint", "success");
+                  }}
+                  className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400/50 transition-colors"
+                  title="Auto-fill with the default Ollama local endpoint"
+                >
+                  <Wand2 className="w-3 h-3" />
+                  Ollama URL
+                </button>
+              </div>
             </div>
 
             {/* Custom Model Name Block */}
@@ -398,10 +436,10 @@ export function SettingsPanel({
                   setKeys((k) => ({ ...k, customModel: e.target.value }))
                 }
                 className="w-full bg-black/30 border border-white/10 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-500/50 text-white placeholder-gray-700 font-mono"
-                placeholder="google/gemini-2.5-flash (or Ollama model)"
+                placeholder="google/gemini-3.8-flash (or Ollama model)"
               />
               <p className="text-[9px] text-gray-500 font-sans leading-relaxed">
-                Optional. Defaults to <code>google/gemini-2.5-flash</code> for OpenRouter.
+                Optional. Defaults to <code>google/gemini-3.8-flash</code> for OpenRouter.
               </p>
             </div>
 
@@ -697,7 +735,7 @@ export function SettingsPanel({
           <div className="mt-auto border-t border-white/5 pt-4">
             <div className="flex items-center gap-2 text-[9px] font-mono text-gray-600">
               <div className="w-2 h-2 rounded-full bg-green-500"></div>
-              API: gemini-2.5-flash [STABLE]
+              API: gemini-3.8-flash [STABLE]
             </div>
           </div>
         </>

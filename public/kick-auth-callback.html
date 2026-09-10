@@ -38,7 +38,7 @@
         document.getElementById('status').textContent = 'Authentication Failed: ' + (errorDesc || error);
         document.getElementById('status').style.color = '#ff6b6b';
         if (window.opener) {
-          window.opener.postMessage({ type: 'KICK_AUTH_ERROR', error: errorDesc || error }, targetOrigin);
+          window.opener.postMessage({ type: 'KICK_AUTH_ERROR', error: errorDesc || error, state: state }, targetOrigin);
         }
         closeWindow(3000);
         return;
@@ -48,7 +48,7 @@
         document.getElementById('status').textContent = 'No authorization code received — check console for URL details';
         document.getElementById('status').style.color = '#ff6b6b';
         if (window.opener) {
-          window.opener.postMessage({ type: 'KICK_AUTH_ERROR', error: 'No authorization code in callback. URL: ' + window.location.href }, targetOrigin);
+          window.opener.postMessage({ type: 'KICK_AUTH_ERROR', error: 'No authorization code in callback. URL: ' + window.location.href, state: state }, targetOrigin);
         }
         closeWindow(5000);
         return;

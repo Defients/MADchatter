@@ -60,12 +60,17 @@ export function getApiKey(provider: string): string | null {
   if (normProvider === "openai") return keys.chatGptKey || null;
   if (normProvider === "claude") return keys.claudeKey || null;
   if (normProvider === "openrouter") return keys.openRouterKey || null;
+  // Ollama / local runs without a key — return a dummy so the OpenAI SDK
+  // constructor gets a non-empty string and the app's key guards pass.
+  if (normProvider === "ollama") return "ollama-local";
   return null;
 }
 
 export function hasAnyApiKey(): boolean {
   const keys = getKeys();
-  return !!(keys.geminiKey || keys.chatGptKey || keys.claudeKey || keys.openRouterKey);
+  if (keys.geminiKey || keys.chatGptKey || keys.claudeKey || keys.openRouterKey) return true;
+  // Ollama needs no key, so it counts as "configured" whenever it's the active provider.
+  return getActiveProvider() === "ollama";
 }
 
 export function getProviderWithKey(): string | null {
@@ -74,11 +79,37 @@ export function getProviderWithKey(): string | null {
   if (keys.geminiKey) return "gemini";
   if (keys.chatGptKey) return "openai";
   if (keys.claudeKey) return "claude";
+  // No cloud keys configured — fall back to Ollama if it's the active provider.
+  if (getActiveProvider() === "ollama") return "ollama";
   return null;
 }
 
 export function getActiveProvider(): string {
   return localStorage.getItem("active_api_provider") || "gemini";
+}
+
+/** Resolve the OpenAI-compatible base URL and model for a given provider.
+ * Centralized so ai.ts / memoryEngine.ts / server.ts share one source of truth
+ * for OpenRouter and Ollama defaults. Returns `baseUrl: undefined` for plain
+ * OpenAI (the SDK's own default endpoint). */
+export function openAiCompatEndpoint(
+  provider: string,
+  keys: ApiKeys,
+): { baseUrl: string | undefined; model: string } {
+  if (provider === "openrouter") {
+    return {
+      baseUrl: keys.customBaseUrl || "https://openrouter.ai/api/v1",
+      model: keys.customModel || "google/gemini-3.8-flash",
+    };
+  }
+  if (provider === "ollama") {
+    return {
+      baseUrl: keys.customBaseUrl || "http://localhost:11434/v1",
+      model: keys.customModel || "llama3.1:8b",
+    };
+  }
+  // plain OpenAI
+  return { baseUrl: undefined, model: "gpt-5.6-luna" };
 }
 
 export function setActiveProvider(provider: string): void {

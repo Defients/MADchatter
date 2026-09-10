@@ -8,6 +8,8 @@ declare global {
     __joystickSession?: JoystickSession;
     __kickSession?: KickSession;
     __twitchSession?: TwitchSession;
+    // Multi-bot: per-bot session payloads (additive; legacy single globals above remain).
+    __botSessions?: Record<string, TwitchSession | KickSession>;
     __voiceCommands?: {
       voiceCommandsActive: boolean;
       voiceCommandsListening: boolean;

@@ -16,18 +16,20 @@ function getThumbCanvas(): HTMLCanvasElement {
 export function computeFrameDelta(
   sourceCanvas: HTMLCanvasElement,
   prevImageData: ImageData | null
-): { delta: number; imageData: ImageData } {
+): { delta: number; imageData: ImageData; isFirstFrame: boolean } {
   const thumb = getThumbCanvas();
   const ctx = thumb.getContext("2d");
   if (!ctx) {
-    return { delta: 1, imageData: new ImageData(THUMB_W, THUMB_H) };
+    return { delta: 1, imageData: new ImageData(THUMB_W, THUMB_H), isFirstFrame: !prevImageData };
   }
 
   ctx.drawImage(sourceCanvas, 0, 0, THUMB_W, THUMB_H);
   const currentData = ctx.getImageData(0, 0, THUMB_W, THUMB_H);
 
   if (!prevImageData) {
-    return { delta: 1, imageData: currentData };
+    // C3: First frame — return delta 0 so it doesn't force a vision call,
+    // but flag isFirstFrame so callers can still capture the initial scene if desired.
+    return { delta: 0, imageData: currentData, isFirstFrame: true };
   }
 
   const cur = currentData.data;
@@ -45,5 +47,5 @@ export function computeFrameDelta(
   const avgDiff = totalDiff / pixelCount;
   const delta = avgDiff / 255;
 
-  return { delta, imageData: currentData };
+  return { delta, imageData: currentData, isFirstFrame: false };
 }

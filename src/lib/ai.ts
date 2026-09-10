@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey, getKeys } from "./keys";
+import { getApiKey, getKeys, openAiCompatEndpoint } from "./keys";
 import { getTwitchSession } from "./twitch";
 import { AutoForgeEvent, ForgeConfig, ForgeSuggestion } from "../types";
 import {
@@ -13,13 +13,32 @@ import {
   AUTOFORGE_MEMORY_PROMPT,
   ANTI_REPETITION_PROMPT,
   SENTIMENT_AWARENESS_PROMPT,
+  buildBotIdentityPrompt,
 } from "./prompts";
+import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
 import {
   getHealthyFallbackChain,
   recordProviderFailure,
   recordProviderSuccess,
   isProviderAvailable,
+  recordFallback,
 } from "./providerFallback";
+
+/**
+ * R34L adaptive profile segment. When R34L is on and the recent chat log has
+ * enough signal, build a "CHAT STYLE PROFILE" block that steers the model
+ * toward mirroring the room's actual typing texture. Returns "" when R34L is
+ * off or chat is thin (the fixed R34L_TYPING_PROMPT baseline applies instead).
+ */
+function r34lProfileSegment(
+  recentChatLog: string | undefined,
+  availableEmotes: string[] | undefined,
+  r34lEnabled?: boolean,
+): string {
+  if (!r34lEnabled || !recentChatLog) return "";
+  const profile = analyzeChatStyle(recentChatLog, availableEmotes);
+  return profile ? formatChatStyleProfile(profile) : "";
+}
 
 export interface StreamMetadata {
   channelName: string;
@@ -42,6 +61,10 @@ export interface AutoForgeDecision {
   referenced_joke_ids?: string[];
   timestamp?: number;
   activityLevel?: number;
+  // Multi-bot enrichment (stamped by useAutoForgeBot before storing, not by the
+  // model). Used by the AutoForge HUD to explain why a given bot was chosen.
+  personaFit?: number; // 0–1
+  isMentioned?: boolean;
 }
 
 export interface TokenUsage {
@@ -125,6 +148,47 @@ function cleanJsonStr(str: string): string {
   return clean;
 }
 
+/**
+ * Best-effort repair for a JSON string that was truncated mid-output by the
+ * model's max-token cap. Closes any open string, then balances open
+ * arrays/objects. Returns the repaired string (which may still fail to parse
+ * if the truncation point is too pathological). Used only as a fallback when
+ * JSON.parse fails, so the user gets suggestions instead of a hard error.
+ */
+function repairTruncatedJson(str: string): string {
+  let s = str.trim();
+  if (!s) return "{}";
+  // Strip a trailing code-fence opener if present.
+  if (s.startsWith("```")) {
+    s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  }
+  // Track open structures, respecting string state and escapes.
+  let inString = false;
+  let escape = false;
+  const stack: Array<"{" | "["> = [];
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") stack.push("{");
+    else if (ch === "[") stack.push("[");
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+  // Close an unterminated string first.
+  let repaired = s;
+  if (inString) repaired += '"';
+  // Remove a trailing comma/colon that would make the closing brace invalid.
+  repaired = repaired.replace(/[\s,]+$/, "");
+  // Balance remaining open structures.
+  while (stack.length > 0) {
+    const open = stack.pop();
+    repaired += open === "{" ? "}" : "]";
+  }
+  return repaired;
+}
+
 export interface GenerateChatParams {
   streamMetadata: StreamMetadata;
   visualContext?: string;
@@ -139,6 +203,9 @@ export interface GenerateChatParams {
   botUsername?: string;
   memoryContext?: string;
   sentimentContext?: string;
+  availableEmotes?: string[];
+  botIdentityMode?: "admit" | "custom";
+  botIdentityStory?: string;
 }
 
 export async function generateChat(params: GenerateChatParams): Promise<any> {
@@ -148,7 +215,10 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
   if (!apiKey) throw new Error(`No API key configured for ${rawProvider}. Add it in Settings.`);
 
   const keys = getKeys();
-  const session = getTwitchSession();
+  // Identity context: prefer the explicitly passed botUsername (multi-bot mode
+  // passes the per-bot identity). Only fall back to the global session when no
+  // botUsername was provided (legacy single-bot callers).
+  const session = params.botUsername ? null : getTwitchSession();
 
   let currentVisualContext = params.visualContext;
   if (params.screenshot && (!params.visualContext || params.visualContext.length < 50)) {
@@ -161,15 +231,15 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
 
   const effort = params.config?.effortLevel || "medium";
   let effortDirective = "";
-  let maxTokensToUse = 1536;
+  let maxTokensToUse = 3072;
   let temp = 0.7;
 
   if (effort === "low") {
-    maxTokensToUse = 512;
+    maxTokensToUse = 1024;
     temp = 0.5;
     effortDirective = "\nEFFORT LEVEL REQUIRED: MINIMAL. Generate fast, extremely snappy, and lightweight suggestions. Keep analysis brief and concise. Minimize computation.";
   } else if (effort === "high") {
-    maxTokensToUse = 3072;
+    maxTokensToUse = 4096;
     temp = 0.9;
     effortDirective = "\nEFFORT LEVEL REQUIRED: MAXIMUM. Dive extremely deep. Perform comprehensive, ultra-detailed analysis of the stream context, latest events, and audio. Craft suggestions with advanced wordplay, perfect contextual inside jokes, and high emotional/strategic value.";
   } else {
@@ -184,7 +254,7 @@ Viewers: ${params.streamMetadata?.viewerCount || 0}
 Title: ${params.streamMetadata?.title || "Unknown"}
 
 YOUR IDENTITY:
-You are logged in as "${params.botUsername || "Unknown"}". This is your Twitch/Kick handle — when someone mentions this name in chat, they are talking to YOU, not the streamer. The streamer is "${params.streamMetadata?.channelName || "Unknown"}. Do not confuse yourself with the streamer.
+You are logged in as "${params.botUsername || "Unknown"}". This is your Twitch/Kick handle — when someone mentions this name in chat, they are talking to YOU, not the streamer. The streamer is "${params.streamMetadata?.channelName || "Unknown"}". Do not confuse yourself with the streamer.
 
 VISUAL CONTEXT:
 ${currentVisualContext || "None provided"}
@@ -202,6 +272,7 @@ ${params.sentimentContext ? `\n${params.sentimentContext}` : ""}
 
 ACTIVE CONFIGURATION:
 - Primary Profile: ${params.config.primaryProfile && params.config.primaryProfile !== "none" ? params.config.primaryProfile : "None (Unmasked/Raw. No selected profile mask. Act as an authentic, natural co-pilot that adapts dynamically to the organic stream vibe without forcing a stylized persona.)"}
+- Active Profiles: ${params.config.activeProfiles && params.config.activeProfiles.length > 0 ? params.config.activeProfiles.join(", ") : "None"}
 - Humor Level: ${params.config.humorLevel}/100
 - Chaos Level: ${params.config.chaosLevel}/100
 - Length: ${params.config.lengthPreference && params.config.lengthPreference !== "none" ? params.config.lengthPreference : "Unconstrained (No length mask. Let the word/sentence count vary naturally based on what's contextually appropriate)"}
@@ -210,10 +281,12 @@ ACTIVE CONFIGURATION:
 - Voice Context Enabled: ${params.config.voiceContextEnabled}
 - Generation Mode: ${params.config.generationMode}
 - Additional Instructions: ${params.config.additionalInstructions || "None"}
+- Custom Directives: ${params.config.customDirectives || "None"}
+${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMOTES (use these names exactly): ${params.availableEmotes.join(", ")}` : ""}
 ${effortDirective}
 ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count} suggestion${params.count > 1 ? "s" : ""}. Do not generate more or fewer than ${params.count}.` : ""}`;
 
-  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT : "") + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "");
+  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "");
   let generatedJsonStr = "";
   let usage: any = undefined;
 
@@ -225,7 +298,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       const base64Data = params.screenshot.replace(/^data:image\/\w+;base64,/, "");
       parts.push({ inlineData: { data: base64Data, mimeType } });
     }
-    const model = rawProvider === "gemini-pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
     const response = await ai.models.generateContent({
       model,
       contents: [{ role: "user", parts }],
@@ -245,9 +318,8 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-  } else if (provider === "openai" || provider === "openrouter") {
-    const baseUrl = provider === "openrouter" ? keys.customBaseUrl || "https://openrouter.ai/api/v1" : undefined;
-    const model = provider === "openrouter" ? keys.customModel || "google/gemini-2.5-flash" : "gpt-4o";
+  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
     const content: any[] = [{ type: "text", text: userMessageContent }];
     if (params.screenshot) {
@@ -281,13 +353,13 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     }
     content.push({ type: "text", text: userMessageContent });
     const response = await ai.messages.create({
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: maxTokensToUse,
       temperature: temp,
       system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
       messages: [{ role: "user", content }],
     });
-    generatedJsonStr = (response.content[0] as any).text;
+    generatedJsonStr = (response.content.find((c: any) => c.type === "text") as any)?.text || "";
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.input_tokens,
@@ -297,7 +369,34 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     }
   }
 
-  const parsedResponse = JSON.parse(cleanJsonStr(generatedJsonStr));
+  let parsedResponse: any;
+  try {
+    parsedResponse = JSON.parse(cleanJsonStr(generatedJsonStr));
+  } catch (e) {
+    // Truncation fallback: the model hit its max-token cap mid-JSON. Attempt
+    // to close the unterminated string + balance open structures so we can
+    // still surface whatever suggestions the model did emit.
+    const repaired = repairTruncatedJson(generatedJsonStr || "");
+    try {
+      parsedResponse = JSON.parse(repaired);
+      console.warn("[generateChat] Model JSON was truncated — salvaged via repair. Original error:", (e as Error).message);
+    } catch (e2) {
+      console.warn("[generateChat] Failed to parse model JSON.", e, "\nRaw output:", generatedJsonStr?.slice(0, 500));
+      throw new Error("Model returned malformed JSON — the provider may be overloaded or the response was truncated. Try again or lower the effort level.");
+    }
+  }
+
+  if (!parsedResponse || typeof parsedResponse !== "object") {
+    throw new Error("Model returned an invalid response (not a JSON object). Try again.");
+  }
+
+  // E: Surface empty suggestions as a real error so callers don't toast "success" with nothing to show.
+  const rawSuggestions = Array.isArray(parsedResponse.suggestions) ? parsedResponse.suggestions : [];
+  const validSuggestions = rawSuggestions.filter((s: any) => s && typeof s.message === "string" && s.message.trim().length > 0);
+  if (validSuggestions.length === 0) {
+    throw new Error("Model returned no usable suggestions. Try again or lower the effort level.");
+  }
+  parsedResponse.suggestions = validSuggestions;
 
   if (currentVisualContext && currentVisualContext !== params.visualContext) {
     parsedResponse.visualContext = currentVisualContext;
@@ -309,6 +408,104 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   return parsedResponse;
 }
 
+/**
+ * A7: Local variant ranking — scores and ranks generated variants to pick the "best" one.
+ * Scoring: confidence * 0.4 + lengthFit * 0.2 + antiRepetition * 0.2 + emoteDensityFit * 0.1 + profileMatch * 0.1
+ */
+export function rankVariants(
+  variants: ForgeSuggestion[],
+  context: {
+    config: ForgeConfig;
+    recentSentMessages?: string[];
+  },
+): ForgeSuggestion[] {
+  if (!variants || variants.length === 0) return variants;
+
+  const { config, recentSentMessages = [] } = context;
+  const lengthPref = config.lengthPreference;
+  const emoteDensity = config.emoteDensity;
+  const primaryProfile = config.primaryProfile;
+
+  // Build a set of recently used n-grams for anti-repetition
+  const recentLower = recentSentMessages.map(m => m.toLowerCase());
+  const recentText = recentLower.join(" ");
+
+  const scored = variants.map(v => {
+    const msg = v.message || "";
+    const msgLen = msg.length;
+
+    // 1. Confidence (0-1) → 0.4 weight
+    const conf = typeof v.confidence === "number" && !isNaN(v.confidence) ? v.confidence : 0.5;
+
+    // 2. Length fit (0-1) → 0.2 weight
+    let lengthFit = 0.5;
+    if (lengthPref === "short") {
+      lengthFit = msgLen <= 110 ? 1 : Math.max(0, 1 - (msgLen - 110) / 100);
+    } else if (lengthPref === "medium") {
+      lengthFit = msgLen >= 50 && msgLen <= 200 ? 1 : 0.5;
+    } else if (lengthPref === "long") {
+      lengthFit = msgLen >= 100 ? 1 : Math.max(0, msgLen / 100);
+    } else {
+      lengthFit = 0.7; // adaptive/unconstrained
+    }
+
+    // 3. Anti-repetition (0-1) → 0.2 weight
+    let antiRep = 1;
+    const msgLower = msg.toLowerCase();
+    // Check if this message is too similar to any recently sent message
+    for (const sent of recentLower) {
+      if (sent === msgLower) { antiRep = 0; break; }
+      // Check opening word overlap
+      const msgFirst = msgLower.split(/\s+/)[0] || "";
+      const sentFirst = sent.split(/\s+/)[0] || "";
+      if (msgFirst && sentFirst && msgFirst === sentFirst) {
+        antiRep = Math.min(antiRep, 0.5);
+      }
+      // Check 3-gram overlap
+      const msg3grams = new Set<string>();
+      const words = msgLower.split(/\s+/);
+      for (let i = 0; i < words.length - 2; i++) {
+        msg3grams.add(words.slice(i, i + 3).join(" "));
+      }
+      const sentWords = sent.split(/\s+/);
+      let overlap = 0;
+      for (let i = 0; i < sentWords.length - 2; i++) {
+        if (msg3grams.has(sentWords.slice(i, i + 3).join(" "))) overlap++;
+      }
+      if (overlap > 0) antiRep = Math.min(antiRep, Math.max(0, 1 - overlap * 0.2));
+    }
+
+    // 4. Emote density fit (0-1) → 0.1 weight
+    const emoteCount = (msg.match(/^[A-Z]{2,}/gm) || []).length + // ALLCAPS words as emote proxy
+      (msg.match(/\b(POG|LUL|KEKW|Kreygasm|PogChamp|OMEGALUL|Pepega|Sadge|catJAM|monkaS|pepeD|pepeLaugh|EZ|Clap|Pog|pog|based|real)\b/gi) || []).length;
+    let emoteFit = 0.5;
+    if (emoteDensity === "minimal" || emoteDensity === "none") {
+      emoteFit = emoteCount === 0 ? 1 : Math.max(0, 1 - emoteCount * 0.3);
+    } else if (emoteDensity === "moderate") {
+      emoteFit = emoteCount <= 2 ? 1 : Math.max(0, 1 - (emoteCount - 2) * 0.2);
+    } else if (emoteDensity === "heavy") {
+      emoteFit = emoteCount >= 1 ? 1 : 0.3;
+    }
+
+    // 5. Profile match (0-1) → 0.1 weight
+    const profileMatch = v.profile === primaryProfile ? 1 : 0.5;
+
+    const score = conf * 0.4 + lengthFit * 0.2 + antiRep * 0.2 + emoteFit * 0.1 + profileMatch * 0.1;
+    return { variant: v, score };
+  });
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+
+  // Mark the top variant as best
+  const ranked = scored.map((s, i) => ({
+    ...s.variant,
+    best: i === 0,
+  }));
+
+  return ranked;
+}
+
 export async function generateVisionContext(
   rawProvider: string,
   apiKey: string,
@@ -317,15 +514,25 @@ export async function generateVisionContext(
 ): Promise<string> {
   const provider = normalizeProvider(rawProvider);
   const keys = getKeys();
+  // C1: Structured visual context extraction — ask for clearly labeled sections
+  const structuredBase = `Analyze this live stream screenshot and respond with a STRUCTURED description using these labeled sections (omit any that don't apply):
+
+SCENE: <what's on screen — game, category, overlay, IRL, etc.>
+ACTION: <what's happening right now — gameplay event, conversation, reaction, etc.>
+TEXT: <any readable on-screen text, chat highlights, alerts, scores>
+ENERGY: <overall vibe — calm, hyped, tense, wholesome, chaotic>
+CHANGES: <only if comparing to a previous observation — what's new/different>
+
+Keep each section to one short line. Omit empty sections. Be specific and concise.`;
   const prompt = previousContext
-    ? `You are watching a live stream. Your previous observation was: "${previousContext}". Here is a new screenshot. Describe what has CHANGED since your last observation — new events, state changes, movement, text changes. If nothing meaningful changed, say "No significant change." Keep it concise.`
-    : "Describe this live stream screenshot in detail: game state, on-screen text/elements, streamer activity/expression, and overall energy/vibe. Keep it concise but specific.";
+    ? `You are watching a live stream. Your previous observation was:\n${previousContext}\n\nHere is a new screenshot. ${structuredBase.replace("CHANGES: <only if comparing to a previous observation — what's new/different>", "CHANGES: <what has changed since the previous observation — new events, state changes, movement, text changes. If nothing meaningful changed, say 'No significant change.'>")}`
+    : structuredBase;
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, "");
-    const model = rawProvider === "gemini-pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
     const response = await ai.models.generateContent({
       model,
       contents: [{
@@ -337,9 +544,8 @@ export async function generateVisionContext(
       }],
     });
     return response.text || "";
-  } else if (provider === "openai" || provider === "openrouter") {
-    const baseUrl = provider === "openrouter" ? keys.customBaseUrl || "https://openrouter.ai/api/v1" : undefined;
-    const model = provider === "openrouter" ? keys.customModel || "google/gemini-2.5-flash" : "gpt-4o";
+  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
     const response = await ai.chat.completions.create({
       model,
@@ -358,7 +564,7 @@ export async function generateVisionContext(
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, "");
     const response = await ai.messages.create({
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       messages: [{
         role: "user",
@@ -417,7 +623,7 @@ Custom Instruction: ${params.customInstruction || "None"}
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
-    const model = rawProvider === "gemini-pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
     const response = await ai.models.generateContent({
       model,
       contents: userMessageContent,
@@ -436,9 +642,8 @@ Custom Instruction: ${params.customInstruction || "None"}
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-  } else if (provider === "openai" || provider === "openrouter") {
-    const baseUrl = provider === "openrouter" ? keys.customBaseUrl || "https://openrouter.ai/api/v1" : undefined;
-    const model = provider === "openrouter" ? keys.customModel || "google/gemini-2.5-flash" : "gpt-4o";
+  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
     const response = await ai.chat.completions.create({
       model,
@@ -461,7 +666,7 @@ Custom Instruction: ${params.customInstruction || "None"}
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await ai.messages.create({
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       temperature: 0.8,
       system: REFINE_SYSTEM_PROMPT + "\n\nYou must output ONLY valid JSON matching the schema format.",
@@ -477,7 +682,13 @@ Custom Instruction: ${params.customInstruction || "None"}
     }
   }
 
-  const parsed = JSON.parse(cleanJsonStr(generatedJsonStr));
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleanJsonStr(generatedJsonStr));
+  } catch (e) {
+    console.warn("[refineSuggestion] Failed to parse model JSON, returning original suggestion", e);
+    parsed = { ...params.suggestion };
+  }
   if (usage) parsed.tokenUsage = usage;
   return parsed;
 }
@@ -503,6 +714,11 @@ export interface AutoForgeParams {
   memoryContext?: string;
   antiRepetitionContext?: string;
   sentimentContext?: string;
+  availableEmotes?: string[];
+  botIdentityMode?: "admit" | "custom";
+  botIdentityStory?: string;
+  audioEnergyLabel?: "silent" | "quiet" | "normal" | "loud" | "spike";
+  streamEvents?: string[];
 }
 
 export interface AutoForgeBriefingParams {
@@ -546,7 +762,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
-    const model = rawProvider === "gemini-pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
     const response = await ai.models.generateContent({
       model,
       contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
@@ -557,9 +773,8 @@ Write it like a friend catching you up — casual but informative. Don't just li
       },
     });
     return response.text || "Unable to generate briefing.";
-  } else if (provider === "openai" || provider === "openrouter") {
-    const baseUrl = provider === "openrouter" ? keys.customBaseUrl || "https://openrouter.ai/api/v1" : undefined;
-    const model = provider === "openrouter" ? keys.customModel || "google/gemini-2.5-flash" : "gpt-4o";
+  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
     const response = await ai.chat.completions.create({
       model,
@@ -574,7 +789,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await ai.messages.create({
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       temperature: 0.7,
       system: systemPrompt,
@@ -614,7 +829,7 @@ Viewers: ${params.streamMetadata?.viewerCount || 0}
 Title: ${params.streamMetadata?.title || "Unknown"}
 
 YOUR IDENTITY:
-You are logged in as "${params.botUsername || "Unknown"}". This is your Twitch/Kick handle — when someone mentions this name in chat, they are talking to YOU, not the streamer. The streamer is "${params.streamMetadata?.channelName || "Unknown"}. Do not confuse yourself with the streamer.
+You are logged in as "${params.botUsername || "Unknown"}". This is your Twitch/Kick handle — when someone mentions this name in chat, they are talking to YOU, not the streamer. The streamer is "${params.streamMetadata?.channelName || "Unknown"}". Do not confuse yourself with the streamer.
 
 LIVE SIGNALS:
 Time since last action: ${timeSinceLastAction} minutes
@@ -623,6 +838,8 @@ Chat velocity (new lines/min since last check): ${params.chatVelocity || 0}
 Activity spike detected: ${params.activitySpike ? "YES — sudden burst of chat activity" : "No"}
 You are mentioned/targeted in chat: ${params.isMentioned ? "YES — someone is talking to or about you" : "No"}
 ${params.isMentioned && params.mentionedLines?.length ? `MENTIONING YOU:\n${params.mentionedLines.join("\n")}` : ""}
+${params.audioEnergyLabel ? `Audio energy level: ${params.audioEnergyLabel}${params.audioEnergyLabel === "spike" ? " — sudden loud burst detected" : params.audioEnergyLabel === "silent" ? " — streamer may be silent or away" : params.audioEnergyLabel === "loud" ? " — high energy moment" : ""}` : ""}
+${params.streamEvents && params.streamEvents.length > 0 ? `RECENT STREAM EVENTS:\n${params.streamEvents.join("\n")}` : ""}
 
 VISUAL CONTEXT:
 ${truncatedVisual || "None provided"}
@@ -639,13 +856,18 @@ ${params.memoryContext ? `\n${params.memoryContext}` : ""}
 ${params.sentimentContext ? `\n${params.sentimentContext}` : ""}
 
 ACTIVE CONFIGURATION:
+- Primary Profile: ${params.config.primaryProfile && params.config.primaryProfile !== "none" ? params.config.primaryProfile : "None"}
+- Active Profiles: ${params.config.activeProfiles && params.config.activeProfiles.length > 0 ? params.config.activeProfiles.join(", ") : "None"}
 - Humor Level: ${params.config.humorLevel}/100
 - Chaos Level: ${params.config.chaosLevel}/100
+- Custom Directives: ${params.config.customDirectives || "None"}
+- Additional Instructions: ${params.config.additionalInstructions || "None"}
+${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMOTES (use these names exactly): ${params.availableEmotes.join(", ")}` : ""}
 ${params.force ? "\nFORCE MODE: The user has manually forced this action. You MUST generate and send a message. Do NOT choose 'deliberate_silence'. Pick the most contextually appropriate action (full_forge, short_reaction, emote_only, or quick_followup) and provide an action_payload.\n" : ""}
 ${params.antiRepetitionContext ? `\n\n${params.antiRepetitionContext}` : ""}
 DECIDE NOW.`;
 
-  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT : "") + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "");
+  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "");
 
   let lastError: Error | null = null;
   let usedFallback = false;
@@ -660,7 +882,7 @@ DECIDE NOW.`;
 
       if (provider === "gemini") {
         const ai = new GoogleGenAI({ apiKey });
-        const model = currentProvider === "gemini-pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+        const model = currentProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
         const response = await ai.models.generateContent({
           model,
           contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
@@ -672,9 +894,8 @@ DECIDE NOW.`;
           },
         });
         generatedJsonStr = response.text || "{}";
-      } else if (provider === "openai" || provider === "openrouter") {
-        const baseUrl = provider === "openrouter" ? keys.customBaseUrl || "https://openrouter.ai/api/v1" : undefined;
-        const model = provider === "openrouter" ? keys.customModel || "google/gemini-2.5-flash" : "gpt-4o";
+      } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+        const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
         const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
         const response = await ai.chat.completions.create({
           model,
@@ -689,7 +910,7 @@ DECIDE NOW.`;
       } else if (provider === "claude") {
         const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
         const response = await ai.messages.create({
-          model: "claude-3-7-sonnet-20250219",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
           temperature: 0.8,
           system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
@@ -698,8 +919,10 @@ DECIDE NOW.`;
         generatedJsonStr = (response.content[0] as any).text;
       }
 
-      recordProviderSuccess(currentProvider);
+      // Record success only after we have valid JSON — a malformed response
+      // should not mark the provider as healthy
       const result = JSON.parse(cleanJsonStr(generatedJsonStr));
+      recordProviderSuccess(currentProvider);
       if (usedFallback && currentProvider !== rawProvider) {
         result.used_fallback_provider = currentProvider;
       }
@@ -709,6 +932,11 @@ DECIDE NOW.`;
       lastError = e;
       usedFallback = true;
       console.warn(`[AutoForge] Provider ${currentProvider} failed: ${e.message}. Trying fallback...`);
+      // D3: Record fallback for analytics
+      const nextProvider = fallbackChain[fallbackChain.indexOf(currentProvider) + 1];
+      if (nextProvider) {
+        recordFallback(currentProvider, nextProvider, e.message || "Provider error");
+      }
       continue;
     }
   }
