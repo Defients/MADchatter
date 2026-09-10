@@ -76,6 +76,7 @@ function timeAgo(ts: number): string {
 export function ActionTimeline() {
   const autoForgeEventLog = useAppStore((s) => s.autoForgeEventLog);
   const actionHistory = useAppStore((s) => s.actionHistory);
+  const bots = useAppStore((s) => s.bots);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
@@ -121,7 +122,16 @@ export function ActionTimeline() {
     const now = Date.now();
     const cutoff = now - timeWindowMs;
 
-    const fromEvents: TimelineItem[] = autoForgeEventLog
+    // Merge global + per-bot AutoForge events so the timeline shows multi-bot
+    // activity. Per-bot events go to bots[].runtime.autoForgeEvents, not the
+    // global log, so without this merge the timeline stays empty in multi-bot
+    // mode.
+    const allEvents: AutoForgeEvent[] = [
+      ...autoForgeEventLog,
+      ...bots.flatMap((b) => b.runtime.autoForgeEvents),
+    ];
+
+    const fromEvents: TimelineItem[] = allEvents
       .filter((e: AutoForgeEvent) => e.timestamp >= cutoff)
       .map((e: AutoForgeEvent) => {
         const cfg = TYPE_CONFIG[e.type] || { color: "bg-gray-400", label: e.type, category: "system" as EventCategory };
@@ -138,7 +148,13 @@ export function ActionTimeline() {
         };
       });
 
-    const fromActions: TimelineItem[] = actionHistory
+    // Merge global + per-bot action history
+    const allActions: ActionHistoryEntry[] = [
+      ...actionHistory,
+      ...bots.flatMap((b) => b.runtime.actionHistory),
+    ];
+
+    const fromActions: TimelineItem[] = allActions
       .filter((a: ActionHistoryEntry) => a.timestamp >= cutoff)
       .map((a: ActionHistoryEntry) => {
         const cfg = TYPE_CONFIG[a.actionType] || { color: "bg-gray-400", label: a.actionType, category: "system" as EventCategory };
@@ -160,7 +176,7 @@ export function ActionTimeline() {
       .slice(-MAX_ITEMS);
 
     return merged;
-  }, [autoForgeEventLog, actionHistory, enabledCategories, timeWindowMs]);
+  }, [autoForgeEventLog, actionHistory, bots, enabledCategories, timeWindowMs]);
 
   const now = Date.now();
   const cutoff = now - timeWindowMs;
