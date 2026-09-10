@@ -200,8 +200,12 @@ export function TheForge() {
     try {
       const state = useAppStore.getState();
       const platform = state.platform;
-      // Multi-bot: send as the specified bot, or the selected manual-send identity; otherwise legacy path.
-      const selectedBotId = botId ?? (state.multiBotEnabled && state.manualSendBotId ? state.manualSendBotId : undefined);
+      // Multi-bot: send as the specified bot; otherwise default to the first
+      // active authenticated bot (the header SendAsPicker was removed). The
+      // ChatSender dropdown still sets manualSendBotId for direct sends.
+      const selectedBotId = botId ?? (state.multiBotEnabled
+        ? (state.manualSendBotId ?? state.bots.find((b) => b.active && b.session)?.id ?? undefined)
+        : undefined);
       const sendFn = getPlatformSendFn(platform, selectedBotId);
       await sendFn(streamMetadata.channelName, message);
       // A8: Record manual send time for AutoForge pacing awareness

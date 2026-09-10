@@ -14,7 +14,7 @@ import { buttonVariants } from "./ui/button";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
-import { MultiBotPanel, MultiBotButton, SendAsPicker, MultiBotModeBadge } from "./MultiBotPanel";
+import { MultiBotPanel, MultiBotButton, MultiBotModeBadge } from "./MultiBotPanel";
 import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useDeepgramTranscription } from "../hooks/useDeepgramTranscription";
 import { ensureMicPermission } from "../hooks/usePushToTalk";
@@ -695,7 +695,13 @@ export function ForgeLayout() {
     const channel = streamMetadata?.channelName;
     if (!channel) return;
     const state = useAppStore.getState();
-    const selectedBotId = state.multiBotEnabled && state.manualSendBotId ? state.manualSendBotId : undefined;
+    // Default to the first active authenticated bot in multi-bot mode.
+    // The header SendAsPicker was removed; the ChatSender dropdown in the
+    // MultiBotPanel still sets manualSendBotId for the direct-send path.
+    const fallbackBotId = state.multiBotEnabled
+      ? (state.bots.find((b) => b.active && b.session)?.id ?? state.manualSendBotId ?? undefined)
+      : state.manualSendBotId ?? undefined;
+    const selectedBotId = fallbackBotId;
     const sendFn = getPlatformSendFn(state.platform, selectedBotId);
     try {
       await sendFn(channel, text);
@@ -2861,9 +2867,6 @@ export function ForgeLayout() {
 
                   {/* Mode indicator: appears only when multi-bot is actually engaged */}
                   <MultiBotModeBadge />
-
-                  {/* Send-as identity picker (multi-bot mode only) */}
-                  <SendAsPicker />
 
                   {/* Far-Right: Platform Login */}
                   <div className="flex items-center gap-2 shrink-0 relative">
