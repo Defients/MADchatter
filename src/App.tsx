@@ -728,6 +728,19 @@ export default function App() {
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
                     playSfx('palette_select');
+                    useAppStore.getState().setAnalyticsPanelOpen(true); 
+                    playSfx('hud_open');
+                    // Scroll to token usage section after render
+                    setTimeout(() => {
+                      const el = document.querySelector('[data-section="token-usage"]');
+                      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }, 100);
+                  }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
+                    View Token Usage (by Feature)
+                  </CommandItem>
+                  <CommandItem onSelect={() => { 
+                    setOpenCommand(false); 
+                    playSfx('palette_select');
                     useAppStore.getState().setVisualHistoryOpen(true); 
                     playSfx('hud_open');
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">

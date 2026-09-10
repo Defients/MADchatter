@@ -365,9 +365,8 @@ export function AnalyticsPanel() {
               ];
               const activeFeatures = featureConfig.filter(f => tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature]?.callCount > 0);
               const maxTokens = Math.max(1, ...activeFeatures.map(f => tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature]?.totalTokens || 0));
-              if (activeFeatures.length === 0) return null;
               return (
-                <div className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
+                <div data-section="token-usage" className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
                       <Coins className="w-3.5 h-3.5 text-yellow-400" />
@@ -375,6 +374,9 @@ export function AnalyticsPanel() {
                     </span>
                     <span className="text-[9px] text-gray-500">vision inside Forge counts under Forge</span>
                   </div>
+                  {activeFeatures.length === 0 ? (
+                    <p className="text-[10px] text-gray-600 italic py-1">No token usage yet this session. Forge a batch, run AutoForge, or trigger vision to see spending here.</p>
+                  ) : (
                   <div className="space-y-1.5">
                     {activeFeatures.map(f => {
                       const stats = tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature];
@@ -395,6 +397,7 @@ export function AnalyticsPanel() {
                       );
                     })}
                   </div>
+                  )}
                 </div>
               );
             })()}
