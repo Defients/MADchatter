@@ -247,21 +247,43 @@ export function AutoForgeHUD() {
                   {timeUntilNext}s
                 </span>
               </div>
-              <ThemedTooltip content="Force check now">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    playForceBurstSfx();
-                    setBurstKey((k) => k + 1);
-                    setBurstIntensity((i) => Math.min(i + 1, 5));
-                    window.dispatchEvent(new Event("autoforge-force-check"));
-                    setTimeout(() => setBurstIntensity(0), 30000);
-                  }}
-                  className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
-                >
-                  Force
-                </button>
-              </ThemedTooltip>
+              {multiBotActive && activeBots.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1 justify-end max-w-[60%]">
+                  {activeBots.map((bot) => (
+                    <ThemedTooltip key={bot.id} content={`Force @${bot.session?.username ?? bot.id}`}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playForceBurstSfx();
+                          setBurstKey((k) => k + 1);
+                          setBurstIntensity((i) => Math.min(i + 1, 5));
+                          window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: bot.id } }));
+                          setTimeout(() => setBurstIntensity(0), 30000);
+                        }}
+                        className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors max-w-[80px] truncate"
+                      >
+                        {bot.session?.username ?? bot.id}
+                      </button>
+                    </ThemedTooltip>
+                  ))}
+                </div>
+              ) : (
+                <ThemedTooltip content="Force check now">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      playForceBurstSfx();
+                      setBurstKey((k) => k + 1);
+                      setBurstIntensity((i) => Math.min(i + 1, 5));
+                      window.dispatchEvent(new Event("autoforge-force-check"));
+                      setTimeout(() => setBurstIntensity(0), 30000);
+                    }}
+                    className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                  >
+                    Force
+                  </button>
+                </ThemedTooltip>
+              )}
             </div>
 
             {/* Lite: Previous Cycle Decision */}
@@ -351,21 +373,43 @@ export function AutoForgeHUD() {
                 <span className="text-xs font-mono text-purple-300 font-bold mt-0.5">
                   {timeUntilNext}s
                 </span>
-                <ThemedTooltip content="Force check now">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      playForceBurstSfx();
-                      setBurstKey((k) => k + 1);
-                      setBurstIntensity((i) => Math.min(i + 1, 5));
-                      window.dispatchEvent(new Event("autoforge-force-check"));
-                      setTimeout(() => setBurstIntensity(0), 30000);
-                    }}
-                    className="absolute bottom-2 right-2 text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
-                  >
-                    Force
-                  </button>
-                </ThemedTooltip>
+                {multiBotActive && activeBots.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                    {activeBots.map((bot) => (
+                      <ThemedTooltip key={bot.id} content={`Force @${bot.session?.username ?? bot.id}`}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            playForceBurstSfx();
+                            setBurstKey((k) => k + 1);
+                            setBurstIntensity((i) => Math.min(i + 1, 5));
+                            window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: bot.id } }));
+                            setTimeout(() => setBurstIntensity(0), 30000);
+                          }}
+                          className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors max-w-[70px] truncate"
+                        >
+                          {bot.session?.username ?? bot.id}
+                        </button>
+                      </ThemedTooltip>
+                    ))}
+                  </div>
+                ) : (
+                  <ThemedTooltip content="Force check now">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        playForceBurstSfx();
+                        setBurstKey((k) => k + 1);
+                        setBurstIntensity((i) => Math.min(i + 1, 5));
+                        window.dispatchEvent(new Event("autoforge-force-check"));
+                        setTimeout(() => setBurstIntensity(0), 30000);
+                      }}
+                      className="absolute bottom-2 right-2 text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                    >
+                      Force
+                    </button>
+                  </ThemedTooltip>
+                )}
                 {/* Burst FX */}
                 <AnimatePresence>
                   {burstKey > 0 && (

@@ -409,12 +409,15 @@ export function useAutoForgeBot(botId: string) {
       }
     }, 15000);
 
-    const onForce = () => {
+    const onForce = (e: Event) => {
       const store = useAppStore.getState();
-      if (store.multiBotEnabled) {
-        const bot = store.bots.find((b) => b.id === botId);
-        if (bot && bot.active && bot.session) checkBot(true);
-      }
+      if (!store.multiBotEnabled) return;
+      // Support targeted force: if the event carries detail.botId, only the
+      // matching bot loop responds. Without detail, all bots force (legacy).
+      const targetBotId = (e as CustomEvent).detail?.botId;
+      if (targetBotId && targetBotId !== botId) return;
+      const bot = store.bots.find((b) => b.id === botId);
+      if (bot && bot.active && bot.session) checkBot(true);
     };
     window.addEventListener("autoforge-force-check", onForce);
 

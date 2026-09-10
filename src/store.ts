@@ -620,6 +620,7 @@ interface AppState {
   // Bot-scoped action twins (additive; only used when multiBotEnabled === true).
   // Each dispatches into bots[i].runtime. Legacy global actions remain untouched.
   addBotSentMessage: (id: string, msg: Omit<SentMessage, "id">) => void;
+  clearBotSentMessages: (id: string) => void;
   addBotAutoForgeEvent: (id: string, event: Omit<AutoForgeEvent, "id">) => void;
   clearBotAutoForgeEvents: (id: string) => void;
   addBotDecisionLogEntry: (id: string, entry: Omit<DecisionLogEntry, "id">) => string;
@@ -1686,6 +1687,12 @@ export const useAppStore = create<AppState>()(
             b.id === id
               ? { ...b, runtime: { ...b.runtime, sentMessages: [...b.runtime.sentMessages, { ...msg, id: generateId() }].slice(-100) } }
               : b
+          ),
+        })),
+      clearBotSentMessages: (id) =>
+        set((state) => ({
+          bots: state.bots.map((b) =>
+            b.id === id ? { ...b, runtime: { ...b.runtime, sentMessages: [] } } : b
           ),
         })),
       addBotAutoForgeEvent: (id, event) =>

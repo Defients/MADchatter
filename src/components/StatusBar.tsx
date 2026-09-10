@@ -180,6 +180,15 @@ export function StatusBar() {
     } catch {}
   };
 
+  const handleClearHistory = () => {
+    clearSentMessages();
+    // Also clear per-bot sent messages so the merged log actually empties.
+    const state = useAppStore.getState();
+    for (const bot of state.bots) {
+      state.clearBotSentMessages(bot.id);
+    }
+  };
+
   return (
     <>
       {/* Collapsible Status Bar — bottom-left */}
@@ -227,7 +236,7 @@ export function StatusBar() {
                     <ThemedTooltip content="Clear log">
                       <button
                         type="button"
-                        onClick={clearSentMessages}
+                        onClick={handleClearHistory}
                         disabled={allSent.length === 0}
                         className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-30"
                       >
