@@ -2532,11 +2532,20 @@ export function ForgeLayout() {
                   {/* Multi-Bot launcher + panel */}
                   <div className="relative shrink-0">
                     <MultiBotButton active={multiBotPanelOpen} onClick={() => setMultiBotPanelOpen((v) => !v)} />
-                    {multiBotPanelOpen && (
-                      <div className="fixed top-16 right-4 z-50">
-                        <MultiBotPanel onClose={() => setMultiBotPanelOpen(false)} />
-                      </div>
-                    )}
+                    <AnimatePresence>
+                      {multiBotPanelOpen && (
+                        <motion.div
+                          key="multibot-panel"
+                          className="fixed top-16 right-4 z-50"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.18, ease: "easeOut" }}
+                        >
+                          <MultiBotPanel onClose={() => setMultiBotPanelOpen(false)} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
 
                   {/* Mode indicator: appears only when multi-bot is actually engaged */}
