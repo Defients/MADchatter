@@ -71,12 +71,40 @@ export function StatusBar() {
   const [expanded, setExpanded] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [rateUsed, setRateUsed] = useState(0);
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [dockX, setDockX] = useState(() => {
     const saved = localStorage.getItem('forge-statusbar-x');
     return saved ? parseInt(saved) : 0;
   });
   const dragRef = useRef<{ startX: number; startDockX: number } | null>(null);
   const dockRef = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  const DEFAULT_LOG_HEIGHT = 256; // max-h-64 = 16rem = 256px
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const currentHeight = dragHeight ?? DEFAULT_LOG_HEIGHT;
+    resizeRef.current = { startY: e.clientY, startHeight: currentHeight };
+    setIsDragging(true);
+    const onMove = (ev: MouseEvent) => {
+      if (!resizeRef.current) return;
+      const dy = resizeRef.current.startY - ev.clientY;
+      const newHeight = Math.max(DEFAULT_LOG_HEIGHT, Math.min(window.innerHeight - 48, resizeRef.current.startHeight + dy));
+      setDragHeight(newHeight);
+    };
+    const onUp = () => {
+      resizeRef.current = null;
+      setIsDragging(false);
+      setDragHeight(null); // snap back to default
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [dragHeight]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -149,7 +177,22 @@ export function StatusBar() {
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden"
             >
-              <div className="w-80 max-h-64 bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col">
+              <div
+                className="w-80 max-h-64 bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col transition-[max-height] duration-300 ease-out"
+                style={isDragging && dragHeight ? { maxHeight: `${dragHeight}px`, transition: 'none' } : undefined}
+              >
+                {/* Drag-to-resize handle */}
+                <div
+                  onMouseDown={startResize}
+                  className={cn(
+                    "flex items-center justify-center h-5 cursor-row-resize select-none border-b border-white/5 bg-black/40 transition-colors",
+                    isDragging ? "bg-white/10" : "hover:bg-white/5"
+                  )}
+                  title="Drag up to expand — release to snap back"
+                >
+                  <div className={cn("w-8 h-0.5 rounded-full transition-colors", isDragging ? "bg-white/40" : "bg-white/20")} />
+                </div>
+
                 <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-black/40">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400 font-mono flex items-center gap-1.5">
                     <History className="w-3 h-3" /> Sent Message Log
