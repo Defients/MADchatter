@@ -92,7 +92,7 @@ export function StatusBar() {
     const onMove = (ev: MouseEvent) => {
       if (!resizeRef.current) return;
       const dy = resizeRef.current.startY - ev.clientY;
-      const newHeight = Math.max(DEFAULT_LOG_HEIGHT, resizeRef.current.startHeight + dy);
+      const newHeight = Math.max(DEFAULT_LOG_HEIGHT, Math.min(window.innerHeight * 0.8, resizeRef.current.startHeight + dy));
       setDragHeight(newHeight);
     };
     const onUp = () => {
