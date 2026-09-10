@@ -76,6 +76,19 @@ function createDefaultBotPersona(): BotPersona {
   };
 }
 
+// ─── Primary bot persona (index 0) ─────────────────────────────────────────
+// The primary bot always gets "The Regular" identity — a well-rounded,
+// natural presence that works in any channel. Unlike the specialist bots
+// (1–9), it's not defined by one trait. Config sliders (humor, chaos, etc.)
+// are preserved from the user's global single-bot settings; only the identity
+// story and directives are set here.
+const PRIMARY_BOT_PERSONA: DefaultBotPersona = {
+  customDirectives:
+    "- React like a real viewer would — if nothing's happening, quiet is fine. Don't manufacture takes.\n- Vary your style: a quick reaction, a question, a joke, a read on the game state. Don't fall into a pattern.",
+  botIdentityStory:
+    "You're a regular in this stream — the kind who shows up most days, knows the running bits, and genuinely enjoys being here. You're not trying to be the loudest, the funniest, or the smartest in chat. You just react naturally to what's happening, ask a question when you're curious, and crack a joke when the moment calls for it. You feel like a real person, not a character.",
+};
+
 // ─── Default per-bot personas (bots 1–9) ───────────────────────────────────
 // When a new bot slot is added, it gets a distinct default system directive
 // (two bullet points) and a custom persona story (2–3 sentences) so the bots
@@ -1441,9 +1454,9 @@ export const useAppStore = create<AppState>()(
         // The legacy global fields remain intact for when the toggle is turned off.
         const primaryId = generateId();
         const persona: BotPersona = {
-          config: { ...state.config },
-          botIdentityMode: state.botIdentityMode,
-          botIdentityStory: state.botIdentityStory,
+          config: { ...state.config, customDirectives: PRIMARY_BOT_PERSONA.customDirectives },
+          botIdentityMode: "custom",
+          botIdentityStory: PRIMARY_BOT_PERSONA.botIdentityStory,
           activePersonaId: state.activePersonaId,
         };
         const runtime: BotRuntime = {
@@ -1493,9 +1506,13 @@ export const useAppStore = create<AppState>()(
         const primary = state.bots[0];
         if (primary) {
           set({
-            config: { ...primary.persona.config },
-            botIdentityMode: primary.persona.botIdentityMode,
-            botIdentityStory: primary.persona.botIdentityStory,
+            // Sync back config sliders (humor, chaos, emote density, etc.) but
+            // preserve the original global customDirectives — the primary bot's
+            // directives were set to "The Regular" on enable, not user-chosen.
+            config: { ...primary.persona.config, customDirectives: state.config.customDirectives },
+            // Don't sync back botIdentityMode/botIdentityStory — they were set to
+            // "The Regular" on enable. The global fields were never overwritten
+            // so they still hold the user's original single-bot identity.
             activePersonaId: primary.persona.activePersonaId,
             longTermMemory: primary.runtime.longTermMemory,
             pinnedMemories: [...primary.runtime.pinnedMemories],
