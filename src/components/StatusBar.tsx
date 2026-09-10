@@ -172,10 +172,10 @@ export function StatusBar() {
           {showHistory && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
+              animate={{ height: dragHeight || 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
+              transition={isDragging ? { duration: 0 } : undefined}
               className="overflow-hidden"
-              style={dragHeight ? { maxHeight: `${dragHeight + 48}px` } : undefined}
             >
               <div
                 className="w-80 max-h-64 bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col transition-[max-height] duration-300 ease-out"
