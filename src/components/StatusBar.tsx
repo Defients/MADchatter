@@ -98,6 +98,7 @@ export function StatusBar() {
     const onUp = () => {
       resizeRef.current = null;
       setIsDragging(false);
+      setDragHeight(null); // snap back to default like a rolled parchment
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -172,14 +173,13 @@ export function StatusBar() {
           {showHistory && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
-              animate={{ height: dragHeight || 'auto', opacity: 1 }}
+              animate={{ height: dragHeight ?? 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              transition={isDragging ? { duration: 0 } : undefined}
+              transition={isDragging ? { duration: 0 } : { height: { duration: 0.3, ease: 'easeOut' }, opacity: { duration: 0.2 } }}
               className="overflow-hidden"
             >
               <div
-                className="w-80 max-h-64 bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col transition-[max-height] duration-300 ease-out"
-                style={dragHeight ? { maxHeight: `${dragHeight}px`, transition: isDragging ? 'none' : undefined } : undefined}
+                className="w-80 max-h-[calc(100vh-48px)] bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col"
               >
                 {/* Drag-to-resize handle */}
                 <div
@@ -188,7 +188,7 @@ export function StatusBar() {
                     "flex items-center justify-center h-5 cursor-row-resize select-none border-b border-white/5 bg-black/40 transition-colors",
                     isDragging ? "bg-white/10" : "hover:bg-white/5"
                   )}
-                  title="Drag up to expand"
+                  title="Drag up to expand — release to snap back"
                 >
                   <div className={cn("w-8 h-0.5 rounded-full transition-colors", isDragging ? "bg-white/40" : "bg-white/20")} />
                 </div>
