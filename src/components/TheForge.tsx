@@ -82,10 +82,11 @@ export function TheForge() {
 
   const setupStatus = useMemo(() => {
     const loggedIn = platform === "kick" ? !!getKickSession() : platform === "joystick" ? !!getJoystickSession() : !!getTwitchSession();
+    const loginUsername = platform === "kick" ? getKickSession()?.username : platform === "joystick" ? getJoystickSession()?.username : getTwitchSession()?.username;
     const channelSet = !!(streamMetadata?.channelName && streamMetadata.channelName.trim().length > 0);
     const hasApiKey = hasAnyApiKey();
     const capturing = streamCaptureActive;
-    return { loggedIn, channelSet, hasApiKey, capturing, complete: loggedIn && channelSet && hasApiKey && capturing };
+    return { loggedIn, loginUsername, channelSet, hasApiKey, capturing, complete: loggedIn && channelSet && hasApiKey && capturing };
   }, [platform, streamMetadata?.channelName, streamCaptureActive, authTick]);
 
   const handleForge = async () => {
@@ -421,7 +422,7 @@ export function TheForge() {
                   </span>
                   <span className="text-[11px] text-gray-500">
                     {setupStatus.loggedIn
-                      ? `Connected as ${streamMetadata?.channelName || "authenticated user"}`
+                      ? `Connected as @${setupStatus.loginUsername || "authenticated user"}`
                       : `Click the login button in the top-right corner to authenticate with your chosen platform.`}
                   </span>
                 </div>
