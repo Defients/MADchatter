@@ -55,6 +55,7 @@ import {
   GitBranch,
   EyeOff,
   RefreshCw,
+  MousePointer2,
 } from "lucide-react";
 import { playMessageSound, enumerateAudioOutputs, setAudioOutputSink, setSoundUrl, setSoundVolume as setSoundVolumeFn } from "../lib/sound";
 import { formatChatLog } from "../lib/chatUtils";
@@ -124,6 +125,8 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     setDesktopNotificationsEnabled,
     smartRepliesEnabled,
     setSmartRepliesEnabled,
+    cursorTrailEnabled,
+    setCursorTrailEnabled,
     personaPresets,
     activePersonaId,
     applyPersonaPreset,
@@ -1419,6 +1422,36 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                         <div className="flex flex-col gap-0.5">
                           <span className="font-bold uppercase tracking-wider">Keyword Triggers</span>
                           <span className="text-[9px] text-gray-400 normal-case">Define keyword/regex patterns that fire notifications, toasts, sounds, or force AutoForge actions</span>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                    {/* Mouse Trail toggle */}
+                    <Tooltip>
+                      <TooltipTrigger render={(props) => (
+                        <button
+                          {...props}
+                          onClick={() => {
+                            const newVal = !cursorTrailEnabled;
+                            setCursorTrailEnabled(newVal);
+                            toast.success(`Mouse trail ${newVal ? 'enabled' : 'disabled'}`);
+                          }}
+                          className={cn(
+                            "flex items-center gap-1.5 px-2 py-1 rounded transition-colors border",
+                            cursorTrailEnabled
+                              ? "bg-fuchsia-500/15 border-fuchsia-500/40 hover:bg-fuchsia-500/25"
+                              : "bg-white/5 border-white/10 hover:bg-white/10"
+                          )}
+                        >
+                          <MousePointer2 className={cn("w-3.5 h-3.5", cursorTrailEnabled ? "text-fuchsia-400" : "text-gray-500")} />
+                          {cursorTrailEnabled && (
+                            <span className="text-[8px] font-bold text-green-400 uppercase">On</span>
+                          )}
+                        </button>
+                      )} />
+                      <TooltipContent side="top" className="bg-[#1a1a1f] border border-fuchsia-500/20 text-fuchsia-300 text-[10px] font-semibold rounded-lg px-2.5 py-1 shadow-xl">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="font-bold uppercase tracking-wider">Mouse Trail</span>
+                          <span className="text-[9px] text-gray-400 normal-case">Custom animated cursor with a particle trail that reacts to humor & chaos levels</span>
                         </div>
                       </TooltipContent>
                     </Tooltip>

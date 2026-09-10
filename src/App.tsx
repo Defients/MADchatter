@@ -65,6 +65,7 @@ export default function App() {
     customSoundUrl,
     soundVolume,
     hypeLevel,
+    cursorTrailEnabled,
   } = useAppStore();
 
   const tmiClientRef = useRef<tmi.Client | null>(null);
@@ -637,7 +638,7 @@ export default function App() {
   };
 
   return (
-    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobile ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? (maxRageSettled ? 'max-rage-shake-settled' : 'max-rage-shake') : ''}`}>
+    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobile && cursorTrailEnabled ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? (maxRageSettled ? 'max-rage-shake-settled' : 'max-rage-shake') : ''}`}>
       {/* Skip link — keyboard / screen-reader accessibility */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[200] focus:rounded-lg focus:bg-orange-500 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white">
         Skip to main content
@@ -842,7 +843,7 @@ export default function App() {
       <ShortcutHelp />
       <WelcomeOverlay />
       {!isMobile && <Suspense fallback={null}><TutorialWalkthrough /></Suspense>}
-      {!isMobile && <RageCursor />}
+      {!isMobile && cursorTrailEnabled && <RageCursor />}
       <EasterEggs />
     </div>
   );

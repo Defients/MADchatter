@@ -7,7 +7,7 @@ import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 12;
+const SETTINGS_VERSION = 13;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -369,6 +369,9 @@ interface AppState {
   setSfxEnabled: (enabled: boolean) => void;
   sfxVolume: number;
   setSfxVolume: (volume: number) => void;
+
+  cursorTrailEnabled: boolean;
+  setCursorTrailEnabled: (enabled: boolean) => void;
 
   // ─── Emote Providers (C6) ───────────────────────────────
   emoteProviders: { sevenTV: boolean; ffz: boolean; bttv: boolean };
@@ -897,6 +900,9 @@ export const useAppStore = create<AppState>()(
       setSfxEnabled: (enabled) => set({ sfxEnabled: enabled }),
       sfxVolume: 0.3,
       setSfxVolume: (volume) => set({ sfxVolume: volume }),
+
+      cursorTrailEnabled: true,
+      setCursorTrailEnabled: (enabled) => set({ cursorTrailEnabled: enabled }),
 
       // ─── Emote Providers (C6) ───────────────────────────────
       emoteProviders: { sevenTV: true, ffz: true, bttv: true },
@@ -1708,6 +1714,7 @@ export const useAppStore = create<AppState>()(
           messageSoundEnabled: state.messageSoundEnabled,
           sfxEnabled: state.sfxEnabled,
           sfxVolume: state.sfxVolume,
+          cursorTrailEnabled: state.cursorTrailEnabled,
           emoteProviders: state.emoteProviders,
           emoteAwarenessEnabled: state.emoteAwarenessEnabled,
           ttsEnabled: state.ttsEnabled,
@@ -1759,6 +1766,7 @@ export const useAppStore = create<AppState>()(
           if (data.messageSoundEnabled !== undefined) set({ messageSoundEnabled: data.messageSoundEnabled });
           if (data.sfxEnabled !== undefined) set({ sfxEnabled: data.sfxEnabled });
           if (data.sfxVolume !== undefined) set({ sfxVolume: data.sfxVolume });
+          if (data.cursorTrailEnabled !== undefined) set({ cursorTrailEnabled: data.cursorTrailEnabled });
           if (data.emoteProviders) set({ emoteProviders: data.emoteProviders });
           if (data.emoteAwarenessEnabled !== undefined) set({ emoteAwarenessEnabled: data.emoteAwarenessEnabled });
           if (data.ttsEnabled !== undefined) set({ ttsEnabled: data.ttsEnabled });
@@ -1818,6 +1826,7 @@ export const useAppStore = create<AppState>()(
         soundVolume: state.soundVolume,
         sfxEnabled: state.sfxEnabled,
         sfxVolume: state.sfxVolume,
+        cursorTrailEnabled: state.cursorTrailEnabled,
         emoteProviders: state.emoteProviders,
         emoteAwarenessEnabled: state.emoteAwarenessEnabled,
         ttsEnabled: state.ttsEnabled,
@@ -1946,6 +1955,10 @@ export const useAppStore = create<AppState>()(
           if (persistedState.multiBotEnabled === undefined) persistedState.multiBotEnabled = false;
           if (!persistedState.bots) persistedState.bots = [];
           if (persistedState.activeBotId === undefined) persistedState.activeBotId = null;
+        }
+        // v13: Cursor trail toggle (default true to preserve existing behavior)
+        if (version < 13 && persistedState) {
+          if (persistedState.cursorTrailEnabled === undefined) persistedState.cursorTrailEnabled = true;
         }
         return persistedState;
       },
