@@ -266,8 +266,12 @@ export function ForgeLayout() {
   });
   const [rightSize, setRightSize] = useState(() => {
     const saved = localStorage.getItem("forge-panel-right-size");
-    const parsed = saved ? parseFloat(saved) : 25;
-    return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? 25 : parsed;
+    // On 1920x1080 (and wider) screens, default to 31.25% (25% * 1.25) so all
+    // header buttons (Stats, R34L, HUD, AutoForge, Memory, Rate Limit, Settings)
+    // fit with their icons. Smaller screens keep the original 25% default.
+    const defaultSize = window.innerWidth >= 1920 ? 31.25 : 25;
+    const parsed = saved ? parseFloat(saved) : defaultSize;
+    return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
 
   // Collapsible states
@@ -2949,7 +2953,7 @@ export function ForgeLayout() {
               id="right-rail"
               order={3}
               minSize="18%"
-              maxSize="32%"
+              maxSize="40%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 const percentage = typeof size === "number" ? size : size.asPercentage;
