@@ -16,3 +16,5 @@ MADchatter-release.zip
 
 # Internal audit output
 audit-output/
+pnpm-lock.yaml
+pnpm-workspace.yaml
