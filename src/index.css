@@ -1939,6 +1939,22 @@
   animation: max-rage-shake 0.3s linear infinite;
 }
 
+/* After 5s the intense shake settles into a brief rumble every 60s */
+@keyframes max-rage-rumble {
+  0%, 96.7% { transform: translate(0, 0); }
+  97% { transform: translate(-1px, 1px); }
+  97.5% { transform: translate(1px, -1px); }
+  98% { transform: translate(-1px, -1px); }
+  98.5% { transform: translate(1px, 1px); }
+  99% { transform: translate(-1px, 0); }
+  99.5% { transform: translate(1px, 0); }
+  100% { transform: translate(0, 0); }
+}
+
+.max-rage-shake-settled {
+  animation: max-rage-rumble 60s linear infinite;
+}
+
 @keyframes max-rage-vignette-pulse {
   0%, 100% { opacity: 0.3; box-shadow: inset 0 0 80px 20px rgba(239, 68, 68, 0.3); }
   50%      { opacity: 0.6; box-shadow: inset 0 0 120px 40px rgba(239, 68, 68, 0.5); }

@@ -45,6 +45,7 @@ export default function App() {
   const [openCommand, setOpenCommand] = React.useState(false);
   const [konamiActive, setKonamiActive] = React.useState(false);
   const [maxRageShake, setMaxRageShake] = React.useState(false);
+  const [maxRageSettled, setMaxRageSettled] = React.useState(false);
   const isMobile = useIsMobile();
   const { 
     clearAllContext, 
@@ -133,12 +134,26 @@ export default function App() {
   // Easter egg class listeners (konami rainbow + max-rage shake)
   useEffect(() => {
     const onKonami = (e: Event) => setKonamiActive((e as CustomEvent).detail.active);
-    const onMaxRage = (e: Event) => setMaxRageShake((e as CustomEvent).detail.active);
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    const onMaxRage = (e: Event) => {
+      const active = (e as CustomEvent).detail.active;
+      setMaxRageShake(active);
+      if (active) {
+        // After 5s of intense shaking, settle into the periodic rumble
+        setMaxRageSettled(false);
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => setMaxRageSettled(true), 5000);
+      } else {
+        if (settleTimer) clearTimeout(settleTimer);
+        setMaxRageSettled(false);
+      }
+    };
     window.addEventListener('easter-egg-konami', onKonami);
     window.addEventListener('easter-egg-max-rage', onMaxRage);
     return () => {
       window.removeEventListener('easter-egg-konami', onKonami);
       window.removeEventListener('easter-egg-max-rage', onMaxRage);
+      if (settleTimer) clearTimeout(settleTimer);
     };
   }, []);
 
@@ -622,7 +637,7 @@ export default function App() {
   };
 
   return (
-    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobile ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? 'max-rage-shake' : ''}`}>
+    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobile ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? (maxRageSettled ? 'max-rage-shake-settled' : 'max-rage-shake') : ''}`}>
       {/* Skip link — keyboard / screen-reader accessibility */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[200] focus:rounded-lg focus:bg-orange-500 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white">
         Skip to main content
