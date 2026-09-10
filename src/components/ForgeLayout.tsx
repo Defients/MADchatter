@@ -265,11 +265,11 @@ export function ForgeLayout() {
     return isNaN(parsed) || parsed < 2 || parsed > 8 ? 3 : parsed;
   });
   const [rightSize, setRightSize] = useState(() => {
-    // Bumped key — forces the new universal default for existing users. We no
-    // longer vary the default by monitor width; one thinner default everywhere.
+    // Bumped key — forces the new universal default for existing users.
     const RIGHT_SIZE_KEY = "forge-panel-right-size-v3";
     const saved = localStorage.getItem(RIGHT_SIZE_KEY);
-    const defaultSize = 18;
+    const isFHD = typeof window !== "undefined" && window.innerWidth === 1920;
+    const defaultSize = isFHD ? 24.3 : 18;
     const parsed = saved ? parseFloat(saved) : defaultSize;
     return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
@@ -279,7 +279,8 @@ export function ForgeLayout() {
     localStorage.removeItem("forge-panel-right-size");
     localStorage.removeItem("forge-panel-right-size-v2");
     if (!localStorage.getItem("forge-panel-right-size-v3")) {
-      localStorage.setItem("forge-panel-right-size-v3", "18");
+      const isFHD = typeof window !== "undefined" && window.innerWidth === 1920;
+      localStorage.setItem("forge-panel-right-size-v3", isFHD ? "24.3" : "18");
     }
   }, []);
 
@@ -2971,7 +2972,7 @@ export function ForgeLayout() {
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
-                const defaultRight = 18;
+                const defaultRight = window.innerWidth === 1920 ? 24.3 : 18;
                 setRightSize(defaultRight);
                 localStorage.setItem("forge-panel-right-size-v3", defaultRight.toString());
                 if (rightPanelRef.current) {
