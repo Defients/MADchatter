@@ -266,10 +266,10 @@ export function ForgeLayout() {
   });
   const [rightSize, setRightSize] = useState(() => {
     const saved = localStorage.getItem("forge-panel-right-size");
-    // On 1920x1080 (and wider) screens, default to 31.25% (25% * 1.25) so all
+    // Default to 31.25% (the 1920x1080 width) on all screen sizes so the
     // header buttons (Stats, R34L, HUD, AutoForge, Memory, Rate Limit, Settings)
-    // fit with their icons. Smaller screens keep the original 25% default.
-    const defaultSize = window.innerWidth >= 1920 ? 31.25 : 25;
+    // always fit with their icons.
+    const defaultSize = 31.25;
     const parsed = saved ? parseFloat(saved) : defaultSize;
     return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
@@ -2574,7 +2574,7 @@ export function ForgeLayout() {
             </ResizablePanel>
 
             <ResizableHandle
-              className="w-1.5 forge-panel-handle hover:bg-orange-500/50 transition-colors z-30"
+              className="w-2.5 forge-panel-handle hover:bg-orange-500/50 hover:w-3 transition-all z-30"
               withHandle
               onDoubleClick={() => {
                 // Reset left panel to its default width for the current mode
@@ -2957,11 +2957,11 @@ export function ForgeLayout() {
             </ResizablePanel>
 
             <ResizableHandle
-              className="w-1.5 forge-panel-handle hover:bg-orange-500/50 transition-colors z-30"
+              className="w-2.5 forge-panel-handle hover:bg-orange-500/50 hover:w-3 transition-all z-30"
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
-                const defaultRight = window.innerWidth >= 1920 ? 31.25 : 25;
+                const defaultRight = 31.25;
                 setRightSize(defaultRight);
                 localStorage.setItem("forge-panel-right-size", defaultRight.toString());
                 if (rightPanelRef.current) {
