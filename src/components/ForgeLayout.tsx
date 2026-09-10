@@ -271,8 +271,8 @@ export function ForgeLayout() {
     // Default to 31.25% (the 1920x1080 width) so the header buttons
     // (Stats, R34L, HUD, AutoForge, Memory, Rate Limit, Settings) fit with
     // their icons. On very wide screens (2560px+) the sidebar takes up too
-    // much absolute space, so use a thinner 15% default (~384px at 2560px).
-    const defaultSize = window.innerWidth >= 2560 ? 15 : 31.25;
+    // much absolute space, so use a thinner 18% default (~460px at 2560px).
+    const defaultSize = window.innerWidth >= 2560 ? 18 : 31.25;
     const parsed = saved ? parseFloat(saved) : defaultSize;
     return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
@@ -2965,7 +2965,7 @@ export function ForgeLayout() {
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
-                const defaultRight = window.innerWidth >= 2560 ? 15 : 31.25;
+                const defaultRight = window.innerWidth >= 2560 ? 18 : 31.25;
                 setRightSize(defaultRight);
                 localStorage.setItem("forge-panel-right-size-v2", defaultRight.toString());
                 if (rightPanelRef.current) {
