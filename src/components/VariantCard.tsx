@@ -3,11 +3,12 @@ import { Card } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
-import { Copy, Send, Sparkles, MessageSquare, RefreshCw, Zap, GripVertical, X } from "lucide-react";
+import { Copy, Send, Sparkles, MessageSquare, RefreshCw, Zap, GripVertical, X, AtSign } from "lucide-react";
 import { ForgeSuggestion, Bot } from "../types";
 import { toast } from "sonner";
 import { playSfx } from "../lib/sfx";
 import { Input } from "./ui/input";
+import { Tooltip, TooltipTrigger, TooltipContent } from "./ui/tooltip";
 import { cn } from "../lib/utils";
 
 interface VariantCardProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -339,23 +340,36 @@ export const VariantCard: React.FC<VariantCardProps> = ({
         {multiBotActive && activeBots.length >= 2 ? (
           <div className="flex-1 flex gap-1 items-stretch">
             {activeBots.slice(0, 9).map((bot, idx) => (
-              <button
-                key={bot.id}
-                onClick={() => handleSendAsBot(bot.id)}
-                disabled={isSending}
-                title={`Send as @${bot.session?.username ?? bot.label}`}
-                className={cn(
-                  "flex-1 h-9 min-w-0 rounded-lg font-black text-xs flex items-center justify-center transition-all border",
-                  isSending
-                    ? "bg-green-600/30 text-green-300 border-green-500/30"
-                    : "bg-green-500/15 border-green-500/30 text-green-300 hover:bg-green-500 hover:text-black hover:border-green-400",
-                )}
-              >
-                <span className="flex flex-col items-center gap-0.5">
-                  <Send className="w-3 h-3 shrink-0" />
-                  <span className="text-[9px] leading-none">{idx + 1}</span>
-                </span>
-              </button>
+              <Tooltip key={bot.id}>
+                <TooltipTrigger
+                  render={
+                    <button
+                      onClick={() => handleSendAsBot(bot.id)}
+                      disabled={isSending}
+                      className={cn(
+                        "flex-1 h-9 min-w-0 rounded-lg font-black text-xs flex items-center justify-center transition-all border",
+                        isSending
+                          ? "bg-green-600/30 text-green-300 border-green-500/30"
+                          : "bg-green-500/15 border-green-500/30 text-green-300 hover:bg-green-500 hover:text-black hover:border-green-400",
+                      )}
+                    >
+                      <span className="flex flex-col items-center gap-0.5">
+                        <Send className="w-3 h-3 shrink-0" />
+                        <span className="text-[9px] leading-none">{idx + 1}</span>
+                      </span>
+                    </button>
+                  }
+                />
+                <TooltipContent
+                  side="top"
+                  sideOffset={6}
+                  className="bg-[#1a1a1f] border border-green-500/30 text-green-300 text-[11px] font-semibold rounded-lg px-2.5 py-1.5 shadow-xl flex items-center gap-1.5"
+                >
+                  <AtSign className="w-3 h-3 text-green-400/70 shrink-0" />
+                  <span className="font-mono">{bot.session?.username ?? bot.label}</span>
+                  <span className="text-green-500/50 font-mono ml-0.5">#{idx + 1}</span>
+                </TooltipContent>
+              </Tooltip>
             ))}
           </div>
         ) : (
