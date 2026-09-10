@@ -2445,6 +2445,11 @@
   --lt-border:      rgba(0, 0, 0, 0.08);
   --lt-border-2:   rgba(0, 0, 0, 0.12);
   --lt-accent:      #6366f1;
+  /* Gold trim */
+  --lt-gold:        201, 161, 74;
+  --lt-gold-bright: 232, 196, 104;
+  --lt-gold-soft:   rgba(201, 161, 74, 0.12);
+  --lt-gold-border: rgba(201, 161, 74, 0.25);
 }
 
 /* ── Root & surfaces ─────────────────────────────────────────────────────── */
@@ -2476,26 +2481,27 @@
   background-color: var(--lt-surface-3) !important;
 }
 
-/* Smoked-glass panels: clean white with subtle shadow */
+/* Smoked-glass panels: clean white with gold trim shadow */
 .light-theme .bg-\[\#121217\]\/95,
 .light-theme .bg-\[\#121217\]\/90 {
   backdrop-filter: blur(20px) saturate(120%);
   -webkit-backdrop-filter: blur(20px) saturate(120%);
   box-shadow:
-    inset 0 1px 0 rgba(0, 0, 0, 0.03),
+    inset 0 1px 0 rgba(var(--lt-gold), 0.08),
+    inset 0 0 0 1px rgba(var(--lt-gold), 0.04),
     0 8px 32px rgba(0, 0, 0, 0.08);
 }
 
-/* ── Borders ─────────────────────────────────────────────────────────────── */
+/* ── Gold trim on borders ────────────────────────────────────────────────── */
 
 .light-theme .border-white\/5,
 .light-theme .border-white\/\[0\.02\],
 .light-theme .border-white\/\[0\.04\] {
-  border-color: var(--lt-border) !important;
+  border-color: var(--lt-gold-border) !important;
 }
 
 .light-theme .border-white\/10 {
-  border-color: var(--lt-border-2) !important;
+  border-color: rgba(var(--lt-gold), 0.35) !important;
 }
 
 /* ── Text colour shifts ──────────────────────────────────────────────────── */
@@ -2665,73 +2671,12 @@
 .light-theme .bg-purple-500 { background-color: #7c3aed !important; }
 .light-theme .bg-yellow-500 { background-color: #ca8a04 !important; }
 
-/* ── Toggle switches ──────────────────────────────────────────────────────── */
-
-.light-theme .bg-cyan-500,
-.light-theme .bg-cyan-600,
-.light-theme .bg-blue-500,
-.light-theme .bg-blue-600 {
-  background-color: var(--lt-accent) !important;
-}
-
-/* ── Border accent shifts ────────────────────────────────────────────────── */
-
-.light-theme .border-orange-500\/50,
-.light-theme .border-orange-500\/20,
-.light-theme .border-orange-500\/30 {
-  border-color: rgba(234, 88, 12, 0.3) !important;
-}
-
-.light-theme .border-purple-500\/20,
-.light-theme .border-purple-500\/30 {
-  border-color: rgba(124, 58, 237, 0.25) !important;
-}
-
-.light-theme .border-cyan-500\/20,
-.light-theme .border-cyan-500\/40 {
-  border-color: rgba(8, 145, 178, 0.25) !important;
-}
-
-.light-theme .border-teal-500\/20 {
-  border-color: rgba(13, 148, 136, 0.25) !important;
-}
-
-.light-theme .border-blue-500\/20,
-.light-theme .border-blue-500\/30 {
-  border-color: rgba(37, 99, 235, 0.25) !important;
-}
-
-.light-theme .border-red-500\/20,
-.light-theme .border-red-500\/30 {
-  border-color: rgba(220, 38, 38, 0.25) !important;
-}
-
-.light-theme .border-green-500\/20 {
-  border-color: rgba(22, 163, 74, 0.25) !important;
-}
-
-.light-theme .border-yellow-500\/40 {
-  border-color: rgba(202, 138, 4, 0.3) !important;
-}
-
 /* ── Hover states ─────────────────────────────────────────────────────────── */
-
-.light-theme .hover\:bg-white\/10:hover {
-  background-color: rgba(0, 0, 0, 0.05) !important;
-}
-
-.light-theme .hover\:bg-white\/5:hover {
-  background-color: rgba(0, 0, 0, 0.03) !important;
-}
-
-.light-theme .hover\:text-white:hover {
-  color: var(--lt-text) !important;
-}
 
 .light-theme .hover\:text-gray-300:hover { color: #44445a !important; }
 .light-theme .hover\:text-gray-400:hover { color: #666676 !important; }
 
-/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+/* ── Scrollbar tracks ─────────────────────────────────────────────────────── */
 
 .light-theme .forge-scroll::-webkit-scrollbar-track,
 .light-theme .forge-scroll-audio::-webkit-scrollbar-track,
@@ -2741,72 +2686,6 @@
 .light-theme .forge-scroll-report::-webkit-scrollbar-track,
 .light-theme .themed-scroll::-webkit-scrollbar-track {
   background: rgba(0, 0, 0, 0.04) !important;
-}
-
-.light-theme .forge-scroll::-webkit-scrollbar-thumb,
-.light-theme .forge-scroll-audio::-webkit-scrollbar-thumb,
-.light-theme .forge-scroll-main::-webkit-scrollbar-thumb,
-.light-theme .directives-scroll::-webkit-scrollbar-thumb,
-.light-theme .settings-scroll-area::-webkit-scrollbar-thumb,
-.light-theme .forge-scroll-report::-webkit-scrollbar-thumb,
-.light-theme .themed-scroll::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15) !important;
-  border-radius: 4px;
-}
-
-.light-theme .forge-scroll::-webkit-scrollbar-thumb:hover,
-.light-theme .forge-scroll-audio::-webkit-scrollbar-thumb:hover,
-.light-theme .forge-scroll-main::-webkit-scrollbar-thumb:hover,
-.light-theme .directives-scroll::-webkit-scrollbar-thumb:hover,
-.light-theme .settings-scroll-area::-webkit-scrollbar-thumb:hover,
-.light-theme .forge-scroll-report::-webkit-scrollbar-thumb:hover,
-.light-theme .themed-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25) !important;
-}
-
-/* ── Selection ───────────────────────────────────────────────────────────── */
-
-.light-theme ::selection {
-  background: rgba(99, 102, 241, 0.2) !important;
-  color: var(--lt-text) !important;
-}
-
-/* ── Focus states ─────────────────────────────────────────────────────────── */
-
-.light-theme input:focus,
-.light-theme textarea:focus,
-.light-theme button:focus-visible {
-  outline-color: rgba(99, 102, 241, 0.4) !important;
-  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15) !important;
-}
-
-/* ── Range slider thumbs ──────────────────────────────────────────────────── */
-
-.light-theme input[type="range"]::-webkit-slider-thumb {
-  background: var(--lt-accent) !important;
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3) !important;
-}
-
-.light-theme input[type="range"]::-moz-range-thumb {
-  background: var(--lt-accent) !important;
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3) !important;
-}
-
-/* ── Panel handle ─────────────────────────────────────────────────────────── */
-
-.light-theme .forge-panel-handle {
-  background: rgba(0, 0, 0, 0.08) !important;
-}
-
-.light-theme .forge-panel-handle:hover {
-  background: rgba(99, 102, 241, 0.3) !important;
-}
-
-/* ── Spinner ──────────────────────────────────────────────────────────────── */
-
-.light-theme .animate-spin,
-.light-theme .animate-spin-slow {
-  color: var(--lt-accent) !important;
 }
 
 /* ── Gradient text → keep but ensure visibility on light bg ───────────────── */
@@ -2825,8 +2704,154 @@
 
 .light-theme kbd {
   background-color: var(--lt-surface-2) !important;
-  border-color: var(--lt-border-2) !important;
+  border-color: var(--lt-gold-border) !important;
   color: var(--lt-text-muted) !important;
+}
+
+/* ── Gold trim & accents ─────────────────────────────────────────────────── */
+
+/* Gold accent on focus */
+.light-theme input:focus,
+.light-theme textarea:focus,
+.light-theme button:focus-visible {
+  outline-color: rgba(var(--lt-gold), 0.5) !important;
+  box-shadow: 0 0 0 1px rgba(var(--lt-gold), 0.2) !important;
+}
+
+/* Gold range slider thumbs */
+.light-theme input[type="range"]::-webkit-slider-thumb {
+  background: rgb(var(--lt-gold-bright)) !important;
+  box-shadow: 0 0 8px rgba(var(--lt-gold), 0.4) !important;
+}
+
+.light-theme input[type="range"]::-moz-range-thumb {
+  background: rgb(var(--lt-gold-bright)) !important;
+  box-shadow: 0 0 8px rgba(var(--lt-gold), 0.4) !important;
+}
+
+/* Gold panel handle */
+.light-theme .forge-panel-handle {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--lt-gold), 0.12),
+    rgba(var(--lt-gold), 0.06),
+    rgba(var(--lt-gold), 0.12)
+  ) !important;
+}
+
+.light-theme .forge-panel-handle:hover {
+  background: rgba(var(--lt-gold), 0.3) !important;
+}
+
+/* Gold spinner */
+.light-theme .animate-spin,
+.light-theme .animate-spin-slow {
+  color: rgb(var(--lt-gold)) !important;
+}
+
+/* Gold selection */
+.light-theme ::selection {
+  background: rgba(var(--lt-gold), 0.2) !important;
+  color: var(--lt-text) !important;
+}
+
+/* Gold scrollbars */
+.light-theme .forge-scroll::-webkit-scrollbar-thumb,
+.light-theme .forge-scroll-audio::-webkit-scrollbar-thumb,
+.light-theme .forge-scroll-main::-webkit-scrollbar-thumb,
+.light-theme .directives-scroll::-webkit-scrollbar-thumb,
+.light-theme .settings-scroll-area::-webkit-scrollbar-thumb,
+.light-theme .forge-scroll-report::-webkit-scrollbar-thumb,
+.light-theme .themed-scroll::-webkit-scrollbar-thumb {
+  background: rgba(var(--lt-gold), 0.3) !important;
+  border-radius: 4px;
+}
+
+.light-theme .forge-scroll::-webkit-scrollbar-thumb:hover,
+.light-theme .forge-scroll-audio::-webkit-scrollbar-thumb:hover,
+.light-theme .forge-scroll-main::-webkit-scrollbar-thumb:hover,
+.light-theme .directives-scroll::-webkit-scrollbar-thumb:hover,
+.light-theme .settings-scroll-area::-webkit-scrollbar-thumb:hover,
+.light-theme .forge-scroll-report::-webkit-scrollbar-thumb:hover,
+.light-theme .themed-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--lt-gold), 0.5) !important;
+}
+
+/* Gold accent on toggle switches */
+.light-theme .bg-cyan-500,
+.light-theme .bg-cyan-600,
+.light-theme .bg-blue-500,
+.light-theme .bg-blue-600 {
+  background-color: rgb(var(--lt-gold)) !important;
+}
+
+/* Gold hover states */
+.light-theme .hover\:bg-white\/10:hover {
+  background-color: rgba(var(--lt-gold), 0.08) !important;
+}
+
+.light-theme .hover\:bg-white\/5:hover {
+  background-color: rgba(var(--lt-gold), 0.04) !important;
+}
+
+.light-theme .hover\:text-white:hover {
+  color: rgb(var(--lt-gold-bright)) !important;
+}
+
+/* Gold-tinted gradient text */
+.light-theme .bg-gradient-to-r.bg-clip-text {
+  filter: brightness(0.85) saturate(1.3) sepia(0.15);
+}
+
+/* Gold accent borders */
+.light-theme .border-orange-500\/50,
+.light-theme .border-orange-500\/20,
+.light-theme .border-orange-500\/30 {
+  border-color: rgba(var(--lt-gold), 0.4) !important;
+}
+
+.light-theme .border-cyan-500\/20,
+.light-theme .border-cyan-500\/40 {
+  border-color: rgba(var(--lt-gold), 0.3) !important;
+}
+
+.light-theme .border-blue-500\/20,
+.light-theme .border-blue-500\/30 {
+  border-color: rgba(var(--lt-gold), 0.3) !important;
+}
+
+.light-theme .border-purple-500\/20,
+.light-theme .border-purple-500\/30 {
+  border-color: rgba(var(--lt-gold), 0.25) !important;
+}
+
+.light-theme .border-teal-500\/20 {
+  border-color: rgba(var(--lt-gold), 0.25) !important;
+}
+
+.light-theme .border-red-500\/20,
+.light-theme .border-red-500\/30 {
+  border-color: rgba(var(--lt-gold), 0.25) !important;
+}
+
+.light-theme .border-green-500\/20 {
+  border-color: rgba(var(--lt-gold), 0.25) !important;
+}
+
+.light-theme .border-yellow-500\/40 {
+  border-color: rgba(var(--lt-gold), 0.4) !important;
+}
+
+/* Gold glow on key panels */
+.light-theme .bg-\[\#121217\]::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(135deg, transparent 49.5%, rgba(var(--lt-gold), 0.015) 49.8%, transparent 50.2%);
+  background-size: 200px 200px;
+  z-index: 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

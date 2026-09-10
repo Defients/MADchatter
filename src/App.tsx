@@ -559,6 +559,10 @@ export default function App() {
       if (e.key.toLowerCase() === 't') {
         e.preventDefault();
         const s = useAppStore.getState();
+        // If Urz light theme is active, turn it off and cycle normally
+        if (s.lightThemeActive) {
+          s.setLightThemeActive(false);
+        }
         const themes: ("default" | "cosmotech" | "corrupture")[] = ["default", "cosmotech", "corrupture"];
         const currentIdx = themes.indexOf(s.theme);
         const nextTheme = themes[(currentIdx + 1) % themes.length];
@@ -785,6 +789,10 @@ export default function App() {
                     setOpenCommand(false); 
                     playSfx('palette_select');
                     const s = useAppStore.getState();
+                    // If Urz light theme is active, turn it off and cycle normally
+                    if (s.lightThemeActive) {
+                      s.setLightThemeActive(false);
+                    }
                     const themes: ("default" | "cosmotech" | "corrupture")[] = ["default", "cosmotech", "corrupture"];
                     const currentIdx = themes.indexOf(s.theme);
                     const nextTheme = themes[(currentIdx + 1) % themes.length];
