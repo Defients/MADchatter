@@ -266,12 +266,12 @@ export function ForgeLayout() {
   });
   const [rightSize, setRightSize] = useState(() => {
     // Bumped key — forces the new default for existing users.
-    const RIGHT_SIZE_KEY = "forge-panel-right-size-v5";
+    const RIGHT_SIZE_KEY = "forge-panel-right-size-v6";
     const saved = localStorage.getItem(RIGHT_SIZE_KEY);
     const isFHD = typeof window !== "undefined" && Math.round(window.innerWidth) === 1920;
     // 1920x1080 needs more room so header buttons (Stats, R34L, HUD, Settings, etc.)
     // don't overflow; other screens use the thinner default.
-    const defaultSize = isFHD ? 37.5 : 21.6;
+    const defaultSize = isFHD ? 43.125 : 21.6;
     const parsed = saved ? parseFloat(saved) : defaultSize;
     return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
@@ -282,9 +282,10 @@ export function ForgeLayout() {
     localStorage.removeItem("forge-panel-right-size-v2");
     localStorage.removeItem("forge-panel-right-size-v3");
     localStorage.removeItem("forge-panel-right-size-v4");
-    if (!localStorage.getItem("forge-panel-right-size-v5")) {
+    localStorage.removeItem("forge-panel-right-size-v5");
+    if (!localStorage.getItem("forge-panel-right-size-v6")) {
       const isFHD = typeof window !== "undefined" && Math.round(window.innerWidth) === 1920;
-      localStorage.setItem("forge-panel-right-size-v5", isFHD ? "37.5" : "21.6");
+      localStorage.setItem("forge-panel-right-size-v6", isFHD ? "43.125" : "21.6");
     }
   }, []);
 
@@ -1068,6 +1069,7 @@ export function ForgeLayout() {
       "forge-panel-right-size-v2",
       "forge-panel-right-size-v3",
       "forge-panel-right-size-v4",
+      "forge-panel-right-size-v5",
       "forge-chat-anchored",
       "forge-audio-anchored",
       "forge-audio-panel-height",
@@ -2978,9 +2980,9 @@ export function ForgeLayout() {
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
-                const defaultRight = Math.round(window.innerWidth) === 1920 ? 37.5 : 21.6;
+                const defaultRight = Math.round(window.innerWidth) === 1920 ? 43.125 : 21.6;
                 setRightSize(defaultRight);
-                localStorage.setItem("forge-panel-right-size-v5", defaultRight.toString());
+                localStorage.setItem("forge-panel-right-size-v6", defaultRight.toString());
                 if (rightPanelRef.current) {
                   try { rightPanelRef.current.resize(`${defaultRight}%`); } catch {}
                 }
@@ -2988,7 +2990,7 @@ export function ForgeLayout() {
               }}
               onDragging={(isDragging) => {
                 if (!isDragging) {
-                  const saved = localStorage.getItem("forge-panel-right-size-v5");
+                  const saved = localStorage.getItem("forge-panel-right-size-v6");
                   if (saved) {
                     const parsed = parseFloat(saved);
                     if (!isNaN(parsed) && parsed > 0 && parsed < 100) setRightSize(parsed);
@@ -3003,11 +3005,11 @@ export function ForgeLayout() {
               id="right-rail"
               order={3}
               minSize="12%"
-              maxSize="40%"
+              maxSize="45%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 const percentage = typeof size === "number" ? size : size.asPercentage;
-                localStorage.setItem("forge-panel-right-size-v5", percentage.toString());
+                localStorage.setItem("forge-panel-right-size-v6", percentage.toString());
                 setRightSize(percentage);
               }}
               className="bg-[#121217] border-l border-white/5 z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]"
