@@ -447,6 +447,7 @@ export function ForgeLayout() {
   const lastLeftResizeRef = useRef<number | null>(null);
 
   const leftPanelRef = useRef<PanelImperativeHandle>(null);
+  const rightPanelRef = useRef<PanelImperativeHandle>(null);
   const leftRailDomRef = useRef<HTMLDivElement>(null);
   type WidgetType = "audio" | "chat" | "visual" | "memory" | "stream";
   const [openWidgets, setOpenWidgets] = useState<Set<WidgetType>>(new Set());
@@ -2562,6 +2563,21 @@ export function ForgeLayout() {
             <ResizableHandle
               className="w-1.5 forge-panel-handle hover:bg-orange-500/50 transition-colors z-30"
               withHandle
+              onDoubleClick={() => {
+                // Reset left panel to its default width for the current mode
+                const defaultLeft = leftCollapsed ? 3 : 18;
+                if (leftCollapsed) {
+                  setLeftCollapsedSize(defaultLeft);
+                  localStorage.setItem("forge-panel-left-collapsed-size", defaultLeft.toString());
+                } else {
+                  setLeftPanelSize(defaultLeft);
+                  localStorage.setItem("forge-panel-left-expanded-size", defaultLeft.toString());
+                }
+                if (leftPanelRef.current) {
+                  try { leftPanelRef.current.resize(`${defaultLeft}%`); } catch {}
+                }
+                playSfx('slider_commit');
+              }}
               onDragging={(isDragging) => {
                 panelDragActiveRef.current = isDragging;
                 if (!isDragging) {
@@ -2922,6 +2938,16 @@ export function ForgeLayout() {
             <ResizableHandle
               className="w-1.5 forge-panel-handle hover:bg-orange-500/50 transition-colors z-30"
               withHandle
+              onDoubleClick={() => {
+                // Reset right panel to its default width
+                const defaultRight = window.innerWidth >= 1920 ? 31.25 : 25;
+                setRightSize(defaultRight);
+                localStorage.setItem("forge-panel-right-size", defaultRight.toString());
+                if (rightPanelRef.current) {
+                  try { rightPanelRef.current.resize(`${defaultRight}%`); } catch {}
+                }
+                playSfx('slider_commit');
+              }}
               onDragging={(isDragging) => {
                 if (!isDragging) {
                   const saved = localStorage.getItem("forge-panel-right-size");
@@ -2935,6 +2961,7 @@ export function ForgeLayout() {
 
             {/* Right Rail: Tuning Deck + Controls */}
             <ResizablePanel
+              ref={rightPanelRef}
               id="right-rail"
               order={3}
               minSize="18%"
