@@ -266,10 +266,11 @@ export function ForgeLayout() {
   });
   const [rightSize, setRightSize] = useState(() => {
     const saved = localStorage.getItem("forge-panel-right-size");
-    // Default to 31.25% (the 1920x1080 width) on all screen sizes so the
-    // header buttons (Stats, R34L, HUD, AutoForge, Memory, Rate Limit, Settings)
-    // always fit with their icons.
-    const defaultSize = 31.25;
+    // Default to 31.25% (the 1920x1080 width) so the header buttons
+    // (Stats, R34L, HUD, AutoForge, Memory, Rate Limit, Settings) fit with
+    // their icons. On very wide screens (2560px+) the sidebar takes up too
+    // much absolute space, so scale the default down to 67% of the 1080p value.
+    const defaultSize = window.innerWidth >= 2560 ? 31.25 * 0.67 : 31.25;
     const parsed = saved ? parseFloat(saved) : defaultSize;
     return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
@@ -2961,7 +2962,7 @@ export function ForgeLayout() {
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
-                const defaultRight = 31.25;
+                const defaultRight = window.innerWidth >= 2560 ? 31.25 * 0.67 : 31.25;
                 setRightSize(defaultRight);
                 localStorage.setItem("forge-panel-right-size", defaultRight.toString());
                 if (rightPanelRef.current) {
