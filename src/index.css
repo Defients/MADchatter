@@ -2431,6 +2431,405 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   URZ LIGHT THEME — Secret white-based light mode unlocked by typing "Urz"
+   Not part of the 3-theme cycle. Runtime-only, not persisted.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.light-theme {
+  --lt-bg:          #f4f4f7;
+  --lt-surface:     #ffffff;
+  --lt-surface-2:   #ececef;
+  --lt-surface-3:   #e2e2e7;
+  --lt-text:        #1a1a2e;
+  --lt-text-muted:  #555560;
+  --lt-border:      rgba(0, 0, 0, 0.08);
+  --lt-border-2:   rgba(0, 0, 0, 0.12);
+  --lt-accent:      #6366f1;
+}
+
+/* ── Root & surfaces ─────────────────────────────────────────────────────── */
+
+.light-theme {
+  background-color: var(--lt-bg) !important;
+  color: var(--lt-text) !important;
+}
+
+.light-theme .bg-\[\#0b0b11\] {
+  background-color: var(--lt-bg) !important;
+}
+
+.light-theme .bg-\[\#121217\],
+.light-theme .bg-\[\#121217\]\/95,
+.light-theme .bg-\[\#121217\]\/90,
+.light-theme .bg-\[\#121217\]\/80 {
+  background-color: var(--lt-surface) !important;
+}
+
+.light-theme .bg-\[\#0F0F12\],
+.light-theme .bg-\[\#0F0F12\]\/95,
+.light-theme .bg-\[\#0a0a0f\],
+.light-theme .bg-\[\#0a0a0f\]\/90 {
+  background-color: var(--lt-surface-2) !important;
+}
+
+.light-theme .bg-\[\#1a1a22\] {
+  background-color: var(--lt-surface-3) !important;
+}
+
+/* Smoked-glass panels: clean white with subtle shadow */
+.light-theme .bg-\[\#121217\]\/95,
+.light-theme .bg-\[\#121217\]\/90 {
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.03),
+    0 8px 32px rgba(0, 0, 0, 0.08);
+}
+
+/* ── Borders ─────────────────────────────────────────────────────────────── */
+
+.light-theme .border-white\/5,
+.light-theme .border-white\/\[0\.02\],
+.light-theme .border-white\/\[0\.04\] {
+  border-color: var(--lt-border) !important;
+}
+
+.light-theme .border-white\/10 {
+  border-color: var(--lt-border-2) !important;
+}
+
+/* ── Text colour shifts ──────────────────────────────────────────────────── */
+
+.light-theme .text-\[\#e0e0e6\] {
+  color: var(--lt-text) !important;
+}
+
+.light-theme .text-gray-100 { color: #2a2a3e !important; }
+.light-theme .text-gray-200 { color: #33334a !important; }
+.light-theme .text-gray-300 { color: #44445a !important; }
+.light-theme .text-gray-400 { color: #666676 !important; }
+.light-theme .text-gray-500 { color: #888896 !important; }
+.light-theme .text-gray-600 { color: #aaaab8 !important; }
+.light-theme .text-gray-700 { color: #ccccd8 !important; }
+
+/* ── Background overlays: white → subtle dark tint ───────────────────────── */
+
+.light-theme .bg-white\/5,
+.light-theme .bg-white\/\[0\.02\],
+.light-theme .bg-white\/\[0\.04\] {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.light-theme .bg-white\/10 {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.light-theme .bg-white\/15,
+.light-theme .bg-white\/20 {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* ── Black overlays → keep readable ───────────────────────────────────────── */
+
+.light-theme .bg-black\/40,
+.light-theme .bg-black\/30,
+.light-theme .bg-black\/60,
+.light-theme .bg-black\/20 {
+  background-color: rgba(255, 255, 255, 0.5) !important;
+}
+
+.light-theme .bg-black\/50,
+.light-theme .bg-black\/70,
+.light-theme .bg-black\/80 {
+  background-color: rgba(245, 245, 248, 0.85) !important;
+}
+
+/* ── Accent colors: keep vibrant but adjust for light bg ─────────────────── */
+
+.light-theme .text-orange-400,
+.light-theme .text-orange-500 {
+  color: #ea580c !important;
+}
+
+.light-theme .text-orange-300 {
+  color: #f97316 !important;
+}
+
+.light-theme .text-purple-400,
+.light-theme .text-purple-500 {
+  color: #7c3aed !important;
+}
+
+.light-theme .text-cyan-400,
+.light-theme .text-cyan-500 {
+  color: #0891b2 !important;
+}
+
+.light-theme .text-teal-400,
+.light-theme .text-teal-500 {
+  color: #0d9488 !important;
+}
+
+.light-theme .text-blue-400,
+.light-theme .text-blue-500 {
+  color: #2563eb !important;
+}
+
+.light-theme .text-red-400,
+.light-theme .text-red-500 {
+  color: #dc2626 !important;
+}
+
+.light-theme .text-green-400,
+.light-theme .text-green-500 {
+  color: #16a34a !important;
+}
+
+.light-theme .text-yellow-400,
+.light-theme .text-yellow-500 {
+  color: #ca8a04 !important;
+}
+
+.light-theme .text-pink-400,
+.light-theme .text-pink-500 {
+  color: #db2777 !important;
+}
+
+.light-theme .text-amber-400,
+.light-theme .text-amber-500 {
+  color: #d97706 !important;
+}
+
+/* ── Background accent shifts ─────────────────────────────────────────────── */
+
+.light-theme .bg-orange-500\/10,
+.light-theme .bg-orange-500\/20,
+.light-theme .bg-orange-500\/5 {
+  background-color: rgba(234, 88, 12, 0.08) !important;
+}
+
+.light-theme .bg-purple-500\/10,
+.light-theme .bg-purple-500\/20 {
+  background-color: rgba(124, 58, 237, 0.08) !important;
+}
+
+.light-theme .bg-cyan-500\/10,
+.light-theme .bg-cyan-500\/15,
+.light-theme .bg-cyan-500\/20 {
+  background-color: rgba(8, 145, 178, 0.08) !important;
+}
+
+.light-theme .bg-teal-500\/5,
+.light-theme .bg-teal-500\/10 {
+  background-color: rgba(13, 148, 136, 0.06) !important;
+}
+
+.light-theme .bg-blue-500\/10,
+.light-theme .bg-blue-500\/15,
+.light-theme .bg-blue-500\/20 {
+  background-color: rgba(37, 99, 235, 0.08) !important;
+}
+
+.light-theme .bg-red-500\/10,
+.light-theme .bg-red-500\/15,
+.light-theme .bg-red-500\/20 {
+  background-color: rgba(220, 38, 38, 0.08) !important;
+}
+
+.light-theme .bg-green-500\/10,
+.light-theme .bg-green-500\/5 {
+  background-color: rgba(22, 163, 74, 0.06) !important;
+}
+
+.light-theme .bg-yellow-500\/10,
+.light-theme .bg-yellow-500\/15 {
+  background-color: rgba(202, 138, 4, 0.08) !important;
+}
+
+.light-theme .bg-pink-500\/10 {
+  background-color: rgba(219, 39, 119, 0.08) !important;
+}
+
+.light-theme .bg-amber-500\/10,
+.light-theme .bg-amber-500\/15 {
+  background-color: rgba(217, 119, 6, 0.08) !important;
+}
+
+/* ── Solid accent backgrounds ────────────────────────────────────────────── */
+
+.light-theme .bg-orange-500 { background-color: #ea580c !important; }
+.light-theme .bg-red-500 { background-color: #dc2626 !important; }
+.light-theme .bg-green-500 { background-color: #16a34a !important; }
+.light-theme .bg-blue-500 { background-color: #2563eb !important; }
+.light-theme .bg-cyan-500 { background-color: #0891b2 !important; }
+.light-theme .bg-purple-500 { background-color: #7c3aed !important; }
+.light-theme .bg-yellow-500 { background-color: #ca8a04 !important; }
+
+/* ── Toggle switches ──────────────────────────────────────────────────────── */
+
+.light-theme .bg-cyan-500,
+.light-theme .bg-cyan-600,
+.light-theme .bg-blue-500,
+.light-theme .bg-blue-600 {
+  background-color: var(--lt-accent) !important;
+}
+
+/* ── Border accent shifts ────────────────────────────────────────────────── */
+
+.light-theme .border-orange-500\/50,
+.light-theme .border-orange-500\/20,
+.light-theme .border-orange-500\/30 {
+  border-color: rgba(234, 88, 12, 0.3) !important;
+}
+
+.light-theme .border-purple-500\/20,
+.light-theme .border-purple-500\/30 {
+  border-color: rgba(124, 58, 237, 0.25) !important;
+}
+
+.light-theme .border-cyan-500\/20,
+.light-theme .border-cyan-500\/40 {
+  border-color: rgba(8, 145, 178, 0.25) !important;
+}
+
+.light-theme .border-teal-500\/20 {
+  border-color: rgba(13, 148, 136, 0.25) !important;
+}
+
+.light-theme .border-blue-500\/20,
+.light-theme .border-blue-500\/30 {
+  border-color: rgba(37, 99, 235, 0.25) !important;
+}
+
+.light-theme .border-red-500\/20,
+.light-theme .border-red-500\/30 {
+  border-color: rgba(220, 38, 38, 0.25) !important;
+}
+
+.light-theme .border-green-500\/20 {
+  border-color: rgba(22, 163, 74, 0.25) !important;
+}
+
+.light-theme .border-yellow-500\/40 {
+  border-color: rgba(202, 138, 4, 0.3) !important;
+}
+
+/* ── Hover states ─────────────────────────────────────────────────────────── */
+
+.light-theme .hover\:bg-white\/10:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+.light-theme .hover\:bg-white\/5:hover {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.light-theme .hover\:text-white:hover {
+  color: var(--lt-text) !important;
+}
+
+.light-theme .hover\:text-gray-300:hover { color: #44445a !important; }
+.light-theme .hover\:text-gray-400:hover { color: #666676 !important; }
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+.light-theme .forge-scroll::-webkit-scrollbar-track,
+.light-theme .forge-scroll-audio::-webkit-scrollbar-track,
+.light-theme .forge-scroll-main::-webkit-scrollbar-track,
+.light-theme .directives-scroll::-webkit-scrollbar-track,
+.light-theme .settings-scroll-area::-webkit-scrollbar-track,
+.light-theme .forge-scroll-report::-webkit-scrollbar-track,
+.light-theme .themed-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+.light-theme .forge-scroll::-webkit-scrollbar-thumb,
+.light-theme .forge-scroll-audio::-webkit-scrollbar-thumb,
+.light-theme .forge-scroll-main::-webkit-scrollbar-thumb,
+.light-theme .directives-scroll::-webkit-scrollbar-thumb,
+.light-theme .settings-scroll-area::-webkit-scrollbar-thumb,
+.light-theme .forge-scroll-report::-webkit-scrollbar-thumb,
+.light-theme .themed-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15) !important;
+  border-radius: 4px;
+}
+
+.light-theme .forge-scroll::-webkit-scrollbar-thumb:hover,
+.light-theme .forge-scroll-audio::-webkit-scrollbar-thumb:hover,
+.light-theme .forge-scroll-main::-webkit-scrollbar-thumb:hover,
+.light-theme .directives-scroll::-webkit-scrollbar-thumb:hover,
+.light-theme .settings-scroll-area::-webkit-scrollbar-thumb:hover,
+.light-theme .forge-scroll-report::-webkit-scrollbar-thumb:hover,
+.light-theme .themed-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25) !important;
+}
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+
+.light-theme ::selection {
+  background: rgba(99, 102, 241, 0.2) !important;
+  color: var(--lt-text) !important;
+}
+
+/* ── Focus states ─────────────────────────────────────────────────────────── */
+
+.light-theme input:focus,
+.light-theme textarea:focus,
+.light-theme button:focus-visible {
+  outline-color: rgba(99, 102, 241, 0.4) !important;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15) !important;
+}
+
+/* ── Range slider thumbs ──────────────────────────────────────────────────── */
+
+.light-theme input[type="range"]::-webkit-slider-thumb {
+  background: var(--lt-accent) !important;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3) !important;
+}
+
+.light-theme input[type="range"]::-moz-range-thumb {
+  background: var(--lt-accent) !important;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3) !important;
+}
+
+/* ── Panel handle ─────────────────────────────────────────────────────────── */
+
+.light-theme .forge-panel-handle {
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+
+.light-theme .forge-panel-handle:hover {
+  background: rgba(99, 102, 241, 0.3) !important;
+}
+
+/* ── Spinner ──────────────────────────────────────────────────────────────── */
+
+.light-theme .animate-spin,
+.light-theme .animate-spin-slow {
+  color: var(--lt-accent) !important;
+}
+
+/* ── Gradient text → keep but ensure visibility on light bg ───────────────── */
+
+.light-theme .bg-gradient-to-r.bg-clip-text {
+  filter: brightness(0.85) saturate(1.3);
+}
+
+/* ── Hide the dark animated background canvas in light mode ───────────────── */
+
+.light-theme canvas {
+  opacity: 0.15 !important;
+}
+
+/* ── Kbd keys ──────────────────────────────────────────────────────────────── */
+
+.light-theme kbd {
+  background-color: var(--lt-surface-2) !important;
+  border-color: var(--lt-border-2) !important;
+  color: var(--lt-text-muted) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    B8: Custom Scrollbar Styling — universal themed scrollbars
    ═══════════════════════════════════════════════════════════════════════════ */
 

@@ -354,6 +354,10 @@ interface AppState {
   /** @deprecated backward compat — use setTheme */
   setCosmotechTheme: (enabled: boolean) => void;
 
+  /** Runtime-only (not persisted) — toggled by typing "Urz". Overrides all themes with a light/white appearance. */
+  lightThemeActive: boolean;
+  setLightThemeActive: (active: boolean) => void;
+
   streamCaptureActive: boolean;
   setStreamCaptureActive: (active: boolean) => void;
 
@@ -928,6 +932,9 @@ export const useAppStore = create<AppState>()(
       setTheme: (theme) => set({ theme, cosmotechTheme: theme === "cosmotech" }),
       cosmotechTheme: false,
       setCosmotechTheme: (enabled) => set({ cosmotechTheme: enabled, theme: enabled ? "cosmotech" : "default" }),
+
+      lightThemeActive: false,
+      setLightThemeActive: (active) => set({ lightThemeActive: active }),
 
       streamCaptureActive: false,
       setStreamCaptureActive: (active) => set({ streamCaptureActive: active }),

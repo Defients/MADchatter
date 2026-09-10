@@ -15,7 +15,7 @@ const KONAMI_SEQUENCE = [
 
 // ─── Secret Words ────────────────────────────────────────────────────────────
 
-const SECRET_WORDS = ['gremlin', 'forge', 'rage'] as const;
+const SECRET_WORDS = ['gremlin', 'forge', 'rage', 'urz'] as const;
 const SECRET_WORD_TIMEOUT_MS = 2500;
 
 // ─── Secret Lab Fortunes ─────────────────────────────────────────────────────
@@ -240,6 +240,12 @@ export function EasterEggs() {
       playSfx('secret_word');
       toast.success('😡 MAX RAGE DETECTED!', { duration: 3000 });
       updateConfig({ humorLevel: 100, chaosLevel: 100 });
+    } else if (word === 'urz') {
+      const s = useAppStore.getState();
+      const next = !s.lightThemeActive;
+      s.setLightThemeActive(next);
+      playSfx('theme_toggle');
+      toast.success(next ? '✨ Urz Light Theme unlocked!' : 'Urz Light Theme forgotten.', { duration: 3000 });
     }
   }, [updateConfig]);
 
