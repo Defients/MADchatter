@@ -485,17 +485,19 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
 
   // Helper text generators for live feed/guidelines
   const getHumorHelperText = () => {
-    if (localHumor === 100) return "🤣 MAXIMUM HUMOR ENGAGED: Chat is in absolute hysterics! Non-stop Twitch copypasta, legendary punchlines, and weaponized sarcasm. 💀";
-    if (localHumor > 75) return "🔥 Extreme jokes & Twitch copypasta style enabled.";
-    if (localHumor > 45) return "⚡ Witty replies with clever banter.";
-    return "📝 Direct, helpful responses without heavy memeing.";
+    if (localHumor >= 96) return "🤣 Max meme output — non-stop copypasta, weaponized sarcasm, and bit-commitment. Can feel forced or repetitive; the bot prioritizes funny over useful.";
+    if (localHumor >= 71) return "🔥 Heavy humor — frequent memes, sarcasm, and Twitch-style bits. Will go for the joke even when it's a stretch.";
+    if (localHumor >= 46) return "⚡ Balanced wit — cracks jokes when the moment is right but stays readable. Banter without taking over.";
+    if (localHumor >= 21) return "📝 Mostly direct with the occasional light quip. Won't lean into memes or sarcasm unless the moment really calls for it.";
+    return "😐 Straightforward and serious. Almost no jokes — the bot just answers and reacts plainly. Good for informative or technical streams.";
   };
 
   const getChaosHelperText = () => {
-    if (localChaos === 100) return "🌀 APOCALYPTIC GREMLIN ENERGY: Highly unpredictable, quantum-meta commentary. Prepare for reality-bending advice and peak stream chaos! 🔮";
-    if (localChaos > 75) return "👹 Gremlin-mode active: highly unpredictable outputs.";
-    if (localChaos > 45) return "⚖️ Balanced and adaptive co-pilot mode.";
-    return "🎯 Laser-focused on current stream frame, strict and safe.";
+    if (localChaos >= 96) return "🌀 Total chaos — reality-bending commentary, unhinged tangents, and peak gremlin behavior. Hard to predict what it'll say next; may not always make sense.";
+    if (localChaos >= 71) return "👹 Gremlin energy — unpredictable takes, tangents, and shitposting. Will derail conversations and lean into chaos for the bit.";
+    if (localChaos >= 46) return "⚖️ Balanced unpredictability — mixes grounded reactions with the occasional left-field take. Keeps chat guessing without losing the thread.";
+    if (localChaos >= 21) return "🎯 Mostly focused with occasional tangents. Will follow a tangent if chat goes there, but comes back on its own.";
+    return "🔒 Stays on script. Reacts to what's happening and rarely deviates. Predictable and safe — won't surprise you.";
   };
 
   return (
