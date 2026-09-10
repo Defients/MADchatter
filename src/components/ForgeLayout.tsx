@@ -318,7 +318,7 @@ export function ForgeLayout() {
   });
   const [visualCooldown, setVisualCooldown] = useState(false);
   const visualCooldownRef = useRef<number | null>(null);
-  const handleManualCaptureRef = useRef<() => void>(() => {});
+  const handleManualCaptureRef = useRef<(forceStreamCrop?: boolean) => void>(() => {});
   const [windowSelected, setWindowSelected] = useState(false);
   const cachedStreamRef = useRef<MediaStream | null>(null);
   const captureVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -384,7 +384,7 @@ export function ForgeLayout() {
     return () => { clearInterval(tickId); clearInterval(id); };
   }, [visualAutoCapture, visualCaptureInterval, windowSelected]);
 
-  const handleManualCapture = () => {
+  const handleManualCapture = (forceStreamCrop = false) => {
     if (visualCooldown) return;
     if (!windowSelected) {
       setVisualFlashRed(true);
@@ -395,7 +395,7 @@ export function ForgeLayout() {
       toast.error("Start capture first using the Capture button.");
       return;
     }
-    handleCaptureWindow(true);
+    handleCaptureWindow(true, forceStreamCrop);
     setVisualCooldown(true);
     if (visualCooldownRef.current) clearTimeout(visualCooldownRef.current);
     visualCooldownRef.current = window.setTimeout(() => {
@@ -1157,7 +1157,7 @@ export function ForgeLayout() {
 
   useEffect(() => {
     const onSnap = () => {
-      handleManualCaptureRef.current();
+      handleManualCaptureRef.current(true);
     };
     window.addEventListener("snap-capture", onSnap);
     return () => window.removeEventListener("snap-capture", onSnap);
@@ -1283,7 +1283,7 @@ export function ForgeLayout() {
   };
   handleMicrophoneCaptureRef.current = handleMicrophoneCapture;
 
-  const handleCaptureWindow = async (isManual = false) => {
+  const handleCaptureWindow = async (isManual = false, forceStreamCrop = false) => {
     try {
       if (!cachedStreamRef.current || !cachedStreamRef.current.active) {
         toast.error("Start capture first using the Capture button.");
@@ -1314,55 +1314,68 @@ export function ForgeLayout() {
         return;
       }
 
-      // If same-tab capture mode, crop to the stream iframe region
-      // But only if the video dimensions match the current window (same-tab check)
+      // ── Stream embed cropping ──────────────────────────────────────────────
+      // The SNAP keybind (P) always forces a crop to the stream embed element.
+      // Regular captures only crop when same-tab capture is detected (the user
+      // shared this tab, so the full frame includes the MADchatter UI).
       let cropX = 0, cropY = 0, cropW = videoWidth, cropH = videoHeight;
-      if (tabCaptureModeRef.current) {
+
+      // Helper: find the best visible [data-stream-embed] element and crop to it.
+      // Returns true if a crop was applied.
+      const cropToStreamEmbed = (): boolean => {
+        const streamEls = document.querySelectorAll('[data-stream-embed]');
+        let streamEl: HTMLElement | null = null;
+        let bestArea = 0;
+        streamEls.forEach((el) => {
+          const r = (el as HTMLElement).getBoundingClientRect();
+          const area = r.width * r.height;
+          if (area > bestArea) { bestArea = area; streamEl = el as HTMLElement; }
+        });
+        // Fallback: iframe with "stream" in the title (e.g. Kick)
+        if (!streamEl) {
+          streamEl = document.querySelector('iframe[title*="stream" i]') as HTMLIFrameElement | null;
+        }
+        if (!streamEl) return false;
+
+        const rect = streamEl.getBoundingClientRect();
+        // Clip to the visible viewport so only the visible portion of the stream embed is captured
+        const visLeft = Math.max(0, rect.left);
+        const visTop = Math.max(0, rect.top);
+        const visRight = Math.min(window.innerWidth, rect.right);
+        const visBottom = Math.min(window.innerHeight, rect.bottom);
+        if (visRight <= visLeft || visBottom <= visTop) return false; // not visible
+
+        // Scale from CSS pixels to video pixels
+        const scaleX = videoWidth / window.innerWidth;
+        const scaleY = videoHeight / window.innerHeight;
+        cropX = Math.round(visLeft * scaleX);
+        cropY = Math.round(visTop * scaleY);
+        cropW = Math.round((visRight - visLeft) * scaleX);
+        cropH = Math.round((visBottom - visTop) * scaleY);
+        // Clamp to video bounds
+        cropX = Math.max(0, Math.min(cropX, videoWidth - 1));
+        cropY = Math.max(0, Math.min(cropY, videoHeight - 1));
+        cropW = Math.max(1, Math.min(cropW, videoWidth - cropX));
+        cropH = Math.max(1, Math.min(cropH, videoHeight - cropY));
+        console.log(`[Visual] Cropping to stream embed: ${cropX},${cropY} ${cropW}x${cropH} (video ${videoWidth}x${videoHeight})`);
+        return true;
+      };
+
+      if (forceStreamCrop) {
+        // SNAP keybind — always try to crop to the stream embed, regardless of capture mode
+        const cropped = cropToStreamEmbed();
+        if (!cropped) {
+          console.log('[Visual] SNAP: No stream embed element found — using full frame');
+        }
+      } else if (tabCaptureModeRef.current) {
+        // Regular capture in tab mode — check if it's the same tab via dimensions
         const dpr = window.devicePixelRatio || 1;
         const expectedW = Math.round(window.innerWidth * dpr);
         const expectedH = Math.round(window.innerHeight * dpr);
-        // Generous tolerance — browser chrome, scrollbars, and zoom can cause
-        // the captured tab dimensions to differ from the window's inner dimensions.
         const dimMatch = Math.abs(videoWidth - expectedW) < 200 && Math.abs(videoHeight - expectedH) < 200;
         console.log(`[Visual] Tab capture: video=${videoWidth}x${videoHeight}, expected=${expectedW}x${expectedH}, dpr=${dpr}, sameTab=${dimMatch}`);
         if (dimMatch) {
-          // Same-tab capture — crop to the stream embed element.
-          // Search all [data-stream-embed] elements and pick the one that's
-          // actually visible (non-zero area) to handle both the floating flyout
-          // and the embedded sidebar forms correctly.
-          const streamEls = document.querySelectorAll('[data-stream-embed]');
-          let streamEl: HTMLElement | null = null;
-          let bestArea = 0;
-          streamEls.forEach((el) => {
-            const r = (el as HTMLElement).getBoundingClientRect();
-            const area = r.width * r.height;
-            if (area > bestArea) { bestArea = area; streamEl = el as HTMLElement; }
-          });
-          // Fallback: iframe with "stream" in the title (e.g. Kick)
-          if (!streamEl) {
-            streamEl = document.querySelector('iframe[title*="stream" i]') as HTMLIFrameElement | null;
-          }
-          if (streamEl) {
-            const rect = streamEl.getBoundingClientRect();
-            // Clip to the visible viewport so only the visible portion of the stream embed is captured
-            const visLeft = Math.max(0, rect.left);
-            const visTop = Math.max(0, rect.top);
-            const visRight = Math.min(window.innerWidth, rect.right);
-            const visBottom = Math.min(window.innerHeight, rect.bottom);
-            // Scale from CSS pixels to video pixels (accounting for DPR)
-            const scaleX = videoWidth / window.innerWidth;
-            const scaleY = videoHeight / window.innerHeight;
-            cropX = Math.round(visLeft * scaleX);
-            cropY = Math.round(visTop * scaleY);
-            cropW = Math.round((visRight - visLeft) * scaleX);
-            cropH = Math.round((visBottom - visTop) * scaleY);
-            // Clamp to video bounds
-            cropX = Math.max(0, Math.min(cropX, videoWidth - 1));
-            cropY = Math.max(0, Math.min(cropY, videoHeight - 1));
-            cropW = Math.max(1, Math.min(cropW, videoWidth - cropX));
-            cropH = Math.max(1, Math.min(cropH, videoHeight - cropY));
-            console.log(`[Visual] Cropping to stream embed: ${cropX},${cropY} ${cropW}x${cropH}`);
-          }
+          cropToStreamEmbed();
         } else {
           // Different tab capture — the full frame is the stream, no cropping needed
           console.log('[Visual] Different tab detected — using full frame');
