@@ -52,6 +52,7 @@ import {
   Sparkles,
   Search,
   Clock,
+  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
@@ -2284,24 +2285,71 @@ export function ForgeLayout() {
                                     </div>
                                   </TooltipContent>
                                 </Tooltip>
-                                <button
-                                  type="button"
-                                  onClick={() => setVisualAutoCapture(!visualAutoCapture)}
-                                  disabled={smartCapture}
-                                  className={cn(
-                                    "h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-orange-500/40 focus-visible:outline-none",
-                                    smartCapture
-                                      ? "text-gray-700 bg-white/5 cursor-not-allowed opacity-50"
-                                      : visualAutoCapture
-                                        ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
-                                        : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
-                                  )}
-                                  aria-label={visualAutoCapture ? "Disable auto-capture" : "Enable auto-capture"}
-                                  title={smartCapture ? "Auto-capture is managed by Smart mode" : visualAutoCapture ? "Auto-capture ON (click to disable)" : "Auto-capture OFF (click to enable)"}
-                                >
-                                  {visualAutoCapture ? <Zap className="w-3 h-3" /> : <CirclePause className="w-3 h-3" />}
-                                  {visualAutoCapture ? "AUTO" : "OFF"}
-                                </button>
+                                <Tooltip>
+                                  <TooltipTrigger render={
+                                    <button
+                                      type="button"
+                                      onClick={() => setVisualAutoCapture(!visualAutoCapture)}
+                                      disabled={smartCapture}
+                                      className={cn(
+                                        "h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-orange-500/40 focus-visible:outline-none",
+                                        smartCapture
+                                          ? "text-gray-700 bg-white/5 cursor-not-allowed opacity-50"
+                                          : visualAutoCapture
+                                            ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
+                                            : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
+                                      )}
+                                      aria-label={visualAutoCapture ? "Disable auto-capture" : "Enable auto-capture"}
+                                    >
+                                      {visualAutoCapture ? <Zap className="w-3 h-3" /> : <CirclePause className="w-3 h-3" />}
+                                      {visualAutoCapture ? "AUTO" : "OFF"}
+                                    </button>
+                                  } />
+                                  <TooltipContent
+                                    side="bottom"
+                                    align="center"
+                                    sideOffset={6}
+                                    className="max-w-xs p-0 bg-[#1a1a22] border border-white/10 text-left rounded-lg shadow-2xl"
+                                  >
+                                    <div className="p-3 space-y-2">
+                                      <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
+                                        {smartCapture ? (
+                                          <Lock className="w-3 h-3 text-gray-500" />
+                                        ) : visualAutoCapture ? (
+                                          <Zap className="w-3 h-3 text-orange-400" />
+                                        ) : (
+                                          <CirclePause className="w-3 h-3 text-gray-500" />
+                                        )}
+                                        <span className={cn(
+                                          "text-[11px] font-bold uppercase font-mono tracking-wider",
+                                          smartCapture ? "text-gray-400" : visualAutoCapture ? "text-orange-300" : "text-gray-400"
+                                        )}>
+                                          {smartCapture ? "Auto-Capture — Locked" : visualAutoCapture ? "Auto-Capture — Active" : "Auto-Capture — Off"}
+                                        </span>
+                                      </div>
+                                      {smartCapture ? (
+                                        <p className="text-[11px] leading-relaxed text-gray-400">
+                                          Smart mode is managing capture timing. Disable Smart mode to manually control auto-capture.
+                                        </p>
+                                      ) : visualAutoCapture ? (
+                                        <p className="text-[11px] leading-relaxed text-gray-300">
+                                          Snapshots are captured automatically every <span className="font-mono text-orange-300">{visualCaptureInterval}s</span>. The Forge uses these to understand what's happening on screen.
+                                        </p>
+                                      ) : (
+                                        <p className="text-[11px] leading-relaxed text-gray-300">
+                                          Click to start capturing visual snapshots automatically at a fixed interval. You can adjust the interval (2–120s) in the field next to this button.
+                                        </p>
+                                      )}
+                                      {!smartCapture && (
+                                        <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
+                                          <span>Click to {visualAutoCapture ? "disable" : "enable"}</span>
+                                          <span className="text-gray-600">·</span>
+                                          <span className="font-mono">Interval: {visualAutoCapture ? `${visualCaptureInterval}s` : "—"}</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
                                 <div className="flex items-center gap-1">
                                   <input
                                     type="number"
