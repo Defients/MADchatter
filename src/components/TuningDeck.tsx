@@ -798,10 +798,24 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   <div>
                     <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1">
                       <span>Max actions / hour</span>
-                      <span className="font-mono font-bold text-white">{localMaxPerHour}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={localMaxPerHour}
+                        onChange={(e) => {
+                          const val = Math.min(99, Math.max(1, parseInt(e.target.value) || 1));
+                          setLocalMaxPerHour(val);
+                        }}
+                        onBlur={() => {
+                          updateRateLimitConfig({ maxActionsPerHour: localMaxPerHour });
+                          playSfx('slider_commit');
+                        }}
+                        className="w-12 text-right font-mono font-bold text-white bg-[#0a0a0f] border border-white/10 rounded px-1 py-0.5 text-[10px] outline-none focus:border-amber-500/40"
+                      />
                     </div>
                     <Slider
-                      value={[localMaxPerHour]}
+                      value={[Math.min(localMaxPerHour, 60)]}
                       min={1} max={60} step={1}
                       onValueChange={(v) => {
                         const val = Array.isArray(v) ? v[0] : v;
@@ -815,6 +829,9 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                       indicatorClassName="bg-gradient-to-r from-red-500 to-orange-500"
                       className="w-full py-1.5 cursor-pointer"
                     />
+                    {localMaxPerHour > 60 && (
+                      <span className="text-[8px] text-amber-400/70 font-mono">extended cap (slider max 60)</span>
+                    )}
                   </div>
                   <div>
                     <div className="flex items-center justify-between text-[10px] text-gray-400 mb-1">
