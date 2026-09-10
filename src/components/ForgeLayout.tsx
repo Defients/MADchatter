@@ -1428,10 +1428,43 @@ export function ForgeLayout() {
       };
 
       if (forceStreamCrop) {
-        // SNAP keybind — always try to crop to the stream embed, regardless of capture mode
-        const cropped = cropToStreamEmbed();
-        if (!cropped) {
-          console.log('[Visual] SNAP: No stream embed element found — using full frame');
+        // SNAP keybind — crop to the stream embed ONLY when the capture is
+        // MADchatter's own tab/window/monitor. When the user captured a
+        // different window or tab, the full video frame IS the stream —
+        // cropping to MADchatter's [data-stream-embed] DOM coordinates would
+        // map to the wrong region and zoom into a sub-area.
+        const surface = captureSurfaceTypeRef.current;
+        const dpr = window.devicePixelRatio || 1;
+        let shouldCrop = false;
+
+        if (surface === "browser") {
+          // Tab capture — crop only if it's the same tab (viewport × DPR)
+          const expectedW = Math.round(window.innerWidth * dpr);
+          const expectedH = Math.round(window.innerHeight * dpr);
+          shouldCrop = Math.abs(videoWidth - expectedW) <= 4 && Math.abs(videoHeight - expectedH) <= 4;
+          if (!shouldCrop) {
+            console.log('[Visual] SNAP: Different tab — full frame is the stream, no crop');
+          }
+        } else if (surface === "monitor") {
+          // Monitor capture — the full screen is shown, which includes
+          // MADchatter's UI, so cropping to the stream embed makes sense.
+          shouldCrop = true;
+        } else {
+          // Window capture — crop only if it's the MADchatter window.
+          // Match video dimensions against outerWidth/outerHeight × DPR.
+          const expectedW = Math.round(window.outerWidth * dpr);
+          const expectedH = Math.round(window.outerHeight * dpr);
+          shouldCrop = Math.abs(videoWidth - expectedW) <= 10 && Math.abs(videoHeight - expectedH) <= 10;
+          if (!shouldCrop) {
+            console.log(`[Visual] SNAP: Different window (video=${videoWidth}x${videoHeight}, expected=${expectedW}x${expectedH}) — full frame is the stream, no crop`);
+          }
+        }
+
+        if (shouldCrop) {
+          const cropped = cropToStreamEmbed();
+          if (!cropped) {
+            console.log('[Visual] SNAP: No stream embed element found — using full frame');
+          }
         }
       } else if (tabCaptureModeRef.current) {
         // Regular capture in tab mode — verify it's the same tab.
