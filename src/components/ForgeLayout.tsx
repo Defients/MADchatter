@@ -270,8 +270,8 @@ export function ForgeLayout() {
     const saved = localStorage.getItem(RIGHT_SIZE_KEY);
     const isFHD = typeof window !== "undefined" && Math.round(window.innerWidth) === 1920;
     // 1920x1080 needs more room so header buttons (Stats, R34L, HUD, Settings, etc.)
-    // don't overflow; other screens use the thinner 18% default.
-    const defaultSize = isFHD ? 31.25 : 18;
+    // don't overflow; other screens use the thinner default.
+    const defaultSize = isFHD ? 37.5 : 21.6;
     const parsed = saved ? parseFloat(saved) : defaultSize;
     return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
   });
@@ -283,7 +283,7 @@ export function ForgeLayout() {
     localStorage.removeItem("forge-panel-right-size-v3");
     if (!localStorage.getItem("forge-panel-right-size-v4")) {
       const isFHD = typeof window !== "undefined" && Math.round(window.innerWidth) === 1920;
-      localStorage.setItem("forge-panel-right-size-v4", isFHD ? "31.25" : "18");
+      localStorage.setItem("forge-panel-right-size-v4", isFHD ? "37.5" : "21.6");
     }
   }, []);
 
@@ -2976,7 +2976,7 @@ export function ForgeLayout() {
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
-                const defaultRight = Math.round(window.innerWidth) === 1920 ? 31.25 : 18;
+                const defaultRight = Math.round(window.innerWidth) === 1920 ? 37.5 : 21.6;
                 setRightSize(defaultRight);
                 localStorage.setItem("forge-panel-right-size-v4", defaultRight.toString());
                 if (rightPanelRef.current) {
@@ -3001,7 +3001,7 @@ export function ForgeLayout() {
               id="right-rail"
               order={3}
               minSize="12%"
-              maxSize="35%"
+              maxSize="40%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 const percentage = typeof size === "number" ? size : size.asPercentage;
