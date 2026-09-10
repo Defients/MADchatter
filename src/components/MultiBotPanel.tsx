@@ -300,7 +300,7 @@ function PersonaControls({ botId }: { botId: string }) {
       <Segmented
         label="Effort"
         value={c.effortLevel || "medium"}
-        options={[["low", "Low"], ["medium", "Medium"], ["high", "High"], ["smart", "Smart"]]}
+        options={[["smart", "Smart"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]}
         onChange={(v) => setConfig({ effortLevel: v as "low" | "medium" | "high" | "smart" })}
       />
 
