@@ -11,6 +11,7 @@ import { removeKickSessionForBot } from "../lib/kick";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
+import { ThemedTooltip } from "./ui/tooltip";
 
 /**
  * MultiBotPanel — toggle + bot management UI (multi-bot mode).
@@ -113,13 +114,14 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
         </div>
         <div className="flex items-center gap-2">
           <Toggle on={multiBotEnabled} onChange={(v) => (v ? enableMultiBot() : disableMultiBot())} />
-          <button
-            onClick={() => setCollapsed((c) => !c)}
-            className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
-            title={collapsed ? "Expand" : "Collapse"}
-          >
-            {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-          </button>
+          <ThemedTooltip content={collapsed ? "Expand" : "Collapse"}>
+            <button
+              onClick={() => setCollapsed((c) => !c)}
+              className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            >
+              {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </button>
+          </ThemedTooltip>
           {onClose && (
             <button onClick={onClose} className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors">
               <X className="w-3.5 h-3.5" />
@@ -148,12 +150,13 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
                       <div className="flex items-center gap-2 p-2">
                         <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
                         {idx < 9 && (
-                          <kbd
-                            className="text-[9px] font-mono font-bold bg-white/10 border border-white/15 rounded px-1 py-0.5 text-gray-300 shrink-0"
-                            title={`Press ${idx + 1} to toggle this bot`}
-                          >
-                            {idx + 1}
-                          </kbd>
+                          <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`}>
+                            <kbd
+                              className="text-[9px] font-mono font-bold bg-white/10 border border-white/15 rounded px-1 py-0.5 text-gray-300 shrink-0"
+                            >
+                              {idx + 1}
+                            </kbd>
+                          </ThemedTooltip>
                         )}
                         <div className="flex-1 min-w-0">
                           <div className={cn("text-[11px] font-bold truncate", bot.active ? "text-white" : "text-gray-500 line-through")}>{bot.label}</div>
@@ -170,31 +173,34 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
                           {expandedId === bot.id ? "Hide" : "Edit"}
                         </button>
                         {!bot.session && platform !== "joystick" && (
-                          <button
-                            onClick={() => handleAuthBot(bot.id)}
-                      className="text-[10px] px-2 py-0.5 rounded bg-[#9146FF] hover:bg-[#772ce8] text-white font-bold uppercase tracking-wider transition-colors"
-                      title={`Authenticate this bot with ${platform === "kick" ? "Kick" : "Twitch"}`}
-                    >
-                      Auth
-                    </button>
-                  )}
-                  {bot.session && (
-                    <button
-                      onClick={() => handleLogoffBot(bot.id)}
-                      className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
-                      title="Log off (keep the bot slot & memory)"
-                    >
-                      <LogOut className="w-3 h-3" />
-                    </button>
+                          <ThemedTooltip content={`Authenticate this bot with ${platform === "kick" ? "Kick" : "Twitch"}`}>
+                            <button
+                              onClick={() => handleAuthBot(bot.id)}
+                              className="text-[10px] px-2 py-0.5 rounded bg-[#9146FF] hover:bg-[#772ce8] text-white font-bold uppercase tracking-wider transition-colors"
+                            >
+                              Auth
+                            </button>
+                          </ThemedTooltip>
+                        )}
+                        {bot.session && (
+                    <ThemedTooltip content="Log off (keep the bot slot & memory)">
+                      <button
+                        onClick={() => handleLogoffBot(bot.id)}
+                        className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                      >
+                        <LogOut className="w-3 h-3" />
+                      </button>
+                    </ThemedTooltip>
                   )}
                   {idx !== 0 && (
-                    <button
-                      onClick={() => removeBot(bot.id)}
-                      className="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
-                      title="Remove bot"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                    <ThemedTooltip content="Remove bot">
+                      <button
+                        onClick={() => removeBot(bot.id)}
+                        className="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </ThemedTooltip>
                   )}
                 </div>
 
@@ -522,19 +528,20 @@ function ChatSender() {
           rows={2}
           className="flex-1 min-w-0 resize-none text-[11px] leading-snug bg-black/40 border border-white/10 rounded px-2 py-1.5 text-white outline-none focus:border-[#9146FF]/50 placeholder:text-gray-600 disabled:opacity-50 forge-scroll"
         />
-        <button
-          onClick={handleSend}
-          disabled={disabled}
-          className={cn(
-            "shrink-0 w-8 flex items-center justify-center rounded-md border transition-colors",
-            disabled
-              ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
-              : "bg-[#9146FF] border-[#9146FF]/60 text-white hover:bg-[#772ce8]",
-          )}
-          title="Send to chat (Enter)"
-        >
-          <Send className="w-3.5 h-3.5" />
-        </button>
+        <ThemedTooltip content="Send to chat (Enter)">
+          <button
+            onClick={handleSend}
+            disabled={disabled}
+            className={cn(
+              "shrink-0 w-8 flex items-center justify-center rounded-md border transition-colors",
+              disabled
+                ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
+                : "bg-[#9146FF] border-[#9146FF]/60 text-white hover:bg-[#772ce8]",
+            )}
+          >
+            <Send className="w-3.5 h-3.5" />
+          </button>
+        </ThemedTooltip>
       </div>
     </div>
   );
@@ -543,19 +550,20 @@ function ChatSender() {
 /** Compact launcher button for the header. */
 export function MultiBotButton({ onClick, active }: { onClick: () => void; active: boolean }) {
   return (
-    <button
-      onClick={onClick}
-      title="Multi-Bot"
-      className={cn(
-        "h-7 px-2 flex items-center gap-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors",
-        active
-          ? "bg-[#9146FF]/20 border-[#9146FF]/50 text-[#c79bff]"
-          : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
-      )}
-    >
-      <Zap className="w-3 h-3" />
-      <span>Bots</span>
-    </button>
+    <ThemedTooltip content="Multi-Bot">
+      <button
+        onClick={onClick}
+        className={cn(
+          "h-7 px-2 flex items-center gap-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors",
+          active
+            ? "bg-[#9146FF]/20 border-[#9146FF]/50 text-[#c79bff]"
+            : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
+        )}
+      >
+        <Zap className="w-3 h-3" />
+        <span>Bots</span>
+      </button>
+    </ThemedTooltip>
   );
 }
 
@@ -586,13 +594,13 @@ export function MultiBotModeBadge() {
   return (
     <AnimatePresence>
       {multiBotActive && (
+        <ThemedTooltip content="Multi-Bot pipeline is active: per-bot AutoForge + coordinator running">
         <motion.div
           initial={{ opacity: 0, scale: 0.8, width: 0 }}
           animate={{ opacity: 1, scale: 1, width: "auto" }}
           exit={{ opacity: 0, scale: 0.8, width: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 30 }}
           className="shrink-0 h-7 flex items-center gap-1.5 px-2 rounded-md border border-[#9146FF]/50 bg-[#9146FF]/15 overflow-hidden"
-          title="Multi-Bot pipeline is active: per-bot AutoForge + coordinator running"
         >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#9146FF] opacity-75" />
@@ -602,6 +610,7 @@ export function MultiBotModeBadge() {
             Multi-Bot
           </span>
         </motion.div>
+        </ThemedTooltip>
       )}
     </AnimatePresence>
   );

@@ -19,6 +19,7 @@ import { getTwitchClientId, setTwitchClientId } from "../lib/twitch";
 import { getKickClientId, setKickClientId } from "../lib/kick";
 import { getJoystickClientId, setJoystickClientId, getJoystickClientSecret, setJoystickClientSecret, getJoystickBotUsername, setJoystickBotUsername } from "../lib/joystick";
 import { playSfx } from "../lib/sfx";
+import { ThemedTooltip } from "./ui/tooltip";
 
 interface SettingsPanelProps {
   variant: "config" | "keys" | "full";
@@ -325,16 +326,17 @@ export function SettingsPanel({
                 <span className="text-[10px] text-gray-500">
                   Use <code className="text-[9px] font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300 border border-white/10">google/gemini-3.8-flash</code>
                 </span>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText("google/gemini-3.8-flash");
-                    addToast("Model name copied!", "success");
-                  }}
-                  className="text-gray-500 hover:text-orange-400 transition-colors"
-                  title="Copy model name"
-                >
-                  <Copy className="w-3 h-3" />
-                </button>
+                <ThemedTooltip content="Copy model name">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText("google/gemini-3.8-flash");
+                      addToast("Model name copied!", "success");
+                    }}
+                    className="text-gray-500 hover:text-orange-400 transition-colors"
+                  >
+                    <Copy className="w-3 h-3" />
+                  </button>
+                </ThemedTooltip>
               </div>
             </div>
 
@@ -408,18 +410,19 @@ export function SettingsPanel({
                 <p className="text-[9px] text-gray-500 font-sans leading-relaxed flex-1 min-w-0">
                   Optional. Defaults to OpenRouter. Set to your local endpoint (e.g., <code>http://localhost:11434/v1</code> for Ollama) if desired.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setKeys((k) => ({ ...k, customBaseUrl: "http://localhost:11434/v1" }));
-                    addToast("Filled with Ollama local endpoint", "success");
-                  }}
-                  className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400/50 transition-colors"
-                  title="Auto-fill with the default Ollama local endpoint"
-                >
-                  <Wand2 className="w-3 h-3" />
-                  Ollama URL
-                </button>
+                <ThemedTooltip content="Auto-fill with the default Ollama local endpoint">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKeys((k) => ({ ...k, customBaseUrl: "http://localhost:11434/v1" }));
+                      addToast("Filled with Ollama local endpoint", "success");
+                    }}
+                    className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400/50 transition-colors"
+                  >
+                    <Wand2 className="w-3 h-3" />
+                    Ollama URL
+                  </button>
+                </ThemedTooltip>
               </div>
             </div>
 

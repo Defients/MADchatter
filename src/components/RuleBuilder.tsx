@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
 import { toast } from "sonner";
+import { ThemedTooltip } from "./ui/tooltip";
 import { RULE_PRESETS, dryRunRule } from "../lib/ruleEngine";
 import {
   X,
@@ -285,13 +286,14 @@ export function RuleBuilderOverlay({ open, onClose }: { open: boolean; onClose: 
                   <Lightbulb className="w-3 h-3" /> Guide
                 </button>
                 {autoForgeRules.some((r) => r.fireCount > 0) && (
-                  <button
-                    onClick={() => { clearRuleFireCounts(); toast.success("Fire counts cleared"); }}
-                    className="text-[10px] px-2.5 py-1.5 rounded-lg bg-white/5 text-gray-400 border border-white/10 hover:text-white font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors"
-                    title="Reset all fire counts and cooldowns"
-                  >
-                    <RefreshCw className="w-3 h-3" /> Reset
-                  </button>
+                  <ThemedTooltip content="Reset all fire counts and cooldowns">
+                    <button
+                      onClick={() => { clearRuleFireCounts(); toast.success("Fire counts cleared"); }}
+                      className="text-[10px] px-2.5 py-1.5 rounded-lg bg-white/5 text-gray-400 border border-white/10 hover:text-white font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors"
+                    >
+                      <RefreshCw className="w-3 h-3" /> Reset
+                    </button>
+                  </ThemedTooltip>
                 )}
                 <button
                   onClick={handleCreateBlank}
@@ -552,14 +554,15 @@ const RuleCard: React.FC<{
     )}>
       {/* Card header */}
       <div className="flex items-center gap-2 p-3">
-        <button
-          onClick={onToggleEnabled}
-          className={cn(
-            "w-2.5 h-2.5 rounded-full shrink-0 transition-colors",
-            rule.enabled ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" : "bg-gray-600"
-          )}
-          title={rule.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}
-        />
+        <ThemedTooltip content={rule.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}>
+          <button
+            onClick={onToggleEnabled}
+            className={cn(
+              "w-2.5 h-2.5 rounded-full shrink-0 transition-colors",
+              rule.enabled ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" : "bg-gray-600"
+            )}
+          />
+        </ThemedTooltip>
 
         {isEditing ? (
           <input
@@ -577,20 +580,23 @@ const RuleCard: React.FC<{
 
         {/* Fire count badge */}
         {rule.fireCount > 0 && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 font-mono font-bold shrink-0" title="Times this rule has fired">
-            🔥 {rule.fireCount}
-          </span>
+          <ThemedTooltip content="Times this rule has fired">
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 font-mono font-bold shrink-0">
+              🔥 {rule.fireCount}
+            </span>
+          </ThemedTooltip>
         )}
 
         {/* Live status indicator */}
         {!isEditing && (
-          <span className={cn(
-            "text-[9px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0",
-            dryRun.overall ? "bg-green-500/15 text-green-300" : "bg-gray-500/10 text-gray-500"
-          )} title={`${passedCount}/${rule.conditions.length} conditions currently met`}
-          >
-            {passedCount}/{rule.conditions.length}
-          </span>
+          <ThemedTooltip content={`${passedCount}/${rule.conditions.length} conditions currently met`}>
+            <span className={cn(
+              "text-[9px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0",
+              dryRun.overall ? "bg-green-500/15 text-green-300" : "bg-gray-500/10 text-gray-500"
+            )}>
+              {passedCount}/{rule.conditions.length}
+            </span>
+          </ThemedTooltip>
         )}
 
         <span className="text-[10px] text-gray-500 font-mono shrink-0">
@@ -599,41 +605,45 @@ const RuleCard: React.FC<{
 
         {/* Action buttons */}
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={onTest}
-            disabled={isTesting}
-            className={cn(
-              "p-1.5 rounded-lg transition-colors",
-              isTesting ? "bg-cyan-500/20 text-cyan-300 animate-pulse" : "text-green-400 hover:bg-green-500/15"
-            )}
-            title="Dry-run test with current live data"
-          >
-            <Play className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onToggleEdit}
-            className={cn(
-              "p-1.5 rounded-lg transition-colors",
-              isEditing ? "bg-cyan-500/15 text-cyan-300" : "text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10"
-            )}
-            title={isEditing ? "Close editor" : "Edit rule"}
-          >
-            {isEditing ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
-          <button
-            onClick={onDuplicate}
-            className="p-1.5 rounded-lg text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
-            title="Duplicate rule"
-          >
-            <Copy className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-            title="Delete rule"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+          <ThemedTooltip content="Dry-run test with current live data">
+            <button
+              onClick={onTest}
+              disabled={isTesting}
+              className={cn(
+                "p-1.5 rounded-lg transition-colors",
+                isTesting ? "bg-cyan-500/20 text-cyan-300 animate-pulse" : "text-green-400 hover:bg-green-500/15"
+              )}
+            >
+              <Play className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content={isEditing ? "Close editor" : "Edit rule"}>
+            <button
+              onClick={onToggleEdit}
+              className={cn(
+                "p-1.5 rounded-lg transition-colors",
+                isEditing ? "bg-cyan-500/15 text-cyan-300" : "text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10"
+              )}
+            >
+              {isEditing ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content="Duplicate rule">
+            <button
+              onClick={onDuplicate}
+              className="p-1.5 rounded-lg text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content="Delete rule">
+            <button
+              onClick={onDelete}
+              className="p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
         </div>
       </div>
 

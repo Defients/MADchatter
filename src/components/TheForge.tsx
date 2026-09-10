@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { motion } from "motion/react";
+import { ThemedTooltip } from "./ui/tooltip";
 
 const calculateCost = (prompt: number, completion: number) => {
   const inputCost = (prompt / 1_000_000) * 0.075;
@@ -493,16 +494,17 @@ export function TheForge() {
                         <span className="text-[11px] text-gray-500">
                           Use <code className="text-[10px] font-mono bg-white/5 px-1.5 py-0.5 rounded text-gray-300 border border-white/10">google/gemini-3.8-flash</code>
                         </span>
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText("google/gemini-3.8-flash");
-                            toast.success("Model name copied!");
-                          }}
-                          className="text-gray-500 hover:text-orange-400 transition-colors"
-                          title="Copy model name"
-                        >
-                          <Copy className="w-3 h-3" />
-                        </button>
+                        <ThemedTooltip content="Copy model name">
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText("google/gemini-3.8-flash");
+                              toast.success("Model name copied!");
+                            }}
+                            className="text-gray-500 hover:text-orange-400 transition-colors"
+                          >
+                            <Copy className="w-3 h-3" />
+                          </button>
+                        </ThemedTooltip>
                       </div>
                       <span className="text-[10px] text-gray-600 block">
                         Or use any other provider/key you prefer — OpenAI, Anthropic, Gemini, etc.

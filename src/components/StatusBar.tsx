@@ -8,6 +8,7 @@ import { joystickSendManager } from '../lib/joystick';
 import { playSfx } from '../lib/sfx';
 import { SENTIMENT_DOT_COLORS } from '../lib/sentiment';
 import type { SentimentLabel } from '../types';
+import { ThemedTooltip } from "./ui/tooltip";
 import {
   Wifi,
   WifiOff,
@@ -182,40 +183,43 @@ export function StatusBar() {
                 className="w-80 h-full max-h-[calc(100vh-48px)] bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col"
               >
                 {/* Drag-to-resize handle */}
-                <div
-                  onMouseDown={startResize}
-                  className={cn(
-                    "flex items-center justify-center h-5 cursor-row-resize select-none border-b border-white/5 bg-black/40 transition-colors",
-                    isDragging ? "bg-white/10" : "hover:bg-white/5"
-                  )}
-                  title="Drag up to expand — release to snap back"
-                >
-                  <div className={cn("w-8 h-0.5 rounded-full transition-colors", isDragging ? "bg-white/40" : "bg-white/20")} />
-                </div>
+                <ThemedTooltip content="Drag up to expand — release to snap back">
+                  <div
+                    onMouseDown={startResize}
+                    className={cn(
+                      "flex items-center justify-center h-5 cursor-row-resize select-none border-b border-white/5 bg-black/40 transition-colors",
+                      isDragging ? "bg-white/10" : "hover:bg-white/5"
+                    )}
+                  >
+                    <div className={cn("w-8 h-0.5 rounded-full transition-colors", isDragging ? "bg-white/40" : "bg-white/20")} />
+                  </div>
+                </ThemedTooltip>
 
                 <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-black/40">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400 font-mono flex items-center gap-1.5">
                     <History className="w-3 h-3" /> Sent Message Log
                   </span>
                   <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={handleCopyHistory}
-                      disabled={sentMessages.length === 0}
-                      className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30"
-                      title="Copy log"
-                    >
-                      <Copy className="w-3 h-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearSentMessages}
-                      disabled={sentMessages.length === 0}
-                      className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-30"
-                      title="Clear log"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                    <ThemedTooltip content="Copy log">
+                      <button
+                        type="button"
+                        onClick={handleCopyHistory}
+                        disabled={sentMessages.length === 0}
+                        className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30"
+                      >
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    </ThemedTooltip>
+                    <ThemedTooltip content="Clear log">
+                      <button
+                        type="button"
+                        onClick={clearSentMessages}
+                        disabled={sentMessages.length === 0}
+                        className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-30"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </ThemedTooltip>
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 forge-scroll">
@@ -246,146 +250,172 @@ export function StatusBar() {
         {/* Status Bar */}
         <div className="flex items-center gap-3 px-3 py-1.5 bg-[#121217]/95 backdrop-blur-md border border-white/10 border-b-0 rounded-tr-lg shadow-xl">
           {/* Drag Handle */}
-          <div
-            onMouseDown={startDrag}
-            className="flex items-center cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 transition-colors -ml-1.5"
-            title="Drag to reposition along bottom"
-          >
-            <GripHorizontal className="w-4 h-4" />
-          </div>
+          <ThemedTooltip content="Drag to reposition along bottom">
+            <div
+              onMouseDown={startDrag}
+              className="flex items-center cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 transition-colors -ml-1.5"
+            >
+              <GripHorizontal className="w-4 h-4" />
+            </div>
+          </ThemedTooltip>
 
           {/* Connection Indicators */}
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1" title={`Chat Read: ${tmiReadState}`}>
-              {tmiReadState === 'connected' ? (
-                <Wifi className={cn('w-3 h-3', readColor)} />
-              ) : (
-                <WifiOff className={cn('w-3 h-3', readColor)} />
-              )}
-              <span className={cn('text-[9px] font-mono font-bold uppercase', readColor)}>RX</span>
-            </div>
-            <div className="flex items-center gap-1" title={`Chat Send: ${tmiSendState}`}>
-              <Send className={cn('w-3 h-3', sendColor)} />
-              <span className={cn('text-[9px] font-mono font-bold uppercase', sendColor)}>TX</span>
-            </div>
+            <ThemedTooltip content={`Chat Read: ${tmiReadState}`}>
+              <div className="flex items-center gap-1">
+                {tmiReadState === 'connected' ? (
+                  <Wifi className={cn('w-3 h-3', readColor)} />
+                ) : (
+                  <WifiOff className={cn('w-3 h-3', readColor)} />
+                )}
+                <span className={cn('text-[9px] font-mono font-bold uppercase', readColor)}>RX</span>
+              </div>
+            </ThemedTooltip>
+            <ThemedTooltip content={`Chat Send: ${tmiSendState}`}>
+              <div className="flex items-center gap-1">
+                <Send className={cn('w-3 h-3', sendColor)} />
+                <span className={cn('text-[9px] font-mono font-bold uppercase', sendColor)}>TX</span>
+              </div>
+            </ThemedTooltip>
           </div>
 
           <div className="w-px h-3 bg-white/10" />
 
           {/* Session Timer */}
-          <div className="flex items-center gap-1" title="Session duration">
-            <Clock className="w-3 h-3 text-gray-500" />
-            <span className="text-[9px] font-mono text-gray-400 font-bold">{formatDuration(sessionDuration)}</span>
-          </div>
+          <ThemedTooltip content="Session duration">
+            <div className="flex items-center gap-1">
+              <Clock className="w-3 h-3 text-gray-500" />
+              <span className="text-[9px] font-mono text-gray-400 font-bold">{formatDuration(sessionDuration)}</span>
+            </div>
+          </ThemedTooltip>
 
           <div className="w-px h-3 bg-white/10" />
 
           {/* Stats */}
           <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-1" title="Messages received">
-              <MessageSquare className="w-3 h-3 text-teal-500" />
-              <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.messagesReceived}</span>
-            </div>
-            <div className="flex items-center gap-1" title="Messages sent">
-              <Send className="w-3 h-3 text-green-500" />
-              <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.messagesSent}</span>
-            </div>
-            <div className="flex items-center gap-1" title="Forge batches">
-              <Flame className="w-3 h-3 text-orange-500" />
-              <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.forgeCount}</span>
-            </div>
+            <ThemedTooltip content="Messages received">
+              <div className="flex items-center gap-1">
+                <MessageSquare className="w-3 h-3 text-teal-500" />
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.messagesReceived}</span>
+              </div>
+            </ThemedTooltip>
+            <ThemedTooltip content="Messages sent">
+              <div className="flex items-center gap-1">
+                <Send className="w-3 h-3 text-green-500" />
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.messagesSent}</span>
+              </div>
+            </ThemedTooltip>
+            <ThemedTooltip content="Forge batches">
+              <div className="flex items-center gap-1">
+                <Flame className="w-3 h-3 text-orange-500" />
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.forgeCount}</span>
+              </div>
+            </ThemedTooltip>
           </div>
 
           <div className="w-px h-3 bg-white/10" />
 
           {/* AutoForge Action Count */}
           {enhancedStats.autoForgeActions > 0 && (
-            <div className="flex items-center gap-1" title="AutoForge actions this session">
-              <span className="text-[9px] font-mono text-indigo-400 font-bold">AF:{enhancedStats.autoForgeActions}</span>
-            </div>
+            <ThemedTooltip content="AutoForge actions this session">
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] font-mono text-indigo-400 font-bold">AF:{enhancedStats.autoForgeActions}</span>
+              </div>
+            </ThemedTooltip>
           )}
 
           <div className="w-px h-3 bg-white/10" />
 
           {/* B9: Mini Audio Visualizer */}
           {audioEnergy && (
-            <div className="flex items-center gap-1.5" title={`Audio: ${audioEnergy.label} (RMS ${audioEnergy.rms.toFixed(2)})`}>
-              <div className="flex items-end gap-0.5 h-3">
-                {[0, 1, 2, 3].map((i) => {
-                  const baseHeight = (audioEnergy.rms * 100) * (0.5 + i * 0.2);
-                  const height = Math.min(100, Math.max(8, baseHeight));
-                  return (
-                    <motion.div
-                      key={i}
-                      className={cn(
-                        "w-0.5 rounded-full",
-                        audioEnergy.label === "spike" ? "bg-red-400" :
-                        audioEnergy.label === "loud" ? "bg-orange-400" :
-                        audioEnergy.label === "normal" ? "bg-teal-400" :
-                        audioEnergy.label === "quiet" ? "bg-blue-400" : "bg-gray-600"
-                      )}
-                      animate={{ height: `${height}%` }}
-                      transition={{ duration: 0.15 }}
-                />
-                  );
-                })}
+            <ThemedTooltip content={`Audio: ${audioEnergy.label} (RMS ${audioEnergy.rms.toFixed(2)})`}>
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-end gap-0.5 h-3">
+                  {[0, 1, 2, 3].map((i) => {
+                    const baseHeight = (audioEnergy.rms * 100) * (0.5 + i * 0.2);
+                    const height = Math.min(100, Math.max(8, baseHeight));
+                    return (
+                      <motion.div
+                        key={i}
+                        className={cn(
+                          "w-0.5 rounded-full",
+                          audioEnergy.label === "spike" ? "bg-red-400" :
+                          audioEnergy.label === "loud" ? "bg-orange-400" :
+                          audioEnergy.label === "normal" ? "bg-teal-400" :
+                          audioEnergy.label === "quiet" ? "bg-blue-400" : "bg-gray-600"
+                        )}
+                        animate={{ height: `${height}%` }}
+                        transition={{ duration: 0.15 }}
+                  />
+                    );
+                  })}
+                </div>
+                <span className="text-[9px] font-mono text-gray-500 uppercase">{audioEnergy.label[0]}</span>
               </div>
-              <span className="text-[9px] font-mono text-gray-500 uppercase">{audioEnergy.label[0]}</span>
-            </div>
+            </ThemedTooltip>
           )}
 
           {/* A10: Stream Health Score */}
           {streamHealth && (
-            <div className="flex items-center gap-1" title={`Stream health: ${streamHealth.label} (${streamHealth.overall}/100)`}>
-              <span className={cn(
-                "w-2 h-2 rounded-full",
-                streamHealth.label === "poppin" && "bg-green-400 animate-pulse",
-                streamHealth.label === "healthy" && "bg-teal-400",
-                streamHealth.label === "active" && "bg-blue-400",
-                streamHealth.label === "slow" && "bg-yellow-400",
-                streamHealth.label === "dead" && "bg-red-400",
-              )} />
-              <span className="text-[9px] font-mono text-gray-400 font-bold">{streamHealth.overall}</span>
-            </div>
+            <ThemedTooltip content={`Stream health: ${streamHealth.label} (${streamHealth.overall}/100)`}>
+              <div className="flex items-center gap-1">
+                <span className={cn(
+                  "w-2 h-2 rounded-full",
+                  streamHealth.label === "poppin" && "bg-green-400 animate-pulse",
+                  streamHealth.label === "healthy" && "bg-teal-400",
+                  streamHealth.label === "active" && "bg-blue-400",
+                  streamHealth.label === "slow" && "bg-yellow-400",
+                  streamHealth.label === "dead" && "bg-red-400",
+                )} />
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{streamHealth.overall}</span>
+              </div>
+            </ThemedTooltip>
           )}
 
           <div className="w-px h-3 bg-white/10" />
 
           {/* Sentiment Indicator */}
           {sentimentSummary && sentimentSummary.readings.length > 0 && (
-            <div className="flex items-center gap-1" title={`Chat sentiment: ${sentimentSummary.current} (${sentimentSummary.trend})`}>
-              <span className={cn('w-2 h-2 rounded-full', SENTIMENT_DOT_COLORS[sentimentSummary.current as SentimentLabel])} />
-              <span className="text-[9px] font-mono text-gray-400 font-bold uppercase">{sentimentSummary.current}</span>
-              {sentimentSummary.trend === 'rising' && <span className="text-[8px] text-green-400">↑</span>}
-              {sentimentSummary.trend === 'falling' && <span className="text-[8px] text-red-400">↓</span>}
-            </div>
+            <ThemedTooltip content={`Chat sentiment: ${sentimentSummary.current} (${sentimentSummary.trend})`}>
+              <div className="flex items-center gap-1">
+                <span className={cn('w-2 h-2 rounded-full', SENTIMENT_DOT_COLORS[sentimentSummary.current as SentimentLabel])} />
+                <span className="text-[9px] font-mono text-gray-400 font-bold uppercase">{sentimentSummary.current}</span>
+                {sentimentSummary.trend === 'rising' && <span className="text-[8px] text-green-400">↑</span>}
+                {sentimentSummary.trend === 'falling' && <span className="text-[8px] text-red-400">↓</span>}
+              </div>
+            </ThemedTooltip>
           )}
 
           {/* Message Queue Indicator */}
           {messageQueueDepth > 0 && (
-            <div className="flex items-center gap-1" title={`${messageQueueDepth} queued messages awaiting retry`}>
-              <span className="text-[9px] font-mono text-yellow-400 font-bold">Q:{messageQueueDepth}</span>
-            </div>
+            <ThemedTooltip content={`${messageQueueDepth} queued messages awaiting retry`}>
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] font-mono text-yellow-400 font-bold">Q:{messageQueueDepth}</span>
+              </div>
+            </ThemedTooltip>
           )}
 
           <div className="w-px h-3 bg-white/10" />
 
           {/* Rate Limit Indicator */}
-          <div className="flex items-center gap-1" title="Send rate limit (messages per 30s)">
-            <span className={cn('text-[9px] font-mono font-bold', rateUsed >= 15 ? 'text-red-400' : rateUsed >= 10 ? 'text-yellow-400' : 'text-gray-500')}>
-              {rateUsed}/{platform === 'kick' ? '50' : platform === 'joystick' ? '20' : '20'}
-            </span>
-          </div>
+          <ThemedTooltip content="Send rate limit (messages per 30s)">
+            <div className="flex items-center gap-1">
+              <span className={cn('text-[9px] font-mono font-bold', rateUsed >= 15 ? 'text-red-400' : rateUsed >= 10 ? 'text-yellow-400' : 'text-gray-500')}>
+                {rateUsed}/{platform === 'kick' ? '50' : platform === 'joystick' ? '20' : '20'}
+              </span>
+            </div>
+          </ThemedTooltip>
 
           {/* Expand/Collapse History */}
-          <button
-            type="button"
-            onClick={() => { setShowHistory(!showHistory); playSfx('history_toggle'); }}
-            className="ml-1 p-0.5 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors"
-            title={showHistory ? 'Hide sent log' : 'Show sent log'}
-          >
-            {showHistory ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-          </button>
+          <ThemedTooltip content={showHistory ? 'Hide sent log' : 'Show sent log'}>
+            <button
+              type="button"
+              onClick={() => { setShowHistory(!showHistory); playSfx('history_toggle'); }}
+              className="ml-1 p-0.5 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              {showHistory ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </button>
+          </ThemedTooltip>
         </div>
       </div>
     </>

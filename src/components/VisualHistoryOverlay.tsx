@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
 import { toast } from "sonner";
+import { ThemedTooltip } from "./ui/tooltip";
 
 function formatTimeAgo(ts: number, now: number): string {
   const diff = Math.max(0, now - ts);
@@ -177,35 +178,37 @@ export function VisualHistoryOverlay() {
 
                               {/* Actions */}
                               <div className="flex items-center gap-1.5 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button
-                                  onClick={() => {
-                                    addPinnedMemory({
-                                      type: "visual",
-                                      content: entry.tags.join(", "),
-                                      label: `Visual Snapshot — ${entry.tags[0]?.slice(0, 60) || "Captured"}${entry.tags[0] && entry.tags[0].length > 60 ? "…" : ""}`,
-                                      timestamp: entry.timestamp,
-                                      imageUrl: entry.url,
-                                    });
-                                    toast.success("Pinned to Long-Term Memory");
-                                    playSfx("memory_add");
-                                  }}
-                                  className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-blue-500/10 transition-colors"
-                                  title="Pin to Long-Term Memory"
-                                >
-                                  <Pin className="w-2.5 h-2.5" /> Pin
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    const a = document.createElement("a");
-                                    a.href = entry.url;
-                                    a.download = `snapshot-${entry.timestamp}.jpg`;
-                                    a.click();
-                                  }}
-                                  className="text-[9px] text-gray-400 hover:text-white flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors"
-                                  title="Download image"
-                                >
-                                  <Download className="w-2.5 h-2.5" /> Save
-                                </button>
+                                <ThemedTooltip content="Pin to Long-Term Memory">
+                                  <button
+                                    onClick={() => {
+                                      addPinnedMemory({
+                                        type: "visual",
+                                        content: entry.tags.join(", "),
+                                        label: `Visual Snapshot — ${entry.tags[0]?.slice(0, 60) || "Captured"}${entry.tags[0] && entry.tags[0].length > 60 ? "…" : ""}`,
+                                        timestamp: entry.timestamp,
+                                        imageUrl: entry.url,
+                                      });
+                                      toast.success("Pinned to Long-Term Memory");
+                                      playSfx("memory_add");
+                                    }}
+                                    className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-blue-500/10 transition-colors"
+                                  >
+                                    <Pin className="w-2.5 h-2.5" /> Pin
+                                  </button>
+                                </ThemedTooltip>
+                                <ThemedTooltip content="Download image">
+                                  <button
+                                    onClick={() => {
+                                      const a = document.createElement("a");
+                                      a.href = entry.url;
+                                      a.download = `snapshot-${entry.timestamp}.jpg`;
+                                      a.click();
+                                    }}
+                                    className="text-[9px] text-gray-400 hover:text-white flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors"
+                                  >
+                                    <Download className="w-2.5 h-2.5" /> Save
+                                  </button>
+                                </ThemedTooltip>
                               </div>
                             </div>
                           </div>

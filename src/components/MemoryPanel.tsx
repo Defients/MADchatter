@@ -23,6 +23,7 @@ import { runDecayCycle } from "../lib/memoryEngine";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import type { AutoMemory } from "../types";
+import { ThemedTooltip } from "./ui/tooltip";
 
 export function MemoryPanel() {
   const {
@@ -243,31 +244,36 @@ export function MemoryPanel() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleExport}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
-              title="Export"
-            >
-              <Download className="w-4 h-4" />
-            </button>
-            <label className="cursor-pointer p-1.5 rounded-lg text-gray-400 hover:text-green-400 hover:bg-green-500/10 transition-colors" title="Import">
-              <Upload className="w-4 h-4" />
-              <input type="file" accept=".json" className="hidden" onChange={handleImport} />
-            </label>
-            <button
-              onClick={handleRunDecay}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
-              title="Run decay cycle"
-            >
-              <TrendingUp className="w-4 h-4" />
-            </button>
-            <button
-              onClick={handleClearAll}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-              title="Clear all"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            <ThemedTooltip content="Export">
+              <button
+                onClick={handleExport}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+            </ThemedTooltip>
+            <ThemedTooltip content="Import">
+              <label className="cursor-pointer p-1.5 rounded-lg text-gray-400 hover:text-green-400 hover:bg-green-500/10 transition-colors">
+                <Upload className="w-4 h-4" />
+                <input type="file" accept=".json" className="hidden" onChange={handleImport} />
+              </label>
+            </ThemedTooltip>
+            <ThemedTooltip content="Run decay cycle">
+              <button
+                onClick={handleRunDecay}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
+              >
+                <TrendingUp className="w-4 h-4" />
+              </button>
+            </ThemedTooltip>
+            <ThemedTooltip content="Clear all">
+              <button
+                onClick={handleClearAll}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </ThemedTooltip>
             <button
               onClick={() => setMemoryPanelOpen(false)}
               className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
@@ -481,13 +487,14 @@ export function MemoryPanel() {
                         )}
                       >
                         <div className="flex items-start gap-2">
-                          <button
-                            onClick={() => toggleSelect(mem.id)}
-                            className="mt-0.5 shrink-0 text-gray-500 hover:text-orange-400"
-                            title={isSelected ? "Deselect" : "Select"}
-                          >
-                            {isSelected ? <CheckSquare className="w-3.5 h-3.5 text-orange-400" /> : <Square className="w-3.5 h-3.5" />}
-                          </button>
+                          <ThemedTooltip content={isSelected ? "Deselect" : "Select"}>
+                            <button
+                              onClick={() => toggleSelect(mem.id)}
+                              className="mt-0.5 shrink-0 text-gray-500 hover:text-orange-400"
+                            >
+                              {isSelected ? <CheckSquare className="w-3.5 h-3.5 text-orange-400" /> : <Square className="w-3.5 h-3.5" />}
+                            </button>
+                          </ThemedTooltip>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5 mb-0.5">
                               <span className={cn(
@@ -577,13 +584,14 @@ export function MemoryPanel() {
                               >
                                 {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                               </button>
-                              <button
-                                onClick={() => startEdit(mem)}
-                                className="p-0.5 rounded text-gray-500 hover:text-purple-400"
-                                title="Edit memory"
-                              >
-                                <Pencil className="w-3 h-3" />
-                              </button>
+                              <ThemedTooltip content="Edit memory">
+                                <button
+                                  onClick={() => startEdit(mem)}
+                                  className="p-0.5 rounded text-gray-500 hover:text-purple-400"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </button>
+                              </ThemedTooltip>
                               <button
                                 onClick={() => removeAutoMemory(mem.id)}
                                 className="p-0.5 rounded text-gray-500 hover:text-red-400"

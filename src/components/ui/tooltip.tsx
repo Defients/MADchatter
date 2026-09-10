@@ -1,5 +1,5 @@
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
-
+import type { ReactElement, ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
 function TooltipProvider({
@@ -61,4 +61,46 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+/**
+ * Convenience wrapper: themed dark tooltip with a single line of content.
+ * Wraps any element (button, input, div, img, etc.) without adding DOM nodes.
+ *
+ * Usage:
+ *   <ThemedTooltip content="Copy log">
+ *     <button onClick={...}><Copy /></button>
+ *   </ThemedTooltip>
+ */
+function ThemedTooltip({
+  children,
+  content,
+  side = "top",
+  align = "center",
+  sideOffset = 6,
+  className,
+}: {
+  children: ReactElement;
+  content: ReactNode;
+  side?: "top" | "bottom" | "left" | "right";
+  align?: "start" | "center" | "end";
+  sideOffset?: number;
+  className?: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={children} />
+      <TooltipContent
+        side={side}
+        align={align}
+        sideOffset={sideOffset}
+        className={cn(
+          "bg-[#1a1a22] border border-white/10 text-gray-200 rounded-lg shadow-2xl px-3 py-1.5 text-xs font-medium",
+          className
+        )}
+      >
+        {content}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, ThemedTooltip }

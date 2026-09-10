@@ -25,6 +25,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import type { AutoForgeSequence, AutoForgeSequenceStep } from "../types";
+import { ThemedTooltip } from "./ui/tooltip";
 
 // ─── Action type metadata ────────────────────────────────────────────────────
 
@@ -520,14 +521,15 @@ const SequenceCard: React.FC<{
     )}>
       {/* Card header */}
       <div className="flex items-center gap-2 p-3">
-        <button
-          onClick={onToggleEnabled}
-          className={cn(
-            "w-2.5 h-2.5 rounded-full shrink-0 transition-colors",
-            seq.enabled ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" : "bg-gray-600"
-          )}
-          title={seq.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}
-        />
+        <ThemedTooltip content={seq.enabled ? "Enabled — click to disable" : "Disabled — click to enable"}>
+          <button
+            onClick={onToggleEnabled}
+            className={cn(
+              "w-2.5 h-2.5 rounded-full shrink-0 transition-colors",
+              seq.enabled ? "bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]" : "bg-gray-600"
+            )}
+          />
+        </ThemedTooltip>
 
         {isEditing ? (
           <input
@@ -549,45 +551,49 @@ const SequenceCard: React.FC<{
 
         {/* Action buttons */}
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={onRun}
-            disabled={isRunning || !seq.enabled}
-            className={cn(
-              "p-1.5 rounded-lg transition-colors",
-              isRunning
-                ? "bg-orange-500/20 text-orange-300 animate-pulse"
-                : seq.enabled
-                  ? "text-green-400 hover:bg-green-500/15"
-                  : "text-gray-600 cursor-not-allowed"
-            )}
-            title={isRunning ? "Running..." : "Test run sequence"}
-          >
-            <Play className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onToggleEdit}
-            className={cn(
-              "p-1.5 rounded-lg transition-colors",
-              isEditing ? "bg-orange-500/15 text-orange-300" : "text-gray-500 hover:text-orange-400 hover:bg-orange-500/10"
-            )}
-            title={isEditing ? "Close editor" : "Edit sequence"}
-          >
-            {isEditing ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
-          <button
-            onClick={onDuplicate}
-            className="p-1.5 rounded-lg text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
-            title="Duplicate sequence"
-          >
-            <Copy className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-            title="Delete sequence"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+          <ThemedTooltip content={isRunning ? "Running..." : "Test run sequence"}>
+            <button
+              onClick={onRun}
+              disabled={isRunning || !seq.enabled}
+              className={cn(
+                "p-1.5 rounded-lg transition-colors",
+                isRunning
+                  ? "bg-orange-500/20 text-orange-300 animate-pulse"
+                  : seq.enabled
+                    ? "text-green-400 hover:bg-green-500/15"
+                    : "text-gray-600 cursor-not-allowed"
+              )}
+            >
+              <Play className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content={isEditing ? "Close editor" : "Edit sequence"}>
+            <button
+              onClick={onToggleEdit}
+              className={cn(
+                "p-1.5 rounded-lg transition-colors",
+                isEditing ? "bg-orange-500/15 text-orange-300" : "text-gray-500 hover:text-orange-400 hover:bg-orange-500/10"
+              )}
+            >
+              {isEditing ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content="Duplicate sequence">
+            <button
+              onClick={onDuplicate}
+              className="p-1.5 rounded-lg text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content="Delete sequence">
+            <button
+              onClick={onDelete}
+              className="p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
         </div>
       </div>
 
@@ -700,14 +706,15 @@ const SequenceCard: React.FC<{
                     </div>
 
                     {/* Delete step */}
-                    <button
-                      onClick={() => onRemoveStep(step.id)}
-                      disabled={seq.steps.length <= 1}
-                      className="p-1 rounded text-gray-600 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
-                      title="Remove step"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                    <ThemedTooltip content="Remove step">
+                      <button
+                        onClick={() => onRemoveStep(step.id)}
+                        disabled={seq.steps.length <= 1}
+                        className="p-1 rounded text-gray-600 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </ThemedTooltip>
                   </div>
                 );
               })}

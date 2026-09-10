@@ -22,7 +22,7 @@ import {
 } from "./ui/select";
 import { Textarea } from "./ui/textarea";
 import { Badge } from "./ui/badge";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import { toast } from "sonner";
 import kappaUrl from "../../assets/Kappa.png";
 import kreygasmUrl from "../../assets/Kreygasm.png";
@@ -849,16 +849,17 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   <div className="flex flex-col gap-2">
                     <div className="flex items-center justify-between">
                       <span>System Configuration</span>
-                      <a
-                        href="mailto:kovrycha@gmail.com"
-                        className="group relative mr-auto ml-3 inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-500 hover:text-orange-400 hover:bg-orange-500/10 transition-all duration-300"
-                        title="Contact: kovrycha@gmail.com"
-                      >
-                        <Mail className="w-5.8 h-5.8" style={{ width: '1.67rem', height: '1.67rem' }} />
-                        <span className="pointer-events-none absolute -bottom-9 right-0 z-[100] px-2.5 py-1.5 bg-[#12121a] border border-orange-500/30 rounded-lg text-[10px] font-mono text-gray-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200 shadow-xl">
-                          ✉ kovrycha@gmail.com
-                        </span>
-                      </a>
+                      <ThemedTooltip content="Contact: kovrycha@gmail.com">
+                        <a
+                          href="mailto:kovrycha@gmail.com"
+                          className="group relative mr-auto ml-3 inline-flex items-center justify-center w-6 h-6 rounded-md text-gray-500 hover:text-orange-400 hover:bg-orange-500/10 transition-all duration-300"
+                        >
+                          <Mail className="w-5.8 h-5.8" style={{ width: '1.67rem', height: '1.67rem' }} />
+                          <span className="pointer-events-none absolute -bottom-9 right-0 z-[100] px-2.5 py-1.5 bg-[#12121a] border border-orange-500/30 rounded-lg text-[10px] font-mono text-gray-300 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200 shadow-xl">
+                            ✉ kovrycha@gmail.com
+                          </span>
+                        </a>
+                      </ThemedTooltip>
                     </div>
                     <div className="flex items-center gap-2">
                     {/* Sound Effects — collapsible panel */}
@@ -1196,15 +1197,16 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                               <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] font-bold text-gray-400">Voice</span>
-                                  <button
-                                    onClick={loadElevenLabsVoices}
-                                    disabled={elevenlabsVoicesLoading}
-                                    className="flex items-center gap-1 text-[9px] text-purple-400 hover:text-purple-300 disabled:opacity-50 font-bold uppercase tracking-wider transition-colors"
-                                    title="Refresh voices from your ElevenLabs account"
-                                  >
-                                    <RefreshCw className={cn("w-3 h-3", elevenlabsVoicesLoading && "animate-spin")} />
-                                    {elevenlabsVoicesLoading ? "Loading..." : "Refresh"}
-                                  </button>
+                                  <ThemedTooltip content="Refresh voices from your ElevenLabs account">
+                                    <button
+                                      onClick={loadElevenLabsVoices}
+                                      disabled={elevenlabsVoicesLoading}
+                                      className="flex items-center gap-1 text-[9px] text-purple-400 hover:text-purple-300 disabled:opacity-50 font-bold uppercase tracking-wider transition-colors"
+                                    >
+                                      <RefreshCw className={cn("w-3 h-3", elevenlabsVoicesLoading && "animate-spin")} />
+                                      {elevenlabsVoicesLoading ? "Loading..." : "Refresh"}
+                                    </button>
+                                  </ThemedTooltip>
                                 </div>
                                 {elevenlabsVoicesError && (
                                   <p className="text-[9px] text-red-400">{elevenlabsVoicesError}</p>
@@ -1684,23 +1686,24 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 className="w-full text-[11px] bg-black/30 border border-red-500/20 rounded-lg px-2 py-1.5 text-gray-200 placeholder:text-gray-600 outline-none focus:border-red-500/40 resize-none leading-relaxed overflow-y-auto themed-scroll"
               />
               {/* Bottom-left drag-triangle to expand vertically */}
-              <div
-                onMouseDown={startIdentityResize}
-                className={cn(
-                  "absolute bottom-0 left-0 w-4 h-4 cursor-sw-resize select-none flex items-end justify-start",
-                  identityDragging ? "opacity-100" : "opacity-40 hover:opacity-100"
-                )}
-                title="Drag down to expand"
-              >
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  className={cn("transition-colors", identityDragging ? "fill-red-400/60" : "fill-red-400/30")}
+              <ThemedTooltip content="Drag down to expand">
+                <div
+                  onMouseDown={startIdentityResize}
+                  className={cn(
+                    "absolute bottom-0 left-0 w-4 h-4 cursor-sw-resize select-none flex items-end justify-start",
+                    identityDragging ? "opacity-100" : "opacity-40 hover:opacity-100"
+                  )}
                 >
-                  <path d="M0 10 L10 10 L0 0 Z" />
-                </svg>
-              </div>
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    className={cn("transition-colors", identityDragging ? "fill-red-400/60" : "fill-red-400/30")}
+                  >
+                    <path d="M0 10 L10 10 L0 0 Z" />
+                  </svg>
+                </div>
+              </ThemedTooltip>
             </div>
             <p className="text-[9px] text-gray-600 italic">
               When someone asks if the bot is AI, it will stay in character using this story. Keep it brief and believable.
@@ -2345,14 +2348,15 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               updateConfig({ additionalInstructions: e.target.value })
             }
           />
-            <button
-              type="button"
-              onClick={() => updateConfig({ additionalInstructions: "" })}
-              className="absolute top-1.5 right-1.5 text-gray-600 hover:text-red-400 transition-colors p-0.5"
-              title="Clear directives"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
+            <ThemedTooltip content="Clear directives">
+              <button
+                type="button"
+                onClick={() => updateConfig({ additionalInstructions: "" })}
+                className="absolute top-1.5 right-1.5 text-gray-600 hover:text-red-400 transition-colors p-0.5"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </ThemedTooltip>
           </div>
           {pttNeedsDownload && (
             <div className="flex flex-col gap-2 p-2.5 rounded-lg bg-purple-500/10 border border-purple-500/20">
@@ -2563,16 +2567,18 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   <div key={v.id} className="flex items-start gap-1.5 bg-white/[0.02] rounded px-2 py-1 group">
                     <span className="text-[10px] text-gray-300 flex-1 truncate">{v.message}</span>
                     <div className="flex gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => rateVariantHistory(v.id, "good")}
-                        className={cn("text-[10px]", v.rating === "good" ? "text-green-400" : "text-gray-600 hover:text-green-400")}
-                        title="Good"
-                      >👍</button>
-                      <button
-                        onClick={() => rateVariantHistory(v.id, "bad")}
-                        className={cn("text-[10px]", v.rating === "bad" ? "text-red-400" : "text-gray-600 hover:text-red-400")}
-                        title="Bad"
-                      >👎</button>
+                      <ThemedTooltip content="Good">
+                        <button
+                          onClick={() => rateVariantHistory(v.id, "good")}
+                          className={cn("text-[10px]", v.rating === "good" ? "text-green-400" : "text-gray-600 hover:text-green-400")}
+                        >👍</button>
+                      </ThemedTooltip>
+                      <ThemedTooltip content="Bad">
+                        <button
+                          onClick={() => rateVariantHistory(v.id, "bad")}
+                          className={cn("text-[10px]", v.rating === "bad" ? "text-red-400" : "text-gray-600 hover:text-red-400")}
+                        >👎</button>
+                      </ThemedTooltip>
                     </div>
                   </div>
                 ))}
@@ -2831,15 +2837,16 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         <div className="flex gap-1.5 items-stretch">
           {/* Model selector button */}
           <div data-tutorial="provider" className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setModelMenuOpen(!modelMenuOpen)}
-              className="h-11 px-2.5 flex items-center gap-1 rounded-lg bg-green-900/30 border border-green-700/30 text-green-500 hover:bg-green-900/50 hover:border-green-600/40 transition-all text-[10px] font-bold uppercase tracking-wider font-mono whitespace-nowrap"
-              title="Active Provider Model"
-            >
-              {provider === 'gemini' ? 'Gem' : provider === 'gemini-env' ? 'Gem-E' : provider === 'gemini-pro' ? 'Gem+' : provider === 'openai' ? 'GPT' : provider === 'anthropic' ? 'Claude' : provider === 'ollama' ? 'Ollama' : 'OR'}
-              <ChevronDown className="w-3 h-3 opacity-60" />
-            </button>
+            <ThemedTooltip content="Active Provider Model">
+              <button
+                type="button"
+                onClick={() => setModelMenuOpen(!modelMenuOpen)}
+                className="h-11 px-2.5 flex items-center gap-1 rounded-lg bg-green-900/30 border border-green-700/30 text-green-500 hover:bg-green-900/50 hover:border-green-600/40 transition-all text-[10px] font-bold uppercase tracking-wider font-mono whitespace-nowrap"
+              >
+                {provider === 'gemini' ? 'Gem' : provider === 'gemini-env' ? 'Gem-E' : provider === 'gemini-pro' ? 'Gem+' : provider === 'openai' ? 'GPT' : provider === 'anthropic' ? 'Claude' : provider === 'ollama' ? 'Ollama' : 'OR'}
+                <ChevronDown className="w-3 h-3 opacity-60" />
+              </button>
+            </ThemedTooltip>
             {modelMenuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setModelMenuOpen(false)} />

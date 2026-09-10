@@ -7,6 +7,7 @@ import { getActiveProvider } from "../lib/keys";
 import { toast } from "sonner";
 import { playSfx } from "../lib/sfx";
 import { AutoForgeEvent, AutoForgeEventType } from "../types";
+import { ThemedTooltip } from "./ui/tooltip";
 import {
   X,
   ScrollText,
@@ -239,38 +240,42 @@ export function AutoForgeReport() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleCopyLog}
-                className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
-                title="Copy log to clipboard"
-              >
-                <Copy className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadLog}
-                className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
-                title="Download as JSON"
-              >
-                <Download className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handleClearLog}
-                className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
-                title="Clear event log"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => { setIsAutoForgeReportOpen(false); playSfx('report_close'); }}
-                className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
-                title="Close report"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <ThemedTooltip content="Copy log to clipboard">
+                <button
+                  type="button"
+                  onClick={handleCopyLog}
+                  className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              </ThemedTooltip>
+              <ThemedTooltip content="Download as JSON">
+                <button
+                  type="button"
+                  onClick={handleDownloadLog}
+                  className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+                >
+                  <Download className="w-4 h-4" />
+                </button>
+              </ThemedTooltip>
+              <ThemedTooltip content="Clear event log">
+                <button
+                  type="button"
+                  onClick={handleClearLog}
+                  className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </ThemedTooltip>
+              <ThemedTooltip content="Close report">
+                <button
+                  type="button"
+                  onClick={() => { setIsAutoForgeReportOpen(false); playSfx('report_close'); }}
+                  className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </ThemedTooltip>
             </div>
           </div>
 

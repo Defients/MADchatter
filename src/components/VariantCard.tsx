@@ -8,7 +8,7 @@ import { ForgeSuggestion, Bot } from "../types";
 import { toast } from "sonner";
 import { playSfx } from "../lib/sfx";
 import { Input } from "./ui/input";
-import { Tooltip, TooltipTrigger, TooltipContent } from "./ui/tooltip";
+import { Tooltip, TooltipTrigger, TooltipContent, ThemedTooltip } from "./ui/tooltip";
 import { cn } from "../lib/utils";
 
 interface VariantCardProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -176,13 +176,14 @@ export const VariantCard: React.FC<VariantCardProps> = ({
             {variant.profile}
           </Badge>
           {variant.best && (
-            <Badge
-              variant="outline"
-              className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-cyan-500/15 border-cyan-400/40 text-cyan-300 pointer-events-none"
-              title="Highest-ranked variant by local scoring"
-            >
-              ★ Best
-            </Badge>
+            <ThemedTooltip content="Highest-ranked variant by local scoring">
+              <Badge
+                variant="outline"
+                className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-cyan-500/15 border-cyan-400/40 text-cyan-300 pointer-events-none"
+              >
+                ★ Best
+              </Badge>
+            </ThemedTooltip>
           )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -192,13 +193,14 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           >
             {variant.message.length} chars
           </Badge>
-          <Badge
-            variant="outline"
-            className="text-[9px] bg-yellow-500/15 border-yellow-500/20 text-yellow-400 font-mono font-bold pointer-events-none"
-            title="Estimated token size of this comment"
-          >
-            ~{Math.ceil(variant.message.length / 4.1)} TKNS
-          </Badge>
+          <ThemedTooltip content="Estimated token size of this comment">
+            <Badge
+              variant="outline"
+              className="text-[9px] bg-yellow-500/15 border-yellow-500/20 text-yellow-400 font-mono font-bold pointer-events-none"
+            >
+              ~{Math.ceil(variant.message.length / 4.1)} TKNS
+            </Badge>
+          </ThemedTooltip>
           <Badge
             variant="outline"
             className="text-[9px] bg-purple-500/10 border-purple-500/20 text-purple-400 font-bold font-mono pointer-events-none"
@@ -206,28 +208,31 @@ export const VariantCard: React.FC<VariantCardProps> = ({
             CONF: {Math.round(variant.confidence * 100)}%
           </Badge>
           {onClose && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(variant.variant_id);
-              }}
-              className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors"
-              title="Close card"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <ThemedTooltip content="Close card">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(variant.variant_id);
+                }}
+                className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </ThemedTooltip>
           )}
         </div>
       </div>
 
       {/* Card Body */}
       <div className="flex-1 p-3 flex flex-col justify-center">
-        <div className="bg-[#18181B] border border-white/5 rounded-xl p-3 relative shadow-inner" onDoubleClick={handleDoubleClick} title="Double-click to copy">
-          <MessageSquare className="absolute -left-2 -top-2 w-4 h-4 text-gray-600 fill-current opacity-10" />
-          <p className="text-sm text-gray-200 leading-relaxed font-semibold">
-            {variant.message}
-          </p>
-        </div>
+        <ThemedTooltip content="Double-click to copy">
+          <div className="bg-[#18181B] border border-white/5 rounded-xl p-3 relative shadow-inner" onDoubleClick={handleDoubleClick}>
+            <MessageSquare className="absolute -left-2 -top-2 w-4 h-4 text-gray-600 fill-current opacity-10" />
+            <p className="text-sm text-gray-200 leading-relaxed font-semibold">
+              {variant.message}
+            </p>
+          </div>
+        </ThemedTooltip>
         {variant.why_it_fits && (
           <div className="mt-2 p-2 bg-[#0F0F12]/50 rounded-lg border border-white/5 flex gap-1.5 items-start">
             <span className="text-[10px] uppercase font-bold text-orange-400 font-mono leading-none pt-0.5">FIT:</span>
@@ -241,26 +246,28 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       {/* Card Actions */}
       <div className="p-2.5 bg-[#0F0F12] border-t border-white/5 flex gap-2 shrink-0">
         {/* Copy Button */}
-        <Button
-          variant="outline"
-          size="icon"
-          className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
-          onClick={handleCopy}
-          title="Copy message to clipboard"
-        >
-          <Copy className="w-4 h-4" />
-        </Button>
+        <ThemedTooltip content="Copy message to clipboard">
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
+            onClick={handleCopy}
+          >
+            <Copy className="w-4 h-4" />
+          </Button>
+        </ThemedTooltip>
 
         {/* Refine Dialog Trigger */}
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger
             render={
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
-                title="Refine Suggestion"
-              />
+              <ThemedTooltip content="Refine Suggestion">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
+                />
+              </ThemedTooltip>
             }
           >
             <Sparkles className="w-4 h-4 text-orange-400 animate-pulse" />

@@ -3,6 +3,7 @@ import { useAppStore } from '../store';
 import { BarChart3, X, Activity, MessageSquare, Bot, Clock, Users, Zap, Gauge, HeartPulse, Flame, Trophy, ScrollText, TrendingUp, Target, Trash2, CheckCircle2, Download, Activity as ActivityIcon, Sparkles, Eye, Brain, Coins } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx } from '../lib/sfx';
+import { ThemedTooltip } from './ui/tooltip';
 import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
 import { SENTIMENT_COLORS } from '../lib/sentiment';
@@ -186,35 +187,36 @@ export function AnalyticsPanel() {
               <span className="text-[10px] text-gray-500 ml-2">{formatDuration(sessionDuration)}</span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  const s = useAppStore.getState();
-                  const report = {
-                    sessionStart: new Date(s.enhancedStats.sessionStart).toISOString(),
-                    sessionDuration: formatDuration(now - s.enhancedStats.sessionStart),
-                    stats: s.enhancedStats,
-                    topChatters: Object.values(s.chatterStats).sort((a, b) => b.messageCount - a.messageCount).slice(0, 10),
-                    sentimentSummary: s.sentimentSummary,
-                    decisionLog: s.decisionLog.slice(-50),
-                    actionHistory: s.actionHistory.slice(-50),
-                    streamEvents: s.streamEvents,
-                    goals: s.goalEvaluationResults,
-                    providerFallbacks: s.providerFallbackHistory,
-                    actionAccuracy: s.actionAccuracy,
-                    streamHealth: s.streamHealth,
-                  };
-                  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url; a.download = `madchatter-session-${Date.now()}.json`;
-                  a.click(); URL.revokeObjectURL(url);
-                  playSfx('hud_open');
-                }}
-                className="text-[10px] text-gray-400 hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/20 transition-colors flex items-center gap-1"
-                title="Export session report"
-              >
-                <Download className="w-3 h-3" /> Report
-              </button>
+              <ThemedTooltip content="Export session report">
+                <button
+                  onClick={() => {
+                    const s = useAppStore.getState();
+                    const report = {
+                      sessionStart: new Date(s.enhancedStats.sessionStart).toISOString(),
+                      sessionDuration: formatDuration(now - s.enhancedStats.sessionStart),
+                      stats: s.enhancedStats,
+                      topChatters: Object.values(s.chatterStats).sort((a, b) => b.messageCount - a.messageCount).slice(0, 10),
+                      sentimentSummary: s.sentimentSummary,
+                      decisionLog: s.decisionLog.slice(-50),
+                      actionHistory: s.actionHistory.slice(-50),
+                      streamEvents: s.streamEvents,
+                      goals: s.goalEvaluationResults,
+                      providerFallbacks: s.providerFallbackHistory,
+                      actionAccuracy: s.actionAccuracy,
+                      streamHealth: s.streamHealth,
+                    };
+                    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = `madchatter-session-${Date.now()}.json`;
+                    a.click(); URL.revokeObjectURL(url);
+                    playSfx('hud_open');
+                  }}
+                  className="text-[10px] text-gray-400 hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/20 transition-colors flex items-center gap-1"
+                >
+                  <Download className="w-3 h-3" /> Report
+                </button>
+              </ThemedTooltip>
               <button
                 onClick={() => { resetEnhancedStats(); playSfx('clear_context'); }}
                 className="text-[10px] text-gray-400 hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/20 transition-colors"
@@ -859,7 +861,9 @@ export function AnalyticsPanel() {
                             {entry.outcome}
                           </span>
                         )}
-                        <span className="text-gray-400 truncate flex-1" title={entry.reasoning}>{entry.reasoning}</span>
+                        <ThemedTooltip content={entry.reasoning}>
+                          <span className="text-gray-400 truncate flex-1">{entry.reasoning}</span>
+                        </ThemedTooltip>
                       </div>
                     ))}
                 </div>

@@ -3,7 +3,7 @@ import { Tv, Volume2, VolumeX, ExternalLink, Camera, MonitorUp, StopCircle, Mess
 import { useAppStore } from "../store";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { toast } from "sonner";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import chanceImg from "../../assets/chance.jpg";
 import mustardVideo from "../../assets/mustardfite.mp4";
 import waterVideo from "../../assets/waterfite.mp4";
@@ -423,15 +423,16 @@ export function StreamOverlay({
             className="flex-1 bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-[#53fc18]/40 font-sans"
             disabled={chatSending}
           />
-          <button
-            type="button"
-            onClick={handleSendKickChat}
-            disabled={chatSending || !chatMessage.trim()}
-            className="h-7 w-7 flex items-center justify-center rounded-lg text-[#53fc18] bg-[#53fc18]/10 hover:bg-[#53fc18]/20 border border-[#53fc18]/20 hover:border-[#53fc18]/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Send message"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </button>
+          <ThemedTooltip content="Send message">
+            <button
+              type="button"
+              onClick={handleSendKickChat}
+              disabled={chatSending || !chatMessage.trim()}
+              className="h-7 w-7 flex items-center justify-center rounded-lg text-[#53fc18] bg-[#53fc18]/10 hover:bg-[#53fc18]/20 border border-[#53fc18]/20 hover:border-[#53fc18]/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Send className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
         </div>
       )}
 

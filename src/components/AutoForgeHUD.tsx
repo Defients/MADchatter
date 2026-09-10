@@ -6,6 +6,7 @@ import { cn } from '../lib/utils';
 import { playSfx, playForceBurstSfx } from '../lib/sfx';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
 import { motion, AnimatePresence } from 'motion/react';
+import { ThemedTooltip } from './ui/tooltip';
 
 function RateLimitIndicator() {
   const [stats, setStats] = useState(() => actionRateLimiter.getStats());
@@ -192,22 +193,24 @@ export function AutoForgeHUD() {
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); useAppStore.getState().setIsAutoForgeReportOpen(true); playSfx('report_open'); }}
-            className="p-1 rounded text-gray-400 hover:text-orange-400 hover:bg-orange-500/20 transition-colors"
-            title="View AutoForge Report"
-          >
-            <ScrollText className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setLiteView(v => !v); playSfx('panel_collapse'); }}
-            className={cn("p-1 rounded transition-colors", liteView ? "text-cyan-400 bg-cyan-500/20" : "text-gray-400 hover:text-white hover:bg-white/10")}
-            title="Toggle Lite View"
-          >
-            <Rows3 className="w-3.5 h-3.5" />
-          </button>
+          <ThemedTooltip content="View AutoForge Report">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); useAppStore.getState().setIsAutoForgeReportOpen(true); playSfx('report_open'); }}
+              className="p-1 rounded text-gray-400 hover:text-orange-400 hover:bg-orange-500/20 transition-colors"
+            >
+              <ScrollText className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+          <ThemedTooltip content="Toggle Lite View">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setLiteView(v => !v); playSfx('panel_collapse'); }}
+              className={cn("p-1 rounded transition-colors", liteView ? "text-cyan-400 bg-cyan-500/20" : "text-gray-400 hover:text-white hover:bg-white/10")}
+            >
+              <Rows3 className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
           <button 
             type="button"
             onClick={(e) => { e.stopPropagation(); setMinimized(!minimized); playSfx('panel_collapse'); }}
@@ -244,20 +247,21 @@ export function AutoForgeHUD() {
                   {timeUntilNext}s
                 </span>
               </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  playForceBurstSfx();
-                  setBurstKey((k) => k + 1);
-                  setBurstIntensity((i) => Math.min(i + 1, 5));
-                  window.dispatchEvent(new Event("autoforge-force-check"));
-                  setTimeout(() => setBurstIntensity(0), 30000);
-                }}
-                className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
-                title="Force check now"
-              >
-                Force
-              </button>
+              <ThemedTooltip content="Force check now">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    playForceBurstSfx();
+                    setBurstKey((k) => k + 1);
+                    setBurstIntensity((i) => Math.min(i + 1, 5));
+                    window.dispatchEvent(new Event("autoforge-force-check"));
+                    setTimeout(() => setBurstIntensity(0), 30000);
+                  }}
+                  className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                >
+                  Force
+                </button>
+              </ThemedTooltip>
             </div>
 
             {/* Lite: Previous Cycle Decision */}
@@ -274,9 +278,11 @@ export function AutoForgeHUD() {
                       {decisionWasSent ? 'Sent by' : 'Decided by'} @{decisionBotUsername}
                     </span>
                     {typeof decisionPersonaFit === 'number' && (
-                      <span className="text-[9px] font-mono text-gray-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5" title="How well this bot's persona fits the moment">
-                        FIT {Math.round(decisionPersonaFit * 100)}%
-                      </span>
+                      <ThemedTooltip content="How well this bot's persona fits the moment">
+                        <span className="text-[9px] font-mono text-gray-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5">
+                          FIT {Math.round(decisionPersonaFit * 100)}%
+                        </span>
+                      </ThemedTooltip>
                     )}
                     {decisionWasMentioned && (
                       <span className="text-[9px] font-mono text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-1.5 py-0.5">
@@ -345,20 +351,21 @@ export function AutoForgeHUD() {
                 <span className="text-xs font-mono text-purple-300 font-bold mt-0.5">
                   {timeUntilNext}s
                 </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    playForceBurstSfx();
-                    setBurstKey((k) => k + 1);
-                    setBurstIntensity((i) => Math.min(i + 1, 5));
-                    window.dispatchEvent(new Event("autoforge-force-check"));
-                    setTimeout(() => setBurstIntensity(0), 30000);
-                  }}
-                  className="absolute bottom-2 right-2 text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
-                  title="Force check now"
-                >
-                  Force
-                </button>
+                <ThemedTooltip content="Force check now">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      playForceBurstSfx();
+                      setBurstKey((k) => k + 1);
+                      setBurstIntensity((i) => Math.min(i + 1, 5));
+                      window.dispatchEvent(new Event("autoforge-force-check"));
+                      setTimeout(() => setBurstIntensity(0), 30000);
+                    }}
+                    className="absolute bottom-2 right-2 text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                  >
+                    Force
+                  </button>
+                </ThemedTooltip>
                 {/* Burst FX */}
                 <AnimatePresence>
                   {burstKey > 0 && (
@@ -505,9 +512,11 @@ export function AutoForgeHUD() {
                       {decisionWasSent ? 'Sent by' : 'Decided by'} @{decisionBotUsername}
                     </span>
                     {typeof decisionPersonaFit === 'number' && (
-                      <span className="text-[9px] font-mono text-gray-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5" title="How well this bot's persona fits the moment (0–100%). Mentioned bots get +30%.">
-                        FIT {Math.round(decisionPersonaFit * 100)}%
-                      </span>
+                      <ThemedTooltip content="How well this bot's persona fits the moment (0–100%). Mentioned bots get +30%.">
+                        <span className="text-[9px] font-mono text-gray-400 bg-white/5 border border-white/10 rounded px-1.5 py-0.5">
+                          FIT {Math.round(decisionPersonaFit * 100)}%
+                        </span>
+                      </ThemedTooltip>
                     )}
                     {decisionWasMentioned && (
                       <span className="text-[9px] font-mono text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-1.5 py-0.5">

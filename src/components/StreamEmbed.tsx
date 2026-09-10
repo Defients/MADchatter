@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Camera, MonitorUp, StopCircle, ExternalLink } from "lucide-react";
 import { cn } from "../lib/utils";
+import { ThemedTooltip } from "./ui/tooltip";
 
 interface StreamEmbedProps {
   channel: string;
@@ -245,14 +246,15 @@ export function StreamEmbed({
           )}
         </div>
 
-        <button
-          onClick={openStreamWindow}
-          disabled={!channel}
-          title="Open Stream Window"
-          className="p-2 bg-white/10 hover:bg-white/20 rounded-lg backdrop-blur-md border border-white/20 text-white transition-colors disabled:opacity-50"
-        >
-          <ExternalLink className="w-4 h-4" />
-        </button>
+        <ThemedTooltip content="Open Stream Window">
+          <button
+            onClick={openStreamWindow}
+            disabled={!channel}
+            className="p-2 bg-white/10 hover:bg-white/20 rounded-lg backdrop-blur-md border border-white/20 text-white transition-colors disabled:opacity-50"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </button>
+        </ThemedTooltip>
       </div>
     </div>
   );

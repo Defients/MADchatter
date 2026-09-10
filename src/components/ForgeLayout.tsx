@@ -72,7 +72,7 @@ import { getTwitchSession } from "../lib/twitch";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
 
@@ -1441,18 +1441,19 @@ export function ForgeLayout() {
                     <span className="text-purple-400 font-bold text-[10px] uppercase mr-1">{time}:</span>
                     <span className="text-gray-200 leading-snug break-words">{text}</span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      addPinnedMemory({ type: "audio", content: line, label: `[${time}] ${text}`, timestamp: Date.now() });
-                      toast.success("Pinned to Long-Term Memory");
-                      playSfx('memory_add');
-                    }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity absolute -right-1 top-0.5 p-0.5 rounded text-blue-400 hover:text-blue-300 hover:bg-blue-500/15"
-                    title="Pin to Long-Term Memory"
-                  >
-                    <Pin className="w-3 h-3" />
-                  </button>
+                  <ThemedTooltip content="Pin to Long-Term Memory">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addPinnedMemory({ type: "audio", content: line, label: `[${time}] ${text}`, timestamp: Date.now() });
+                        toast.success("Pinned to Long-Term Memory");
+                        playSfx('memory_add');
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity absolute -right-1 top-0.5 p-0.5 rounded text-blue-400 hover:text-blue-300 hover:bg-blue-500/15"
+                    >
+                      <Pin className="w-3 h-3" />
+                    </button>
+                  </ThemedTooltip>
                 </div>
               );
             })
@@ -1499,15 +1500,17 @@ export function ForgeLayout() {
           </div>
           {/* E2: Chat Sentiment Heatmap Overlay — pinned to top with search */}
           {sentimentHistory.length > 0 && (
-            <div className="flex items-center gap-px h-1.5 mb-1 rounded overflow-hidden bg-black/30 shrink-0" title="Recent chat sentiment heatmap">
-              {sentimentHistory.slice(-40).map((r, idx) => (
-                <div
-                  key={idx}
-                  className={cn("flex-1 h-full transition-colors", SENTIMENT_DOT_COLORS[r.label as SentimentLabel])}
-                  style={{ opacity: 0.3 + (r.score * 0.7) }}
-                />
-              ))}
-            </div>
+            <ThemedTooltip content="Recent chat sentiment heatmap">
+              <div className="flex items-center gap-px h-1.5 mb-1 rounded overflow-hidden bg-black/30 shrink-0">
+                {sentimentHistory.slice(-40).map((r, idx) => (
+                  <div
+                    key={idx}
+                    className={cn("flex-1 h-full transition-colors", SENTIMENT_DOT_COLORS[r.label as SentimentLabel])}
+                    style={{ opacity: 0.3 + (r.score * 0.7) }}
+                  />
+                ))}
+              </div>
+            </ThemedTooltip>
           )}
           {/* Smart Reply Chips */}
           {(smartReplies.length > 0 || smartRepliesLoading) && (
@@ -1518,16 +1521,17 @@ export function ForgeLayout() {
                 <>
                   <span className="text-[9px] text-cyan-500 font-bold uppercase shrink-0">Reply:</span>
                   {smartReplies.map((reply, idx) => (
-                    <button
-                      key={reply.id}
-                      type="button"
-                      onClick={() => sendSmartReply(reply.text)}
-                      className="text-[10px] px-2 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-400/50 transition-all max-w-[200px] truncate flex items-center gap-1"
-                      title={reply.text}
-                    >
-                      <kbd className="text-[8px] font-mono bg-cyan-500/20 rounded px-0.5 text-cyan-400 shrink-0">{idx + 1}</kbd>
-                      {reply.text}
-                    </button>
+                    <ThemedTooltip content={reply.text}>
+                      <button
+                        key={reply.id}
+                        type="button"
+                        onClick={() => sendSmartReply(reply.text)}
+                        className="text-[10px] px-2 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-400/50 transition-all max-w-[200px] truncate flex items-center gap-1"
+                      >
+                        <kbd className="text-[8px] font-mono bg-cyan-500/20 rounded px-0.5 text-cyan-400 shrink-0">{idx + 1}</kbd>
+                        {reply.text}
+                      </button>
+                    </ThemedTooltip>
                   ))}
                   <button
                     type="button"
@@ -1609,32 +1613,35 @@ export function ForgeLayout() {
                   }}
                 >
                   <div className="flex items-center gap-1 shrink-0 mr-1.5">
-                    {badges.includes('broadcaster') && <span className="text-[8px] text-purple-400" title="Broadcaster">📹</span>}
+                    {badges.includes('broadcaster') && <ThemedTooltip content="Broadcaster"><span className="text-[8px] text-purple-400">📹</span></ThemedTooltip>}
                     {badges.includes('moderator') && (
-                      <span className="text-[8px] text-green-400 cursor-help" title="Moderator">🛡️</span>
+                      <ThemedTooltip content="Moderator"><span className="text-[8px] text-green-400 cursor-help">🛡️</span></ThemedTooltip>
                     )}
-                    {badges.includes('vip') && <span className="text-[8px] text-pink-400" title="VIP">💎</span>}
+                    {badges.includes('vip') && <ThemedTooltip content="VIP"><span className="text-[8px] text-pink-400">💎</span></ThemedTooltip>}
                     {badges.includes('subscriber') && (
-                      <span className="text-[8px] text-purple-400 cursor-help" title="Subscriber">⭐</span>
+                      <ThemedTooltip content="Subscriber"><span className="text-[8px] text-purple-400 cursor-help">⭐</span></ThemedTooltip>
                     )}
                   </div>
                   <span className={`font-bold text-[10px] shrink-0${isBanned ? ' banned-username' : ' text-teal-400'}`}>@{username}:</span>
                   <EmoteText text={text} channel={streamMetadata?.channelName} className={`leading-snug break-words flex-1 min-w-0 ml-1.5${isBanned ? ' banned-text' : ' text-gray-200'}`} />
                   {sentimentColor && (
-                    <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 self-center', sentimentColor)} title={`Sentiment: ${msg.sentiment}`} />
+                    <ThemedTooltip content={`Sentiment: ${msg.sentiment}`}>
+                      <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 self-center', sentimentColor)} />
+                    </ThemedTooltip>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      addPinnedMemory({ type: "chat", content: `${username}: ${text}`, label: `@${username}: ${text}`, timestamp: Date.now() });
-                      toast.success("Pinned to Long-Term Memory");
-                      playSfx('memory_add');
-                    }}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity absolute -right-1 top-0.5 p-0.5 rounded text-blue-400 hover:text-blue-300 hover:bg-blue-500/15"
-                    title="Pin to Long-Term Memory"
-                  >
-                    <Pin className="w-3 h-3" />
-                  </button>
+                  <ThemedTooltip content="Pin to Long-Term Memory">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addPinnedMemory({ type: "chat", content: `${username}: ${text}`, label: `@${username}: ${text}`, timestamp: Date.now() });
+                        toast.success("Pinned to Long-Term Memory");
+                        playSfx('memory_add');
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity absolute -right-1 top-0.5 p-0.5 rounded text-blue-400 hover:text-blue-300 hover:bg-blue-500/15"
+                    >
+                      <Pin className="w-3 h-3" />
+                    </button>
+                  </ThemedTooltip>
                 </div>
               );
             })}
@@ -1662,18 +1669,19 @@ export function ForgeLayout() {
                 referrerPolicy="no-referrer"
                 className="w-full rounded-lg border border-white/10 object-cover"
               />
-              <button
-                type="button"
-                onClick={() => {
-                  addPinnedMemory({ type: "visual", content: visualContextTags.join(", "), label: `Visual Snapshot — ${visualContextTags[0]?.slice(0, 60) || "Captured"}${visualContextTags[0] && visualContextTags[0].length > 60 ? "…" : ""}`, timestamp: Date.now(), imageUrl: visualSnapshotUrl });
-                  toast.success("Pinned to Long-Term Memory");
-                  playSfx('memory_add');
-                }}
-                className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 backdrop-blur-sm text-blue-400 hover:text-blue-300 hover:bg-blue-500/20 border border-white/10"
-                title="Pin to Long-Term Memory"
-              >
-                <Pin className="w-4 h-4" />
-              </button>
+              <ThemedTooltip content="Pin to Long-Term Memory">
+                <button
+                  type="button"
+                  onClick={() => {
+                    addPinnedMemory({ type: "visual", content: visualContextTags.join(", "), label: `Visual Snapshot — ${visualContextTags[0]?.slice(0, 60) || "Captured"}${visualContextTags[0] && visualContextTags[0].length > 60 ? "…" : ""}`, timestamp: Date.now(), imageUrl: visualSnapshotUrl });
+                    toast.success("Pinned to Long-Term Memory");
+                    playSfx('memory_add');
+                  }}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 backdrop-blur-sm text-blue-400 hover:text-blue-300 hover:bg-blue-500/20 border border-white/10"
+                >
+                  <Pin className="w-4 h-4" />
+                </button>
+              </ThemedTooltip>
             </div>
           ) : (
             <div className="aspect-video w-full bg-black/40 rounded-lg border border-white/10 flex flex-col items-center justify-center gap-2">
@@ -1712,14 +1720,15 @@ export function ForgeLayout() {
               </span>
             )}
             {visualSnapshotHistory.length > 0 && (
-              <button
-                onClick={() => { setVisualHistoryOpen(true); playSfx('hud_open'); }}
-                className="flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-orange-400 py-1.5 rounded-md border border-white/10 hover:border-orange-500/30 hover:bg-orange-500/5 transition-all"
-                title="View visual snapshot history"
-              >
-                <Clock className="w-3 h-3" />
-                History · {visualSnapshotHistory.length}
-              </button>
+              <ThemedTooltip content="View visual snapshot history">
+                <button
+                  onClick={() => { setVisualHistoryOpen(true); playSfx('hud_open'); }}
+                  className="flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-orange-400 py-1.5 rounded-md border border-white/10 hover:border-orange-500/30 hover:bg-orange-500/5 transition-all"
+                >
+                  <Clock className="w-3 h-3" />
+                  History · {visualSnapshotHistory.length}
+                </button>
+              </ThemedTooltip>
             )}
           </div>
         </div>
@@ -1751,29 +1760,31 @@ export function ForgeLayout() {
                     <p className={`leading-snug break-words pr-10 ${isGolden ? "text-yellow-200" : "text-gray-300"}`}>{mem.label}</p>
                   </div>
                   <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setGoldenMemory(isGolden ? null : mem.id);
-                        toast.success(isGolden ? "Golden star removed" : "Golden star set — this memory will have extra impact on forged comments");
-                      }}
-                      className={`p-0.5 rounded transition-all ${isGolden ? "text-yellow-400 hover:text-yellow-300" : "opacity-0 group-hover:opacity-100 text-gray-500 hover:text-yellow-400 hover:bg-yellow-500/15"}`}
-                      title={isGolden ? "Remove golden star" : "Set as golden memory (extra impact on forge)"}
-                    >
-                      <Star className={`w-3 h-3 ${isGolden ? "fill-yellow-400" : ""}`} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isGolden) setGoldenMemory(null);
-                        removePinnedMemory(mem.id);
-                        playSfx('memory_remove');
-                      }}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-red-400 hover:text-red-300 hover:bg-red-500/15"
-                      title="Unpin from memory"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
+                    <ThemedTooltip content={isGolden ? "Remove golden star" : "Set as golden memory (extra impact on forge)"}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGoldenMemory(isGolden ? null : mem.id);
+                          toast.success(isGolden ? "Golden star removed" : "Golden star set — this memory will have extra impact on forged comments");
+                        }}
+                        className={`p-0.5 rounded transition-all ${isGolden ? "text-yellow-400 hover:text-yellow-300" : "opacity-0 group-hover:opacity-100 text-gray-500 hover:text-yellow-400 hover:bg-yellow-500/15"}`}
+                      >
+                        <Star className={`w-3 h-3 ${isGolden ? "fill-yellow-400" : ""}`} />
+                      </button>
+                    </ThemedTooltip>
+                    <ThemedTooltip content="Unpin from memory">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isGolden) setGoldenMemory(null);
+                          removePinnedMemory(mem.id);
+                          playSfx('memory_remove');
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-red-400 hover:text-red-300 hover:bg-red-500/15"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </ThemedTooltip>
                   </div>
                 </div>
               );
@@ -1830,9 +1841,11 @@ export function ForgeLayout() {
                   <span className="text-[11px] font-bold tracking-wide text-white truncate max-w-[80px] px-2">
                     @{activeUser.display_name || activeUser.login || activeUser.username}
                   </span>
-                  <button onClick={activeLogout} className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors" title="Disconnect">
-                    <LogOut className="w-3.5 h-3.5" />
-                  </button>
+                  <ThemedTooltip content="Disconnect">
+                    <button onClick={activeLogout} className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors">
+                      <LogOut className="w-3.5 h-3.5" />
+                    </button>
+                  </ThemedTooltip>
                 </div>
               ) : (
                 <button
@@ -2158,9 +2171,11 @@ export function ForgeLayout() {
 
                   {/* Fidget Spinner — hidden when mega spinner is showing in center empty state */}
                   {variants.length > 0 && (
-                  <div className="flex flex-col items-center gap-1" title="Fidget Spinner — drag to flick, click to boost, hold center to charge & lock">
-                    <FidgetSpinner size={Math.max(36, 47 * iconScale)} />
-                  </div>
+                  <ThemedTooltip content="Fidget Spinner — drag to flick, click to boost, hold center to charge & lock">
+                    <div className="flex flex-col items-center gap-1">
+                      <FidgetSpinner size={Math.max(36, 47 * iconScale)} />
+                    </div>
+                  </ThemedTooltip>
                   )}
                 </div>
               ) : (
@@ -2203,37 +2218,40 @@ export function ForgeLayout() {
                               {widgetIcon[widget]} {widgetLabel[widget]}
                             </span>
                             {widget === "chat" && (
-                              <button
-                                type="button"
-                                onClick={() => setChatAnchored(!chatAnchored)}
-                                className={`ml-auto h-6 w-6 flex items-center justify-center rounded-md transition-all focus-visible:ring-2 focus-visible:ring-teal-500/40 focus-visible:outline-none ${chatAnchored ? "text-teal-400 bg-teal-500/15 hover:bg-teal-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
-                                aria-label={chatAnchored ? "Unanchor chat scroll" : "Anchor chat scroll"}
-                                title={chatAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}
-                              >
-                                <Anchor className="w-3.5 h-3.5" />
-                              </button>
+                              <ThemedTooltip content={chatAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}>
+                                <button
+                                  type="button"
+                                  onClick={() => setChatAnchored(!chatAnchored)}
+                                  className={`ml-auto h-6 w-6 flex items-center justify-center rounded-md transition-all focus-visible:ring-2 focus-visible:ring-teal-500/40 focus-visible:outline-none ${chatAnchored ? "text-teal-400 bg-teal-500/15 hover:bg-teal-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
+                                  aria-label={chatAnchored ? "Unanchor chat scroll" : "Anchor chat scroll"}
+                                >
+                                  <Anchor className="w-3.5 h-3.5" />
+                                </button>
+                              </ThemedTooltip>
                             )}
                             {widget === "audio" && (
-                              <button
-                                type="button"
-                                onClick={() => setAudioAnchored(!audioAnchored)}
-                                className={`ml-auto h-6 w-6 flex items-center justify-center rounded-md transition-all focus-visible:ring-2 focus-visible:ring-purple-500/40 focus-visible:outline-none ${audioAnchored ? "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
-                                aria-label={audioAnchored ? "Unanchor audio scroll" : "Anchor audio scroll"}
-                                title={audioAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}
-                              >
-                                <Anchor className="w-3.5 h-3.5" />
-                              </button>
+                              <ThemedTooltip content={audioAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}>
+                                <button
+                                  type="button"
+                                  onClick={() => setAudioAnchored(!audioAnchored)}
+                                  className={`ml-auto h-6 w-6 flex items-center justify-center rounded-md transition-all focus-visible:ring-2 focus-visible:ring-purple-500/40 focus-visible:outline-none ${audioAnchored ? "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
+                                  aria-label={audioAnchored ? "Unanchor audio scroll" : "Anchor audio scroll"}
+                                >
+                                  <Anchor className="w-3.5 h-3.5" />
+                                </button>
+                              </ThemedTooltip>
                             )}
                             {widget === "stream" && streamMetadata?.channelName && (
-                              <button
-                                type="button"
-                                onClick={() => setSidebarChatOpen(!sidebarChatOpen)}
-                                className={`ml-auto h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${sidebarChatOpen ? "text-rose-400 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30" : "text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30"}`}
-                                title={sidebarChatOpen ? "Hide chat input" : "Show chat input"}
-                              >
-                                <MessageCircle className="w-3 h-3" />
-                                {sidebarChatOpen ? "Hide" : "Chat"}
-                              </button>
+                              <ThemedTooltip content={sidebarChatOpen ? "Hide chat input" : "Show chat input"}>
+                                <button
+                                  type="button"
+                                  onClick={() => setSidebarChatOpen(!sidebarChatOpen)}
+                                  className={`ml-auto h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${sidebarChatOpen ? "text-rose-400 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30" : "text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30"}`}
+                                >
+                                  <MessageCircle className="w-3 h-3" />
+                                  {sidebarChatOpen ? "Hide" : "Chat"}
+                                </button>
+                              </ThemedTooltip>
                             )}
                             {widget === "visual" && (
                               <div className="ml-auto flex items-center gap-1.5">
@@ -2351,53 +2369,57 @@ export function ForgeLayout() {
                                   </TooltipContent>
                                 </Tooltip>
                                 <div className="flex items-center gap-1">
-                                  <input
-                                    type="number"
-                                    min={2}
-                                    max={120}
-                                    value={visualCaptureInterval}
-                                    disabled={!visualAutoCapture || smartCapture}
-                                    onChange={(e) => {
-                                      const v = parseInt(e.target.value);
-                                      if (!isNaN(v)) setVisualCaptureInterval(Math.max(2, Math.min(120, v)));
-                                    }}
-                                    className={`w-12 h-6 bg-black/40 border border-white/10 rounded-md text-[10px] font-bold text-center outline-none transition-colors ${visualAutoCapture && !smartCapture ? "text-gray-400 focus:border-orange-500/50" : "text-gray-600 cursor-not-allowed opacity-50"}`}
-                                    title={smartCapture ? "Interval managed by Smart mode" : "Auto-capture interval (2-120 seconds)"}
-                                  />
+                                  <ThemedTooltip content={smartCapture ? "Interval managed by Smart mode" : "Auto-capture interval (2-120 seconds)"}>
+                                    <input
+                                      type="number"
+                                      min={2}
+                                      max={120}
+                                      value={visualCaptureInterval}
+                                      disabled={!visualAutoCapture || smartCapture}
+                                      onChange={(e) => {
+                                        const v = parseInt(e.target.value);
+                                        if (!isNaN(v)) setVisualCaptureInterval(Math.max(2, Math.min(120, v)));
+                                      }}
+                                      className={`w-12 h-6 bg-black/40 border border-white/10 rounded-md text-[10px] font-bold text-center outline-none transition-colors ${visualAutoCapture && !smartCapture ? "text-gray-400 focus:border-orange-500/50" : "text-gray-600 cursor-not-allowed opacity-50"}`}
+                                    />
+                                  </ThemedTooltip>
                                   <span className="text-[9px] text-gray-500 font-bold">s</span>
                                 </div>
                               </div>
                             )}
                             {widget === "memory" && (
                               <div className="ml-auto flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={handleExportMemories}
-                                  disabled={pinnedMemories.length === 0}
-                                  className="h-6 w-6 flex items-center justify-center rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:outline-none text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                                  aria-label="Export memories"
-                                  title="Export memories as JSON"
-                                >
-                                  <Download className="w-3 h-3" />
-                                </button>
-                                <label
-                                  className="h-6 w-6 flex items-center justify-center rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:outline-none text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 cursor-pointer"
-                                  title="Import memories from JSON"
-                                >
-                                  <Upload className="w-3 h-3" />
-                                  <input type="file" accept=".json" className="hidden" onChange={handleImportMemories} />
-                                </label>
-                                <button
-                                  type="button"
-                                  onClick={handleClearMemories}
-                                  disabled={pinnedMemories.length === 0}
-                                  className={`h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:outline-none ${pinnedMemories.length === 0 ? "text-gray-700 cursor-not-allowed" : memoryClearConfirm ? "text-red-300 bg-red-500/20 hover:bg-red-500/30 animate-pulse" : "text-gray-500 hover:text-red-400 hover:bg-red-500/10"}`}
-                                  aria-label="Clear all memories"
-                                  title={memoryClearConfirm ? "Click again to confirm — erases all memories" : "Clear all memories"}
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                  {memoryClearConfirm ? "Confirm?" : "Clear"}
-                                </button>
+                                <ThemedTooltip content="Export memories as JSON">
+                                  <button
+                                    type="button"
+                                    onClick={handleExportMemories}
+                                    disabled={pinnedMemories.length === 0}
+                                    className="h-6 w-6 flex items-center justify-center rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:outline-none text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                                    aria-label="Export memories"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                  </button>
+                                </ThemedTooltip>
+                                <ThemedTooltip content="Import memories from JSON">
+                                  <label
+                                    className="h-6 w-6 flex items-center justify-center rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:outline-none text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 cursor-pointer"
+                                  >
+                                    <Upload className="w-3 h-3" />
+                                    <input type="file" accept=".json" className="hidden" onChange={handleImportMemories} />
+                                  </label>
+                                </ThemedTooltip>
+                                <ThemedTooltip content={memoryClearConfirm ? "Click again to confirm — erases all memories" : "Clear all memories"}>
+                                  <button
+                                    type="button"
+                                    onClick={handleClearMemories}
+                                    disabled={pinnedMemories.length === 0}
+                                    className={`h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:outline-none ${pinnedMemories.length === 0 ? "text-gray-700 cursor-not-allowed" : memoryClearConfirm ? "text-red-300 bg-red-500/20 hover:bg-red-500/30 animate-pulse" : "text-gray-500 hover:text-red-400 hover:bg-red-500/10"}`}
+                                    aria-label="Clear all memories"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                    {memoryClearConfirm ? "Confirm?" : "Clear"}
+                                  </button>
+                                </ThemedTooltip>
                               </div>
                             )}
                           </div>
@@ -2440,15 +2462,16 @@ export function ForgeLayout() {
                                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-teal-500/40 focus:bg-white/[0.07] transition-all"
                                 disabled={sidebarChatSending}
                               />
-                              <button
-                                type="button"
-                                onClick={handleSidebarChatSend}
-                                disabled={sidebarChatSending || !sidebarChatMsg.trim()}
-                                className="h-7 w-7 flex items-center justify-center rounded-lg text-teal-400 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/20 hover:border-teal-500/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                                title="Send message"
-                              >
-                                <Send className="w-3.5 h-3.5" />
-                              </button>
+                              <ThemedTooltip content="Send message">
+                                <button
+                                  type="button"
+                                  onClick={handleSidebarChatSend}
+                                  disabled={sidebarChatSending || !sidebarChatMsg.trim()}
+                                  className="h-7 w-7 flex items-center justify-center rounded-lg text-teal-400 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/20 hover:border-teal-500/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  <Send className="w-3.5 h-3.5" />
+                                </button>
+                              </ThemedTooltip>
                             </div>
                           </div>
                         )}
@@ -2547,15 +2570,16 @@ export function ForgeLayout() {
                           placeholder="sodapoppin"
                         />
                       ) : (
-                        <button
-                          type="button"
-                          onClick={startEditingChannel}
-                          data-tutorial="channel"
-                          className="hover:text-orange-300 transition-colors cursor-pointer text-sm"
-                          title="Click to change channel"
-                        >
-                          @{streamMetadata?.channelName || "sodapoppin"}
-                        </button>
+                        <ThemedTooltip content="Click to change channel">
+                          <button
+                            type="button"
+                            onClick={startEditingChannel}
+                            data-tutorial="channel"
+                            className="hover:text-orange-300 transition-colors cursor-pointer text-sm"
+                          >
+                            @{streamMetadata?.channelName || "sodapoppin"}
+                          </button>
+                        </ThemedTooltip>
                       )}
                     </div>
 
@@ -2632,7 +2656,6 @@ export function ForgeLayout() {
                                   : "bg-cyan-500/15 border-cyan-400/40 text-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.2)]"
                                 : "bg-black/30 border-white/5 text-gray-600 hover:text-gray-400 hover:border-white/10"
                             )}
-                            title="Cycle Theme (Default / CosmoTech™ / Corrupture™)"
                           >
                             <Orbit className={cn("w-3.5 h-3.5", theme !== "default" && "animate-spin-slow")} />
                           </button>
@@ -2644,42 +2667,45 @@ export function ForgeLayout() {
 
                     {/* Platform selector tabs */}
                     <div data-tutorial="platform-tabs" className="flex gap-0.5 bg-black/40 rounded border border-white/5 p-0.5">
-                      <button
-                        onClick={() => setPlatform('twitch')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
-                          platform === 'twitch'
-                            ? "bg-[#9146FF]/30 text-[#9146FF] border border-[#9146FF]/30"
-                            : "text-gray-600 hover:text-gray-400"
-                        )}
-                        title="Twitch"
-                      >
-                        Twitch
-                      </button>
-                      <button
-                        onClick={() => setPlatform('kick')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
-                          platform === 'kick'
-                            ? "bg-[#53fc18]/20 text-[#53fc18] border border-[#53fc18]/30"
-                            : "text-gray-600 hover:text-gray-400"
-                        )}
-                        title="Kick"
-                      >
-                        Kick
-                      </button>
-                      <button
-                        onClick={() => setPlatform('joystick')}
-                        className={cn(
-                          "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
-                          platform === 'joystick'
-                            ? "bg-[#FF6B35]/20 text-[#FF6B35] border border-[#FF6B35]/30"
-                            : "text-gray-600 hover:text-gray-400"
-                        )}
-                        title="Joystick"
-                      >
-                        Joystick
-                      </button>
+                      <ThemedTooltip content="Twitch">
+                        <button
+                          onClick={() => setPlatform('twitch')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
+                            platform === 'twitch'
+                              ? "bg-[#9146FF]/30 text-[#9146FF] border border-[#9146FF]/30"
+                              : "text-gray-600 hover:text-gray-400"
+                          )}
+                        >
+                          Twitch
+                        </button>
+                      </ThemedTooltip>
+                      <ThemedTooltip content="Kick">
+                        <button
+                          onClick={() => setPlatform('kick')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
+                            platform === 'kick'
+                              ? "bg-[#53fc18]/20 text-[#53fc18] border border-[#53fc18]/30"
+                              : "text-gray-600 hover:text-gray-400"
+                          )}
+                        >
+                          Kick
+                        </button>
+                      </ThemedTooltip>
+                      <ThemedTooltip content="Joystick">
+                        <button
+                          onClick={() => setPlatform('joystick')}
+                          className={cn(
+                            "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
+                            platform === 'joystick'
+                              ? "bg-[#FF6B35]/20 text-[#FF6B35] border border-[#FF6B35]/30"
+                              : "text-gray-600 hover:text-gray-400"
+                          )}
+                        >
+                          Joystick
+                        </button>
+                      </ThemedTooltip>
                     </div>
 
                     {/* Platform logo icon / avatar */}
@@ -2753,13 +2779,14 @@ export function ForgeLayout() {
                             @{activeUser.display_name || activeUser.login || activeUser.username}
                           </span>
                         </div>
-                        <button
-                          onClick={activeLogout}
-                          className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors flex items-center justify-center"
-                          title="Disconnect"
-                        >
-                          <LogOut className="w-3.5 h-3.5" />
-                        </button>
+                        <ThemedTooltip content="Disconnect">
+                          <button
+                            onClick={activeLogout}
+                            className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors flex items-center justify-center"
+                          >
+                            <LogOut className="w-3.5 h-3.5" />
+                          </button>
+                        </ThemedTooltip>
                       </div>
                     ) : (
                       <button
@@ -2905,112 +2932,120 @@ export function ForgeLayout() {
               </span>
               <div className="flex items-center gap-1">
                 {widget === "chat" && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setChatAnchored(!chatAnchored); }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className={`h-5 w-5 flex items-center justify-center rounded transition-all ${chatAnchored ? "text-teal-400 bg-teal-500/15 hover:bg-teal-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
-                    aria-label={chatAnchored ? "Unanchor chat scroll" : "Anchor chat scroll"}
-                    title={chatAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}
-                  >
-                    <Anchor className="w-3.5 h-3.5" />
-                  </button>
+                  <ThemedTooltip content={chatAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setChatAnchored(!chatAnchored); }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className={`h-5 w-5 flex items-center justify-center rounded transition-all ${chatAnchored ? "text-teal-400 bg-teal-500/15 hover:bg-teal-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
+                      aria-label={chatAnchored ? "Unanchor chat scroll" : "Anchor chat scroll"}
+                    >
+                      <Anchor className="w-3.5 h-3.5" />
+                    </button>
+                  </ThemedTooltip>
                 )}
                 {widget === "audio" && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setAudioAnchored(!audioAnchored); }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className={`h-5 w-5 flex items-center justify-center rounded transition-all ${audioAnchored ? "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
-                    aria-label={audioAnchored ? "Unanchor audio scroll" : "Anchor audio scroll"}
-                    title={audioAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}
-                  >
-                    <Anchor className="w-3.5 h-3.5" />
-                  </button>
+                  <ThemedTooltip content={audioAnchored ? "Anchored to bottom (click to release)" : "Free scroll (click to anchor)"}>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setAudioAnchored(!audioAnchored); }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className={`h-5 w-5 flex items-center justify-center rounded transition-all ${audioAnchored ? "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25" : "text-gray-600 hover:text-gray-400 hover:bg-white/5"}`}
+                      aria-label={audioAnchored ? "Unanchor audio scroll" : "Anchor audio scroll"}
+                    >
+                      <Anchor className="w-3.5 h-3.5" />
+                    </button>
+                  </ThemedTooltip>
                 )}
                 {widget === "visual" && (
                   <>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); cycleSmartLevel(); }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      className={cn(
-                        "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
-                        smartLevel === 0 && "text-gray-600 hover:text-gray-400 hover:bg-white/5",
-                        smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25",
-                        smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25",
-                        smartLevel === 3 && "text-violet-400 bg-violet-500/15 hover:bg-violet-500/25"
-                      )}
-                      title={`Smart: ${SMART_LEVELS[smartLevel].name} — click to cycle`}
-                    >
-                      <Sparkles className="w-2.5 h-2.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); setVisualAutoCapture(!visualAutoCapture); }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      disabled={smartCapture}
-                      className={cn(
-                        "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
-                        smartCapture
-                          ? "text-gray-700 bg-white/5 cursor-not-allowed opacity-50"
-                          : visualAutoCapture
-                            ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
-                            : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
-                      )}
-                      title={smartCapture ? "Managed by Smart mode" : visualAutoCapture ? "Auto-capture ON (click to disable)" : "Auto-capture OFF (click to enable)"}
-                    >
-                      {visualAutoCapture ? <Zap className="w-2.5 h-2.5" /> : <CirclePause className="w-2.5 h-2.5" />}
-                    </button>
-                    <input
-                      type="number"
-                      min={2}
-                      max={120}
-                      value={visualCaptureInterval}
-                      disabled={!visualAutoCapture || smartCapture}
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value);
-                        if (!isNaN(v)) setVisualCaptureInterval(Math.max(2, Math.min(120, v)));
-                      }}
-                      className={`w-10 h-5 bg-black/40 border border-white/10 rounded text-[9px] font-bold text-center outline-none transition-colors ${visualAutoCapture && !smartCapture ? "text-gray-400 focus:border-orange-500/50" : "text-gray-600 cursor-not-allowed opacity-50"}`}
-                      title={smartCapture ? "Interval managed by Smart mode" : "Auto-capture interval (2-120s)"}
-                    />
+                    <ThemedTooltip content={`Smart: ${SMART_LEVELS[smartLevel].name} — click to cycle`}>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); cycleSmartLevel(); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className={cn(
+                          "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
+                          smartLevel === 0 && "text-gray-600 hover:text-gray-400 hover:bg-white/5",
+                          smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25",
+                          smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25",
+                          smartLevel === 3 && "text-violet-400 bg-violet-500/15 hover:bg-violet-500/25"
+                        )}
+                      >
+                        <Sparkles className="w-2.5 h-2.5" />
+                      </button>
+                    </ThemedTooltip>
+                    <ThemedTooltip content={smartCapture ? "Managed by Smart mode" : visualAutoCapture ? "Auto-capture ON (click to disable)" : "Auto-capture OFF (click to enable)"}>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setVisualAutoCapture(!visualAutoCapture); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        disabled={smartCapture}
+                        className={cn(
+                          "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
+                          smartCapture
+                            ? "text-gray-700 bg-white/5 cursor-not-allowed opacity-50"
+                            : visualAutoCapture
+                              ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
+                              : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
+                        )}
+                      >
+                        {visualAutoCapture ? <Zap className="w-2.5 h-2.5" /> : <CirclePause className="w-2.5 h-2.5" />}
+                      </button>
+                    </ThemedTooltip>
+                    <ThemedTooltip content={smartCapture ? "Interval managed by Smart mode" : "Auto-capture interval (2-120s)"}>
+                      <input
+                        type="number"
+                        min={2}
+                        max={120}
+                        value={visualCaptureInterval}
+                        disabled={!visualAutoCapture || smartCapture}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value);
+                          if (!isNaN(v)) setVisualCaptureInterval(Math.max(2, Math.min(120, v)));
+                        }}
+                        className={`w-10 h-5 bg-black/40 border border-white/10 rounded text-[9px] font-bold text-center outline-none transition-colors ${visualAutoCapture && !smartCapture ? "text-gray-400 focus:border-orange-500/50" : "text-gray-600 cursor-not-allowed opacity-50"}`}
+                      />
+                    </ThemedTooltip>
                   </>
                 )}
                 {widget === "memory" && (
                   <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleExportMemories(); }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      disabled={pinnedMemories.length === 0}
-                      className="h-5 w-5 flex items-center justify-center rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                      title="Export memories as JSON"
-                    >
-                      <Download className="w-2.5 h-2.5" />
-                    </button>
-                    <label
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      className="h-5 w-5 flex items-center justify-center rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all cursor-pointer"
-                      title="Import memories from JSON"
-                    >
-                      <Upload className="w-2.5 h-2.5" />
-                      <input type="file" accept=".json" className="hidden" onChange={handleImportMemories} />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleClearMemories(); }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      disabled={pinnedMemories.length === 0}
-                      className={`h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${pinnedMemories.length === 0 ? "text-gray-700 cursor-not-allowed" : memoryClearConfirm ? "text-red-300 bg-red-500/20 hover:bg-red-500/30 animate-pulse" : "text-gray-500 hover:text-red-400 hover:bg-red-500/10"}`}
-                      title={memoryClearConfirm ? "Click again to confirm — erases all memories" : "Clear all memories"}
-                    >
-                      <Trash2 className="w-2.5 h-2.5" />
-                      {memoryClearConfirm ? "Confirm?" : "Clear"}
-                    </button>
+                    <ThemedTooltip content="Export memories as JSON">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleExportMemories(); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        disabled={pinnedMemories.length === 0}
+                        className="h-5 w-5 flex items-center justify-center rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Download className="w-2.5 h-2.5" />
+                      </button>
+                    </ThemedTooltip>
+                    <ThemedTooltip content="Import memories from JSON">
+                      <label
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className="h-5 w-5 flex items-center justify-center rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all cursor-pointer"
+                      >
+                        <Upload className="w-2.5 h-2.5" />
+                        <input type="file" accept=".json" className="hidden" onChange={handleImportMemories} />
+                      </label>
+                    </ThemedTooltip>
+                    <ThemedTooltip content={memoryClearConfirm ? "Click again to confirm — erases all memories" : "Clear all memories"}>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleClearMemories(); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        disabled={pinnedMemories.length === 0}
+                        className={`h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${pinnedMemories.length === 0 ? "text-gray-700 cursor-not-allowed" : memoryClearConfirm ? "text-red-300 bg-red-500/20 hover:bg-red-500/30 animate-pulse" : "text-gray-500 hover:text-red-400 hover:bg-red-500/10"}`}
+                      >
+                        <Trash2 className="w-2.5 h-2.5" />
+                        {memoryClearConfirm ? "Confirm?" : "Clear"}
+                      </button>
+                    </ThemedTooltip>
                   </div>
                 )}
                 <button
