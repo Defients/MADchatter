@@ -2327,7 +2327,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           <div className="relative flex">
             <textarea
               className="directives-scroll w-full h-[225px] bg-black/40 border border-white/5 rounded-lg p-2.5 pr-8 resize-none text-xs text-gray-200 placeholder:text-gray-600 focus:border-orange-500/40 outline-none font-mono leading-relaxed"
-            placeholder="Type custom instructions for the co-pilot (e.g. 'Be extra sarcastic today' or 'Reference the boss fight')..."
+            placeholder="Type custom instructions for the co-pilot (e.g. 'Be extra sarcastic today' or 'Reference the boss fight')... PYAH!~"
             value={config.additionalInstructions}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
