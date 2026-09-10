@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAppStore, selectMultiBotActive } from '../store';
 import type { Bot } from '../types';
-import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp } from 'lucide-react';
+import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx, playForceBurstSfx } from '../lib/sfx';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
@@ -510,9 +510,23 @@ export function AutoForgeHUD() {
             {/* Dry Run Toggle & Confidence Threshold */}
             <div className="flex flex-col gap-1.5 p-2 bg-black/40 rounded border border-white/5">
               <div className="flex items-center justify-between">
-                <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
-                  <FlaskConical className="w-3 h-3 text-cyan-400" /> Dry Run Mode
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
+                    <FlaskConical className="w-3 h-3 text-cyan-400" /> Dry Run Mode
+                  </span>
+                  <ThemedTooltip
+                    side="right"
+                    content={
+                      <div className="max-w-[220px] space-y-1">
+                        <div className="font-bold text-cyan-300">Dry Run Mode</div>
+                        <div>When ON, AutoForge runs its full decision pipeline but <span className="text-cyan-300 font-semibold">never sends messages</span> to chat.</div>
+                        <div className="text-gray-400">Use it to preview what the bot would say, tune confidence thresholds, and test personas without spamming your channel.</div>
+                      </div>
+                    }
+                  >
+                    <HelpCircle className="w-3 h-3 text-gray-600 hover:text-cyan-400 transition-colors cursor-help" />
+                  </ThemedTooltip>
+                </div>
                 <button
                   onClick={(e) => { e.stopPropagation(); setAutoForgeDryRun(!autoForgeDryRun); playSfx(autoForgeDryRun ? 'autoforge_off' : 'autoforge_on'); }}
                   className={cn("text-[8px] px-2 py-0.5 rounded font-mono uppercase transition-colors", autoForgeDryRun ? "bg-cyan-500/30 text-cyan-200" : "bg-white/5 text-gray-500 hover:bg-white/10")}
