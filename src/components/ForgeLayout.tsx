@@ -75,6 +75,53 @@ import { ActionTimeline } from "./ActionTimeline";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
+import deffySigUrl from "/deffy-sig_whiteblack.png";
+
+function DeffySigLogo() {
+  const imgRef = useRef<HTMLAnchorElement>(null);
+
+  useEffect(() => {
+    const el = imgRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onMove = (e: MouseEvent) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const dx = e.clientX - cx;
+        const dy = e.clientY - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        // Glow ramps up as the mouse approaches within 200px; caps at 1.0
+        const intensity = Math.max(0, Math.min(1, 1 - dist / 200));
+        el.style.filter = `drop-shadow(0 0 ${4 + intensity * 14}px rgba(255,255,255,${0.15 + intensity * 0.55}))`;
+        el.style.opacity = String(0.35 + intensity * 0.55);
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => { window.removeEventListener("mousemove", onMove); cancelAnimationFrame(raf); };
+  }, []);
+
+  return (
+    <a
+      ref={imgRef}
+      href="https://deffy.me"
+      target="_blank"
+      rel="noopener noreferrer"
+      className="absolute bottom-2 right-2 z-30 transition-opacity duration-300 pointer-events-auto"
+      style={{ filter: "drop-shadow(0 0 4px rgba(255,255,255,0.15))", opacity: 0.35 }}
+      aria-label="Deffy — visit deffy.me"
+    >
+      <img
+        src={deffySigUrl}
+        alt="Deffy signature"
+        className="h-7 w-auto select-none"
+        draggable={false}
+      />
+    </a>
+  );
+}
 
 function CollapseButtonPortal({ targetRef, onClick }: { targetRef: React.RefObject<HTMLDivElement | null>, onClick: () => void }) {
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -2879,6 +2926,8 @@ export function ForgeLayout() {
                   <TheForge />
                 </div>
               </div>
+              {/* Deffy signature — bottom-right of center panel, pinned to right sidebar edge */}
+              <DeffySigLogo />
             </ResizablePanel>
 
             <ResizableHandle
