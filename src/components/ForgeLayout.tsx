@@ -265,7 +265,9 @@ export function ForgeLayout() {
     return isNaN(parsed) || parsed < 2 || parsed > 8 ? 3 : parsed;
   });
   const [rightSize, setRightSize] = useState(() => {
-    const saved = localStorage.getItem("forge-panel-right-size");
+    // Versioned key — bump the suffix to force a new default for existing users
+    const RIGHT_SIZE_KEY = "forge-panel-right-size-v2";
+    const saved = localStorage.getItem(RIGHT_SIZE_KEY);
     // Default to 31.25% (the 1920x1080 width) so the header buttons
     // (Stats, R34L, HUD, AutoForge, Memory, Rate Limit, Settings) fit with
     // their icons. On very wide screens (2560px+) the sidebar takes up too
@@ -1052,6 +1054,7 @@ export function ForgeLayout() {
       "forge-panel-left-collapsed-size",
       "forge-panel-left-collapsed",
       "forge-panel-right-size",
+      "forge-panel-right-size-v2",
       "forge-chat-anchored",
       "forge-audio-anchored",
       "forge-audio-panel-height",
@@ -2964,7 +2967,7 @@ export function ForgeLayout() {
                 // Reset right panel to its default width
                 const defaultRight = window.innerWidth >= 2560 ? 15 : 31.25;
                 setRightSize(defaultRight);
-                localStorage.setItem("forge-panel-right-size", defaultRight.toString());
+                localStorage.setItem("forge-panel-right-size-v2", defaultRight.toString());
                 if (rightPanelRef.current) {
                   try { rightPanelRef.current.resize(`${defaultRight}%`); } catch {}
                 }
@@ -2972,7 +2975,7 @@ export function ForgeLayout() {
               }}
               onDragging={(isDragging) => {
                 if (!isDragging) {
-                  const saved = localStorage.getItem("forge-panel-right-size");
+                  const saved = localStorage.getItem("forge-panel-right-size-v2");
                   if (saved) {
                     const parsed = parseFloat(saved);
                     if (!isNaN(parsed) && parsed > 0 && parsed < 100) setRightSize(parsed);
@@ -2986,12 +2989,12 @@ export function ForgeLayout() {
               ref={rightPanelRef}
               id="right-rail"
               order={3}
-              minSize="18%"
+              minSize="12%"
               maxSize="40%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 const percentage = typeof size === "number" ? size : size.asPercentage;
-                localStorage.setItem("forge-panel-right-size", percentage.toString());
+                localStorage.setItem("forge-panel-right-size-v2", percentage.toString());
                 setRightSize(percentage);
               }}
               className="bg-[#121217] border-l border-white/5 z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]"
