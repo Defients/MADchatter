@@ -443,6 +443,11 @@ export function useAutoForge() {
       const responseTimeMs = Date.now() - decisionStartTime;
       console.log("[AutoForge] Decision:", decision);
 
+      // Record token usage from the decision call
+      if ((decision as any).tokenUsage) {
+        useAppStore.getState().recordTokenUsage("autoforge_decide", (decision as any).tokenUsage);
+      }
+
       // Record decision in decision log
       const sentimentSummary = useAppStore.getState().sentimentSummary;
       const decisionLogId = addDecisionRef.current({
@@ -636,6 +641,7 @@ export function useAutoForge() {
               completion_tokens: chatResult.tokenUsage.completion_tokens,
               total_tokens: chatResult.tokenUsage.total_tokens,
               effort_given: state.config?.effortLevel || "medium",
+              feature: "forge",
             });
           }
 

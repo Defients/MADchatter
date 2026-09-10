@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useAppStore } from '../store';
-import { BarChart3, X, Activity, MessageSquare, Bot, Clock, Users, Zap, Gauge, HeartPulse, Flame, Trophy, ScrollText, TrendingUp, Target, Trash2, CheckCircle2, Download, Activity as ActivityIcon } from 'lucide-react';
+import { BarChart3, X, Activity, MessageSquare, Bot, Clock, Users, Zap, Gauge, HeartPulse, Flame, Trophy, ScrollText, TrendingUp, Target, Trash2, CheckCircle2, Download, Activity as ActivityIcon, Sparkles, Eye, Brain, Coins } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx } from '../lib/sfx';
 import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
@@ -78,6 +78,7 @@ export function AnalyticsPanel() {
     streamHealth,
     actionAccuracy,
     clearActionAccuracy,
+    tokenUsageByFeature,
   } = useAppStore();
 
   const [now, setNow] = useState(Date.now());
@@ -351,6 +352,52 @@ export function AnalyticsPanel() {
               <StatCard icon={Bot} label="Fallbacks" value={enhancedStats.providerFallbacks} sublabel="provider switches" />
               <StatCard icon={Clock} label="Session" value={formatDuration(now - enhancedStats.sessionStart)} />
             </div>
+
+            {/* Token Spend by Feature */}
+            {(() => {
+              const featureConfig: { key: string; label: string; icon: any; color: string }[] = [
+                { key: "forge", label: "Forge", icon: Flame, color: "bg-orange-500" },
+                { key: "refine", label: "Refine", icon: Sparkles, color: "bg-purple-500" },
+                { key: "autoforge_decide", label: "AutoForge Decide", icon: Bot, color: "bg-blue-500" },
+                { key: "vision", label: "Vision", icon: Eye, color: "bg-cyan-500" },
+                { key: "briefing", label: "Briefing", icon: ScrollText, color: "bg-teal-500" },
+                { key: "memory_extraction", label: "Memory Extract", icon: Brain, color: "bg-pink-500" },
+              ];
+              const activeFeatures = featureConfig.filter(f => tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature]?.callCount > 0);
+              const maxTokens = Math.max(1, ...activeFeatures.map(f => tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature]?.totalTokens || 0));
+              if (activeFeatures.length === 0) return null;
+              return (
+                <div className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+                      <Coins className="w-3.5 h-3.5 text-yellow-400" />
+                      Token Spend by Feature
+                    </span>
+                    <span className="text-[9px] text-gray-500">vision inside Forge counts under Forge</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {activeFeatures.map(f => {
+                      const stats = tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature];
+                      const pct = (stats.totalTokens / maxTokens) * 100;
+                      return (
+                        <div key={f.key} className="flex items-center gap-2 text-[10px]">
+                          <div className="flex items-center gap-1 w-28 shrink-0">
+                            <f.icon className="w-3 h-3 text-gray-400" />
+                            <span className="text-gray-300 font-medium truncate">{f.label}</span>
+                          </div>
+                          <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                            <div className={cn("h-full rounded-full transition-all", f.color)} style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="text-gray-400 tabular-nums w-16 text-right">{stats.totalTokens.toLocaleString()} tok</span>
+                          <span className="text-gray-500 tabular-nums w-12 text-right">{stats.callCount}x</span>
+                          <span className="text-green-400/70 tabular-nums w-16 text-right">${stats.estimatedCost.toFixed(4)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* A10: Stream Health Score */}
             {streamHealth && (

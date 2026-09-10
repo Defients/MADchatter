@@ -221,6 +221,7 @@ export interface MemoryExtractionResult {
   newJokes: Omit<InsideJoke, "id" | "createdAt" | "usageCount" | "lastUsedAt" | "strength" | "status" | "variations">[];
   personalityShift?: Partial<PersonalityState>;
   summary: string;
+  tokenUsage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
 // ─── Analytics Types ───────────────────────────────────
@@ -261,6 +262,23 @@ export interface EnhancedSessionStats {
   peakChatVelocity: number;
   uniqueChatters: number;
 }
+
+export interface FeatureTokenStats {
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedCost: number;
+  callCount: number;
+  lastCallAt: number | null;
+}
+
+export type TokenFeatureKey =
+  | "forge"
+  | "refine"
+  | "autoforge_decide"
+  | "vision"
+  | "briefing"
+  | "memory_extraction";
 
 export interface AutoForgeRateLimitConfig {
   maxActionsPerHour: number;

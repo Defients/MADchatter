@@ -221,9 +221,15 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
   const session = params.botUsername ? null : getTwitchSession();
 
   let currentVisualContext = params.visualContext;
+  let usage: any = undefined;
   if (params.screenshot && (!params.visualContext || params.visualContext.length < 50)) {
     try {
-      currentVisualContext = await generateVisionContext(rawProvider, apiKey, params.screenshot);
+      const visionResult = await generateVisionContext(rawProvider, apiKey, params.screenshot);
+      currentVisualContext = visionResult.text;
+      // Fold vision tokens into the forge total (user triggered Forge)
+      if (visionResult.tokenUsage) {
+        usage = visionResult.tokenUsage;
+      }
     } catch (e) {
       console.warn("Auto-vision failed, continuing without it", e);
     }
@@ -288,7 +294,6 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
 
   const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "");
   let generatedJsonStr = "";
-  let usage: any = undefined;
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
@@ -511,7 +516,7 @@ export async function generateVisionContext(
   apiKey: string,
   screenshot: string,
   previousContext?: string | null
-): Promise<string> {
+): Promise<{ text: string; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(rawProvider);
   const keys = getKeys();
   // C1: Structured visual context extraction — ask for clearly labeled sections
@@ -528,6 +533,8 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     ? `You are watching a live stream. Your previous observation was:\n${previousContext}\n\nHere is a new screenshot. ${structuredBase.replace("CHANGES: <only if comparing to a previous observation — what's new/different>", "CHANGES: <what has changed since the previous observation — new events, state changes, movement, text changes. If nothing meaningful changed, say 'No significant change.'>")}`
     : structuredBase;
 
+  let usage: TokenUsage | undefined;
+
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
@@ -543,7 +550,14 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         ],
       }],
     });
-    return response.text || "";
+    if (response.usageMetadata) {
+      usage = {
+        prompt_tokens: response.usageMetadata.promptTokenCount,
+        completion_tokens: response.usageMetadata.candidatesTokenCount,
+        total_tokens: response.usageMetadata.totalTokenCount,
+      };
+    }
+    return { text: response.text || "", tokenUsage: usage };
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
@@ -558,7 +572,14 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         ],
       }],
     });
-    return response.choices[0].message.content || "";
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.prompt_tokens,
+        completion_tokens: response.usage.completion_tokens,
+        total_tokens: response.usage.total_tokens,
+      };
+    }
+    return { text: response.choices[0].message.content || "", tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
@@ -574,16 +595,23 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         ],
       }],
     });
-    return (response.content[0] as any).text;
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.input_tokens,
+        completion_tokens: response.usage.output_tokens,
+        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+      };
+    }
+    return { text: (response.content[0] as any).text || "", tokenUsage: usage };
   }
   throw new Error("Invalid provider");
 }
 
-export async function visionRequest(screenshot: string, activeProvider: string, previousContext?: string | null): Promise<{ visualContext: string }> {
+export async function visionRequest(screenshot: string, activeProvider: string, previousContext?: string | null): Promise<{ visualContext: string; tokenUsage?: TokenUsage }> {
   const apiKey = getApiKey(activeProvider);
   if (!apiKey) throw new Error(`No API key configured for ${activeProvider}. Add it in Settings.`);
-  const visualContext = await generateVisionContext(activeProvider, apiKey, screenshot, previousContext);
-  return { visualContext };
+  const result = await generateVisionContext(activeProvider, apiKey, screenshot, previousContext);
+  return { visualContext: result.text, tokenUsage: result.tokenUsage };
 }
 
 export interface RefineParams {
@@ -728,7 +756,7 @@ export interface AutoForgeBriefingParams {
   config: ForgeConfig;
 }
 
-export async function generateAutoForgeBriefing(params: AutoForgeBriefingParams): Promise<string> {
+export async function generateAutoForgeBriefing(params: AutoForgeBriefingParams): Promise<{ text: string; tokenUsage?: TokenUsage }> {
   const rawProvider = params.activeProvider || "gemini";
   const provider = normalizeProvider(rawProvider);
   const apiKey = getApiKey(rawProvider);
@@ -760,6 +788,8 @@ Write it like a friend catching you up — casual but informative. Don't just li
 
   const systemPrompt = "You are a concise, engaging narrator. Write a natural-language briefing of AutoForge events. Be specific about what happened, who was involved, and what the bot did. Keep it readable and human — not robotic or listy. Output plain text, no JSON.";
 
+  let usage: TokenUsage | undefined;
+
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
@@ -772,7 +802,14 @@ Write it like a friend catching you up — casual but informative. Don't just li
         maxOutputTokens: 1024,
       },
     });
-    return response.text || "Unable to generate briefing.";
+    if (response.usageMetadata) {
+      usage = {
+        prompt_tokens: response.usageMetadata.promptTokenCount,
+        completion_tokens: response.usageMetadata.candidatesTokenCount,
+        total_tokens: response.usageMetadata.totalTokenCount,
+      };
+    }
+    return { text: response.text || "Unable to generate briefing.", tokenUsage: usage };
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
@@ -785,7 +822,14 @@ Write it like a friend catching you up — casual but informative. Don't just li
         { role: "user", content: userMessageContent },
       ],
     });
-    return response.choices[0].message.content || "Unable to generate briefing.";
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.prompt_tokens,
+        completion_tokens: response.usage.completion_tokens,
+        total_tokens: response.usage.total_tokens,
+      };
+    }
+    return { text: response.choices[0].message.content || "Unable to generate briefing.", tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await ai.messages.create({
@@ -795,7 +839,14 @@ Write it like a friend catching you up — casual but informative. Don't just li
       system: systemPrompt,
       messages: [{ role: "user", content: userMessageContent }],
     });
-    return (response.content[0] as any).text || "Unable to generate briefing.";
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.input_tokens,
+        completion_tokens: response.usage.output_tokens,
+        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+      };
+    }
+    return { text: (response.content[0] as any).text || "Unable to generate briefing.", tokenUsage: usage };
   }
   throw new Error("Invalid provider");
 }
@@ -879,6 +930,7 @@ DECIDE NOW.`;
 
     try {
       let generatedJsonStr = "";
+      let usage: TokenUsage | undefined;
 
       if (provider === "gemini") {
         const ai = new GoogleGenAI({ apiKey });
@@ -894,6 +946,13 @@ DECIDE NOW.`;
           },
         });
         generatedJsonStr = response.text || "{}";
+        if (response.usageMetadata) {
+          usage = {
+            prompt_tokens: response.usageMetadata.promptTokenCount,
+            completion_tokens: response.usageMetadata.candidatesTokenCount,
+            total_tokens: response.usageMetadata.totalTokenCount,
+          };
+        }
       } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
         const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
         const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
@@ -907,6 +966,13 @@ DECIDE NOW.`;
           ],
         });
         generatedJsonStr = response.choices[0].message.content || "{}";
+        if (response.usage) {
+          usage = {
+            prompt_tokens: response.usage.prompt_tokens,
+            completion_tokens: response.usage.completion_tokens,
+            total_tokens: response.usage.total_tokens,
+          };
+        }
       } else if (provider === "claude") {
         const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
         const response = await ai.messages.create({
@@ -917,6 +983,13 @@ DECIDE NOW.`;
           messages: [{ role: "user", content: userMessageContent }],
         });
         generatedJsonStr = (response.content[0] as any).text;
+        if (response.usage) {
+          usage = {
+            prompt_tokens: response.usage.input_tokens,
+            completion_tokens: response.usage.output_tokens,
+            total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+          };
+        }
       }
 
       // Record success only after we have valid JSON — a malformed response
@@ -925,6 +998,9 @@ DECIDE NOW.`;
       recordProviderSuccess(currentProvider);
       if (usedFallback && currentProvider !== rawProvider) {
         result.used_fallback_provider = currentProvider;
+      }
+      if (usage) {
+        result.tokenUsage = usage;
       }
       return result;
     } catch (e: any) {

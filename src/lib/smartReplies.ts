@@ -70,6 +70,10 @@ Rules:
       sentimentContext,
     });
 
+    if (result?.tokenUsage) {
+      useAppStore.getState().recordTokenUsage("forge", result.tokenUsage);
+    }
+
     const suggestions = typeof result === "string" ? [] : (result?.suggestions || []);
     if (suggestions.length === 0) return [];
 

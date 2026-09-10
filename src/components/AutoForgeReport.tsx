@@ -162,7 +162,10 @@ export function AutoForgeReport() {
         activeProvider,
         config,
       });
-      setBriefing(result);
+      if (result.tokenUsage) {
+        useAppStore.getState().recordTokenUsage("briefing", result.tokenUsage);
+      }
+      setBriefing(result.text);
       toast.success("AI briefing generated!");
     } catch (e: any) {
       toast.error(`Failed to generate briefing: ${e.message || "Unknown error"}`);

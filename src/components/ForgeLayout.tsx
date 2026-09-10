@@ -1358,6 +1358,9 @@ export function ForgeLayout() {
       try {
         const provider = getActiveProvider();
         const data = await visionRequest(dataUrl, provider, prevVisualContextRef.current);
+        if (data.tokenUsage) {
+          useAppStore.getState().recordTokenUsage("vision", data.tokenUsage);
+        }
         if (data.visualContext) {
           prevVisualContextRef.current = data.visualContext;
           setVisualSnapshot(dataUrl, [data.visualContext], isManual ? "manual" : "auto", delta);

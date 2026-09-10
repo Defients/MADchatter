@@ -148,6 +148,7 @@ export function TheForge() {
           completion_tokens: data.tokenUsage.completion_tokens,
           total_tokens: data.tokenUsage.total_tokens,
           effort_given: config?.effortLevel || "medium",
+          feature: "forge",
         });
       } else {
         // Fallback estimated if no usage returned
@@ -157,6 +158,7 @@ export function TheForge() {
           completion_tokens: Math.round(payloadSize / 4.1),
           total_tokens: Math.round(payloadSize * 2 / 4.1),
           effort_given: config?.effortLevel || "medium",
+          feature: "forge",
         });
       }
 
@@ -275,6 +277,15 @@ export function TheForge() {
         streamMetadata,
         activeProvider: provider,
       });
+      if (data.tokenUsage) {
+        setLastTokenUsage({
+          prompt_tokens: data.tokenUsage.prompt_tokens,
+          completion_tokens: data.tokenUsage.completion_tokens,
+          total_tokens: data.tokenUsage.total_tokens,
+          effort_given: config?.effortLevel || "medium",
+          feature: "refine",
+        });
+      }
       updateVariant(id, {
         message: data.message,
         why_it_fits: data.why_it_fits,

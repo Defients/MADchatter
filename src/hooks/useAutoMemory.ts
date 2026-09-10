@@ -131,6 +131,9 @@ export function useAutoMemory() {
             };
 
             const result = await extractMemories(params);
+            if (result.tokenUsage) {
+              useAppStore.getState().recordTokenUsage("memory_extraction", result.tokenUsage);
+            }
             const stats = await applyExtractionResults(result, state.autoMemoryConfig);
 
             if (stats.memoriesAdded > 0 || stats.profilesUpdated > 0 || stats.jokesCreated > 0) {

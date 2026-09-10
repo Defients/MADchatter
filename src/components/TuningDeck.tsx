@@ -424,6 +424,15 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       if (suggestions.length === 0) {
         throw new Error("Forge produced no usable variants. Try again or lower the effort level.");
       }
+      if (data.tokenUsage) {
+        useAppStore.getState().setLastTokenUsage({
+          prompt_tokens: data.tokenUsage.prompt_tokens,
+          completion_tokens: data.tokenUsage.completion_tokens,
+          total_tokens: data.tokenUsage.total_tokens,
+          effort_given: cfg?.effortLevel || "medium",
+          feature: "forge",
+        });
+      }
       setVariants(suggestions);
       useAppStore.getState().incrementForgeCount();
       toast.success("Co-pilot variants forged successfully!", { id: "forging-variants" });

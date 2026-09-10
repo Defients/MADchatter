@@ -205,6 +205,11 @@ export function useAutoForgeBot(botId: string) {
         streamEvents: store.streamEvents.slice(-5),
       });
 
+      // Record token usage from the decision call
+      if ((decision as any).tokenUsage) {
+        useAppStore.getState().recordTokenUsage("autoforge_decide", (decision as any).tokenUsage);
+      }
+
       store.setBotLastAutoForgeDecision(botId, { ...decision, timestamp: now, activityLevel, personaFit, isMentioned });
 
       // Confidence threshold (unless forced)

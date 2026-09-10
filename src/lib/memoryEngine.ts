@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey, getKeys, getActiveProvider, openAiCompatEndpoint } from "./keys";
 import { MEMORY_EXTRACTION_PROMPT } from "./prompts";
+import type { TokenUsage } from "./ai";
 import type {
   AutoMemory,
   UserProfile,
@@ -153,6 +154,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
 
   const systemPrompt = MEMORY_EXTRACTION_PROMPT;
   let generatedJsonStr = "";
+  let usage: TokenUsage | undefined;
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
@@ -167,6 +169,13 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
       },
     });
     generatedJsonStr = response.text || "{}";
+    if (response.usageMetadata) {
+      usage = {
+        prompt_tokens: response.usageMetadata.promptTokenCount,
+        completion_tokens: response.usageMetadata.candidatesTokenCount,
+        total_tokens: response.usageMetadata.totalTokenCount,
+      };
+    }
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
@@ -180,6 +189,13 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
       ],
     });
     generatedJsonStr = response.choices[0].message.content || "{}";
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.prompt_tokens,
+        completion_tokens: response.usage.completion_tokens,
+        total_tokens: response.usage.total_tokens,
+      };
+    }
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await ai.messages.create({
@@ -190,6 +206,13 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
       messages: [{ role: "user", content: userMessage }],
     });
     generatedJsonStr = (response.content[0] as any).text || "{}";
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.input_tokens,
+        completion_tokens: response.usage.output_tokens,
+        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+      };
+    }
   }
 
   let result: MemoryExtractionResult;
@@ -207,6 +230,9 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
     );
   }
 
+  if (usage) {
+    result.tokenUsage = usage;
+  }
   return result;
 }
 

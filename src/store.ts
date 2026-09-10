@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry } from "./types";
+import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
 import { getFallbackHistory } from "./lib/providerFallback";
@@ -314,8 +314,12 @@ interface AppState {
     completion_tokens: number;
     total_tokens: number;
     effort_given: "low" | "medium" | "high";
+    feature?: TokenFeatureKey;
   } | null;
   setLastTokenUsage: (usage: AppState["lastTokenUsage"]) => void;
+
+  tokenUsageByFeature: Record<TokenFeatureKey, FeatureTokenStats>;
+  recordTokenUsage: (feature: TokenFeatureKey, usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) => void;
 
   autoForgeEventLog: AutoForgeEvent[];
   addAutoForgeEvent: (event: Omit<AutoForgeEvent, "id">) => void;
@@ -804,15 +808,59 @@ export const useAppStore = create<AppState>()(
         }),
 
       lastTokenUsage: null,
+      tokenUsageByFeature: {
+        forge: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+        refine: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+        autoforge_decide: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+        vision: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+        briefing: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+        memory_extraction: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+      },
+      recordTokenUsage: (feature, usage) =>
+        set((state) => {
+          const totalTokens = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
+          const cost = (usage.prompt_tokens / 1_000_000) * 0.075 + (usage.completion_tokens / 1_000_000) * 0.30;
+          const prev = state.tokenUsageByFeature[feature];
+          return {
+            tokenUsageByFeature: {
+              ...state.tokenUsageByFeature,
+              [feature]: {
+                totalTokens: prev.totalTokens + totalTokens,
+                promptTokens: prev.promptTokens + usage.prompt_tokens,
+                completionTokens: prev.completionTokens + usage.completion_tokens,
+                estimatedCost: prev.estimatedCost + cost,
+                callCount: prev.callCount + 1,
+                lastCallAt: Date.now(),
+              },
+            },
+            enhancedStats: {
+              ...state.enhancedStats,
+              totalTokensUsed: state.enhancedStats.totalTokensUsed + totalTokens,
+              estimatedCost: state.enhancedStats.estimatedCost + cost,
+            },
+          };
+        }),
       setLastTokenUsage: (usage) =>
         set((state) => {
           if (!usage) return { lastTokenUsage: usage };
-          // Accumulate into enhanced stats for the Analytics Dashboard.
+          // Delegate per-feature accumulation to recordTokenUsage logic
+          const feature: TokenFeatureKey = usage.feature || "forge";
           const totalTokens = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
-          // Rough cost estimate: $0.075/1M input + $0.30/1M output (Gemini Flash tier).
           const cost = (usage.prompt_tokens / 1_000_000) * 0.075 + (usage.completion_tokens / 1_000_000) * 0.30;
+          const prev = state.tokenUsageByFeature[feature];
           return {
             lastTokenUsage: usage,
+            tokenUsageByFeature: {
+              ...state.tokenUsageByFeature,
+              [feature]: {
+                totalTokens: prev.totalTokens + totalTokens,
+                promptTokens: prev.promptTokens + usage.prompt_tokens,
+                completionTokens: prev.completionTokens + usage.completion_tokens,
+                estimatedCost: prev.estimatedCost + cost,
+                callCount: prev.callCount + 1,
+                lastCallAt: Date.now(),
+              },
+            },
             enhancedStats: {
               ...state.enhancedStats,
               totalTokensUsed: state.enhancedStats.totalTokensUsed + totalTokens,
@@ -1054,6 +1102,14 @@ export const useAppStore = create<AppState>()(
             actionDistribution: {},
             peakChatVelocity: 0,
             uniqueChatters: 0,
+          },
+          tokenUsageByFeature: {
+            forge: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+            refine: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+            autoforge_decide: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+            vision: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+            briefing: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
+            memory_extraction: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
           },
         }),
 
