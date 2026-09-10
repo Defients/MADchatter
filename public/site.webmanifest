@@ -1,7 +1,7 @@
 {
-  "name": "AutoForge — AI Twitch Co-Pilot",
-  "short_name": "AutoForge",
-  "description": "An AI-powered Twitch co-pilot that generates high-signal chat messages in real time using stream context, transcription, and live chat analysis.",
+  "name": "MADchatter — AI Stream Chat Co-Pilot",
+  "short_name": "MADchatter",
+  "description": "An AI-powered stream chat co-pilot for Twitch, Kick, and Joystick. Generate context-aware chat messages in real time using stream context, transcription, and live chat analysis.",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#0a0a0f",
