@@ -357,6 +357,7 @@ export function StreamOverlay({
               <div className="relative w-full" style={{ aspectRatio: '16 / 9', maxHeight: '100%' }}>
                 {platform === 'kick' ? (
                   <iframe
+                    data-stream-embed
                     src={embedSrc}
                     className="absolute inset-0 w-full h-full border-0"
                     allow="autoplay; fullscreen"
@@ -369,6 +370,7 @@ export function StreamOverlay({
             ) : (
               platform === 'kick' ? (
                 <iframe
+                  data-stream-embed
                   src={embedSrc}
                   className={`border-0 ${chatInputMode ? "absolute top-0 left-0 right-0 z-10 w-full" : "absolute inset-0 w-full h-full"}`}
                   style={chatInputMode ? { height: `${size.h}px` } : undefined}

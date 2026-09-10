@@ -1285,12 +1285,27 @@ export function ForgeLayout() {
         const dpr = window.devicePixelRatio || 1;
         const expectedW = Math.round(window.innerWidth * dpr);
         const expectedH = Math.round(window.innerHeight * dpr);
-        const dimMatch = Math.abs(videoWidth - expectedW) < 50 && Math.abs(videoHeight - expectedH) < 50;
+        // Generous tolerance — browser chrome, scrollbars, and zoom can cause
+        // the captured tab dimensions to differ from the window's inner dimensions.
+        const dimMatch = Math.abs(videoWidth - expectedW) < 200 && Math.abs(videoHeight - expectedH) < 200;
         console.log(`[Visual] Tab capture: video=${videoWidth}x${videoHeight}, expected=${expectedW}x${expectedH}, dpr=${dpr}, sameTab=${dimMatch}`);
         if (dimMatch) {
-          // Same-tab capture — crop to the stream embed element
-          const streamEl = document.querySelector('[data-stream-embed]') as HTMLElement | null
-            || document.querySelector('iframe[title*="stream" i]') as HTMLIFrameElement | null;
+          // Same-tab capture — crop to the stream embed element.
+          // Search all [data-stream-embed] elements and pick the one that's
+          // actually visible (non-zero area) to handle both the floating flyout
+          // and the embedded sidebar forms correctly.
+          const streamEls = document.querySelectorAll('[data-stream-embed]');
+          let streamEl: HTMLElement | null = null;
+          let bestArea = 0;
+          streamEls.forEach((el) => {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const area = r.width * r.height;
+            if (area > bestArea) { bestArea = area; streamEl = el as HTMLElement; }
+          });
+          // Fallback: iframe with "stream" in the title (e.g. Kick)
+          if (!streamEl) {
+            streamEl = document.querySelector('iframe[title*="stream" i]') as HTMLIFrameElement | null;
+          }
           if (streamEl) {
             const rect = streamEl.getBoundingClientRect();
             // Clip to the visible viewport so only the visible portion of the stream embed is captured
