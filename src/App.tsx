@@ -587,6 +587,14 @@ export default function App() {
         return;
       }
 
+      // Hotkey: P = Snap a visual capture from the stream embed
+      if (e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('snap-capture'));
+        playSfx('hud_open');
+        return;
+      }
+
       // Hotkey: Shift+R = Toggle R34L Typing Mode
       if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'r') {
         e.preventDefault();

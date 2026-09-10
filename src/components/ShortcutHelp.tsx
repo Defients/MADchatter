@@ -7,6 +7,7 @@ const SHORTCUTS = [
   { keys: ['F'], label: 'Forge new batch', category: 'Forge' },
   { keys: ['S'], label: 'Send top variant to chat', category: 'Forge' },
   { keys: ['C'], label: 'Capture browser stream', category: 'Capture' },
+  { keys: ['P'], label: 'Snap visual capture from stream embed', category: 'Capture' },
   { keys: ['A'], label: 'Toggle AutoForge on/off', category: 'AutoForge' },
   { keys: ['H'], label: 'Toggle AutoForge HUD', category: 'AutoForge' },
   { keys: ['D'], label: 'Toggle Analytics Dashboard', category: 'AutoForge' },

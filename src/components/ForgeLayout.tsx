@@ -267,6 +267,7 @@ export function ForgeLayout() {
   });
   const [visualCooldown, setVisualCooldown] = useState(false);
   const visualCooldownRef = useRef<number | null>(null);
+  const handleManualCaptureRef = useRef<() => void>(() => {});
   const [windowSelected, setWindowSelected] = useState(false);
   const cachedStreamRef = useRef<MediaStream | null>(null);
   const captureVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -350,6 +351,7 @@ export function ForgeLayout() {
       setVisualCooldown(false);
     }, 5000);
   };
+  handleManualCaptureRef.current = handleManualCapture;
 
   useEffect(() => {
     localStorage.setItem("forge-chat-anchored", chatAnchored.toString());
@@ -1099,6 +1101,14 @@ export function ForgeLayout() {
     };
     window.addEventListener("capture-trigger", onCapture);
     return () => window.removeEventListener("capture-trigger", onCapture);
+  }, []);
+
+  useEffect(() => {
+    const onSnap = () => {
+      handleManualCaptureRef.current();
+    };
+    window.addEventListener("snap-capture", onSnap);
+    return () => window.removeEventListener("snap-capture", onSnap);
   }, []);
 
   const handleVoiceCapture = async () => {
