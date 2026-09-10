@@ -1254,7 +1254,7 @@ export function FidgetSpinner({ size = 80, className = "", showSpinCount = true 
         <div
           className="absolute pointer-events-none whitespace-nowrap font-mono transition-all z-10"
           style={{
-            bottom: `${size * 0.02}px`,
+            bottom: `${-size * 0.12}px`,
             left: "50%",
             transform: "translateX(-50%)",
             fontSize: `${Math.max(8, size * 0.06)}px`,
