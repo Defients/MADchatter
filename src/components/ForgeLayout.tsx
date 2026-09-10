@@ -2197,15 +2197,18 @@ export function ForgeLayout() {
               maxSize={leftCollapsed ? "8%" : "27.6%"}
               defaultSize={leftCollapsed ? `${leftCollapsedSize}%` : `${leftPanelSize}%`}
               onResize={(size) => {
+                // Only persist to localStorage — do NOT update React state here.
+                // Updating state would change defaultSize, which re-registers
+                // the panel in react-resizable-panels v4 and fights the drag.
                 const percentage = typeof size === "number" ? size : size.asPercentage;
                 lastLeftResizeRef.current = percentage;
                 if (leftCollapsed) {
-                  setLeftCollapsedSize(percentage);
+                  localStorage.setItem("forge-panel-left-collapsed-size", percentage.toString());
                 } else {
-                  setLeftPanelSize(percentage);
+                  localStorage.setItem("forge-panel-left-expanded-size", percentage.toString());
                 }
               }}
-              className="bg-[#121217] z-50 shadow-[4px_0_24px_rgba(0,0,0,0.5)] relative overflow-visible"
+              className="bg-[#121217] z-20 shadow-[4px_0_24px_rgba(0,0,0,0.5)] relative overflow-visible"
             >
               {leftCollapsed ? (
                 /* Collapsed Icon Bar with Widget Flyouts */
@@ -2707,7 +2710,7 @@ export function ForgeLayout() {
             </ResizablePanel>
 
             <ResizableHandle
-              className="w-2.5 forge-panel-handle hover:bg-orange-500/50 hover:w-3 transition-all z-30"
+              className="w-2.5 forge-panel-handle hover:bg-orange-500/50 hover:w-3 transition-all z-40"
               withHandle
               onDoubleClick={() => {
                 // Reset left panel to its default width for the current mode
@@ -2728,6 +2731,16 @@ export function ForgeLayout() {
                 panelDragActiveRef.current = isDragging;
                 if (!isDragging) {
                   lastLeftResizeRef.current = null;
+                  // Sync React state from localStorage after drag ends so the
+                  // state stays consistent for the next mount (e.g. after
+                  // collapse/expand toggles which remount the group via key).
+                  if (leftCollapsed) {
+                    const saved = localStorage.getItem("forge-panel-left-collapsed-size");
+                    if (saved) setLeftCollapsedSize(parseFloat(saved));
+                  } else {
+                    const saved = localStorage.getItem("forge-panel-left-expanded-size");
+                    if (saved) setLeftPanelSize(parseFloat(saved));
+                  }
                 }
               }}
             />
@@ -3087,7 +3100,7 @@ export function ForgeLayout() {
             </ResizablePanel>
 
             <ResizableHandle
-              className="w-2.5 forge-panel-handle hover:bg-orange-500/50 hover:w-3 transition-all z-30"
+              className="w-2.5 forge-panel-handle hover:bg-orange-500/50 hover:w-3 transition-all z-40"
               withHandle
               onDoubleClick={() => {
                 // Reset right panel to its default width
@@ -3119,9 +3132,11 @@ export function ForgeLayout() {
               maxSize="45%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
+                // Only persist to localStorage — do NOT update React state here.
+                // Updating state would change defaultSize, which re-registers
+                // the panel in react-resizable-panels v4 and fights the drag.
                 const percentage = typeof size === "number" ? size : size.asPercentage;
                 localStorage.setItem(RIGHT_SIZE_KEY, percentage.toString());
-                setRightSize(percentage);
               }}
               className="bg-[#121217] border-l border-white/5 z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]"
             >
