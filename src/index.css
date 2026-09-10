@@ -2676,6 +2676,29 @@
   background-color: var(--lt-surface-3) !important;
 }
 
+/* Activity bar — bright gold with transparency for Urz light theme */
+.light-theme .bg-\[\#0d0d12\]\/80 {
+  background-color: rgba(255, 215, 0, 0.18) !important;
+}
+
+/* Activity bar edge fades — match the gold tint */
+.light-theme .from-\[\#0d0d12\] {
+  --tw-gradient-from: rgba(255, 215, 0, 0.18) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: transparent var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+/* Activity bar newest-dot ring offset */
+.light-theme .ring-offset-\[\#0d0d12\] {
+  --tw-ring-offset-color: rgba(255, 215, 0, 0.18) !important;
+}
+
+/* Activity bar base line — darker gold for visibility on gold tint */
+.light-theme .via-white\/10 {
+  --tw-gradient-to: transparent var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), rgba(201, 161, 74, 0.4) var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+}
+
 /* Smoked-glass panels: clean white with gold trim shadow */
 .light-theme .bg-\[\#121217\]\/95,
 .light-theme .bg-\[\#121217\]\/90 {
