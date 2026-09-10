@@ -2592,14 +2592,30 @@
 .light-theme .bg-\[\#121217\],
 .light-theme .bg-\[\#121217\]\/95,
 .light-theme .bg-\[\#121217\]\/90,
-.light-theme .bg-\[\#121217\]\/80 {
+.light-theme .bg-\[\#121217\]\/80,
+.light-theme .bg-\[\#121217\]\/50,
+.light-theme .bg-\[\#121217\]\/30 {
   background-color: var(--lt-surface) !important;
 }
 
 .light-theme .bg-\[\#0F0F12\],
 .light-theme .bg-\[\#0F0F12\]\/95,
+.light-theme .bg-\[\#0F0F12\]\/50,
 .light-theme .bg-\[\#0a0a0f\],
-.light-theme .bg-\[\#0a0a0f\]\/90 {
+.light-theme .bg-\[\#0a0a0f\]\/90,
+.light-theme .bg-\[\#0a0a0f\]\/60 {
+  background-color: var(--lt-surface-2) !important;
+}
+
+/* Other hardcoded dark backgrounds — user pill, popovers, dropdowns, tooltips, selects */
+.light-theme .bg-\[\#18181B\],
+.light-theme .bg-\[\#1a1a22\],
+.light-theme .bg-\[\#12121a\],
+.light-theme .bg-\[\#1a1a1f\] {
+  background-color: var(--lt-surface) !important;
+}
+
+.light-theme .bg-\[\#1E1E2A\] {
   background-color: var(--lt-surface-2) !important;
 }
 
