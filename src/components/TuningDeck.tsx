@@ -1914,7 +1914,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       <div className="forge-separator shrink-0" />
 
       {/* 2. Grouped Sliders with current values + live helper text */}
-      <Card data-tutorial="sliders" className="bg-[#0F0F12] border-white/5 shadow-none rounded-xl overflow-visible -mt-3 shrink-0">
+      <Card data-tutorial="sliders" className="bg-[#0F0F12] border-white/5 shadow-none rounded-xl overflow-visible shrink-0">
         <CardContent className="p-3 space-y-4 overflow-visible">
           
           {/* Humor Slider */}
