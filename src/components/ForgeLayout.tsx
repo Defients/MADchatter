@@ -448,7 +448,6 @@ export function ForgeLayout() {
 
   const leftPanelRef = useRef<PanelImperativeHandle>(null);
   const leftRailDomRef = useRef<HTMLDivElement>(null);
-  const [leftAnimating, setLeftAnimating] = useState(false);
   type WidgetType = "audio" | "chat" | "visual" | "memory" | "stream";
   const [openWidgets, setOpenWidgets] = useState<Set<WidgetType>>(new Set());
   const [closingWidgets, setClosingWidgets] = useState<Set<WidgetType>>(new Set());
@@ -1040,23 +1039,8 @@ export function ForgeLayout() {
 
   const togglePanel = () => {
     setOpenWidgets(new Set());
-    const nextCollapsed = !leftCollapsed;
-    // Drive a smooth animated resize via the imperative API.
-    // CSS transition on flex-grow handles the visual easing; the imperative
-    // resize() call updates the underlying layout to the target size.
-    setLeftAnimating(true);
-    const targetSize = nextCollapsed ? leftCollapsedSize : leftPanelSize;
-    if (leftPanelRef.current) {
-      try {
-        leftPanelRef.current.resize(`${targetSize}%`);
-      } catch (e) {
-        console.warn("[Layout] leftPanelRef.resize failed", e);
-      }
-    }
-    setLeftCollapsed(nextCollapsed);
-    playSfx(nextCollapsed ? 'panel_collapse' : 'panel_expand');
-    // Re-enable interactive min/max clamping after the transition completes
-    window.setTimeout(() => setLeftAnimating(false), 350);
+    setLeftCollapsed(!leftCollapsed);
+    playSfx(leftCollapsed ? 'panel_expand' : 'panel_collapse');
   };
 
   // Reset Layout to FHD Defaults — clears all spatial localStorage keys and reloads
@@ -2053,16 +2037,17 @@ export function ForgeLayout() {
       <>
       <div className="flex h-full w-full overflow-hidden bg-transparent relative z-10">
         <ResizablePanelGroup
+          key={`left-${leftCollapsed}`}
           direction="horizontal"
-          className="w-full h-full rounded-none forge-panel-group forge-panel-animated"
+          className="w-full h-full rounded-none forge-panel-group"
         >
             {/* Left Rail: Context Fusion */}
             <ResizablePanel
               ref={leftPanelRef}
               id="left-rail"
               order={1}
-              minSize={leftAnimating ? "2.5%" : (leftCollapsed ? "2.5%" : "16%")}
-              maxSize={leftAnimating ? "30%" : (leftCollapsed ? "8%" : "27.6%")}
+              minSize={leftCollapsed ? "2.5%" : "16%"}
+              maxSize={leftCollapsed ? "8%" : "27.6%"}
               defaultSize={leftCollapsed ? `${leftCollapsedSize}%` : `${leftPanelSize}%`}
               onResize={(size) => {
                 const percentage = typeof size === "number" ? size : size.asPercentage;
