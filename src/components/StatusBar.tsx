@@ -92,13 +92,12 @@ export function StatusBar() {
     const onMove = (ev: MouseEvent) => {
       if (!resizeRef.current) return;
       const dy = resizeRef.current.startY - ev.clientY;
-      const newHeight = Math.max(DEFAULT_LOG_HEIGHT, Math.min(window.innerHeight - 48, resizeRef.current.startHeight + dy));
+      const newHeight = Math.max(DEFAULT_LOG_HEIGHT, resizeRef.current.startHeight + dy);
       setDragHeight(newHeight);
     };
     const onUp = () => {
       resizeRef.current = null;
       setIsDragging(false);
-      setDragHeight(null); // snap back to default
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -176,10 +175,11 @@ export function StatusBar() {
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               className="overflow-hidden"
+              style={dragHeight ? { maxHeight: `${dragHeight + 48}px` } : undefined}
             >
               <div
                 className="w-80 max-h-64 bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col transition-[max-height] duration-300 ease-out"
-                style={isDragging && dragHeight ? { maxHeight: `${dragHeight}px`, transition: 'none' } : undefined}
+                style={dragHeight ? { maxHeight: `${dragHeight}px`, transition: isDragging ? 'none' : undefined } : undefined}
               >
                 {/* Drag-to-resize handle */}
                 <div
@@ -188,7 +188,7 @@ export function StatusBar() {
                     "flex items-center justify-center h-5 cursor-row-resize select-none border-b border-white/5 bg-black/40 transition-colors",
                     isDragging ? "bg-white/10" : "hover:bg-white/5"
                   )}
-                  title="Drag up to expand — release to snap back"
+                  title="Drag up to expand"
                 >
                   <div className={cn("w-8 h-0.5 rounded-full transition-colors", isDragging ? "bg-white/40" : "bg-white/20")} />
                 </div>
