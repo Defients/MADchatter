@@ -313,7 +313,7 @@ interface AppState {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
-    effort_given: "low" | "medium" | "high";
+    effort_given: "low" | "medium" | "high" | "smart";
     feature?: TokenFeatureKey;
   } | null;
   setLastTokenUsage: (usage: AppState["lastTokenUsage"]) => void;

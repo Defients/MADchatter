@@ -640,7 +640,7 @@ export function useAutoForge() {
               prompt_tokens: chatResult.tokenUsage.prompt_tokens,
               completion_tokens: chatResult.tokenUsage.completion_tokens,
               total_tokens: chatResult.tokenUsage.total_tokens,
-              effort_given: state.config?.effortLevel || "medium",
+              effort_given: chatResult.resolvedEffort || state.config?.effortLevel || "medium",
               feature: "forge",
             });
           }

@@ -458,7 +458,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           prompt_tokens: data.tokenUsage.prompt_tokens,
           completion_tokens: data.tokenUsage.completion_tokens,
           total_tokens: data.tokenUsage.total_tokens,
-          effort_given: cfg?.effortLevel || "medium",
+          effort_given: data.resolvedEffort || cfg?.effortLevel || "medium",
           feature: "forge",
         });
       }
@@ -2119,6 +2119,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 { value: "low", label: "Low (Eco)", tooltip: "Fast, cheaper, concise suggestions. Max 512 completion tokens." },
                 { value: "medium", label: "Medium", tooltip: "Balanced depth & performance. Max 1536 completion tokens." },
                 { value: "high", label: "High (Deep)", tooltip: "Creative, detailed contextual reasoning. Max 3072 completion tokens." },
+                { value: "smart", label: "Smart", tooltip: "Dynamically scales effort based on available context — uses low effort early when there's little to work with, ramps up to high as memories, chat history, and visual snapshots accumulate." },
               ].map((opt) => {
                 const active = (config.effortLevel || "medium") === opt.value;
                 const btn = (

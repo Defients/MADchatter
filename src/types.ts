@@ -44,7 +44,7 @@ export interface ForgeConfig {
   voiceContextEnabled: boolean;
   additionalInstructions: string;
   generationMode: string;
-  effortLevel?: "low" | "medium" | "high";
+  effortLevel?: "low" | "medium" | "high" | "smart";
   autoForgeContextTokens?: number;
 }
 

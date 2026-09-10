@@ -208,6 +208,58 @@ export interface GenerateChatParams {
   botIdentityStory?: string;
 }
 
+/**
+ * Smart effort resolver — when `effortLevel === "smart"`, inspect the available
+ * context signals and dynamically pick low/medium/high for this call.
+ *
+ * Heuristics (each signal contributes a 0–1 sub-score):
+ *   - Chat log length     (~40%): <10 msgs = low, 10–50 = medium, >50 = high
+ *   - Auto memories       (~25%): 0–2 = low, 3–10 = medium, >10 = high
+ *   - Visual snapshot      (~15%): present = high, absent = low
+ *   - Audio transcript     (~10%): >200 chars = high, else low
+ *   - Long-term context    (~10%): >100 chars = high, else low
+ *
+ * Final score: <0.35 → low, 0.35–0.7 → medium, >0.7 → high
+ */
+export function resolveSmartEffort(params: GenerateChatParams): "low" | "medium" | "high" {
+  // Chat log richness
+  const chatLog = params.recentChatLog || "";
+  // Count rough message boundaries (lines starting with a timestamp or username)
+  const chatLines = chatLog ? chatLog.split("\n").filter((l) => l.trim().length > 0).length : 0;
+  const chatScore = chatLines < 10 ? 0.0 : chatLines <= 50 ? 0.5 : 1.0;
+
+  // Memory context richness — memoryContext is a pre-formatted string, so
+  // use its length as a proxy for how many memories were injected.
+  const memStr = params.memoryContext || "";
+  const memScore = memStr.length < 100 ? 0.0 : memStr.length <= 500 ? 0.5 : 1.0;
+
+  // Visual snapshot
+  const visScore = params.screenshot || (params.visualContext && params.visualContext.length > 20) ? 1.0 : 0.0;
+
+  // Audio transcript
+  const audStr = params.audioTranscript || "";
+  const audScore = audStr.length > 200 ? 1.0 : 0.0;
+
+  // Long-term context
+  const ltcStr = params.longTermContext || "";
+  const ltcScore = ltcStr.length > 100 ? 1.0 : 0.0;
+
+  const score =
+    chatScore * 0.40 +
+    memScore  * 0.25 +
+    visScore  * 0.15 +
+    audScore  * 0.10 +
+    ltcScore  * 0.10;
+
+  let resolved: "low" | "medium" | "high";
+  if (score < 0.35) resolved = "low";
+  else if (score <= 0.7) resolved = "medium";
+  else resolved = "high";
+
+  console.log(`[Smart Effort] score=${score.toFixed(2)} → ${resolved} (chat=${chatScore}, mem=${memScore}, vis=${visScore}, aud=${audScore}, ltc=${ltcScore})`);
+  return resolved;
+}
+
 export async function generateChat(params: GenerateChatParams): Promise<any> {
   const rawProvider = params.activeProvider || "gemini";
   const provider = normalizeProvider(rawProvider);
@@ -235,7 +287,11 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
     }
   }
 
-  const effort = params.config?.effortLevel || "medium";
+  let effort = params.config?.effortLevel || "medium";
+  // Smart mode: dynamically resolve to low/medium/high based on context richness
+  if (effort === "smart") {
+    effort = resolveSmartEffort(params);
+  }
   let effortDirective = "";
   let maxTokensToUse = 3072;
   let temp = 0.7;
@@ -409,6 +465,8 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   if (usage) {
     parsedResponse.tokenUsage = usage;
   }
+  // Expose the resolved effort level so callers can record it in effort_given
+  parsedResponse.resolvedEffort = effort;
 
   return parsedResponse;
 }

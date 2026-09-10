@@ -149,7 +149,7 @@ export function TheForge() {
           prompt_tokens: data.tokenUsage.prompt_tokens,
           completion_tokens: data.tokenUsage.completion_tokens,
           total_tokens: data.tokenUsage.total_tokens,
-          effort_given: config?.effortLevel || "medium",
+          effort_given: data.resolvedEffort || config?.effortLevel || "medium",
           feature: "forge",
         });
       } else {
@@ -159,7 +159,7 @@ export function TheForge() {
           prompt_tokens: Math.round(payloadSize / 4.1),
           completion_tokens: Math.round(payloadSize / 4.1),
           total_tokens: Math.round(payloadSize * 2 / 4.1),
-          effort_given: config?.effortLevel || "medium",
+          effort_given: data.resolvedEffort || config?.effortLevel || "medium",
           feature: "forge",
         });
       }
@@ -284,7 +284,7 @@ export function TheForge() {
           prompt_tokens: data.tokenUsage.prompt_tokens,
           completion_tokens: data.tokenUsage.completion_tokens,
           total_tokens: data.tokenUsage.total_tokens,
-          effort_given: config?.effortLevel || "medium",
+          effort_given: config?.effortLevel === "smart" ? "smart" : (config?.effortLevel || "medium"),
           feature: "refine",
         });
       }
@@ -377,6 +377,7 @@ export function TheForge() {
                   <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${
                     lastTokenUsage.effort_given === 'high' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
                     lastTokenUsage.effort_given === 'low' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
+                    lastTokenUsage.effort_given === 'smart' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
                     'bg-blue-500/10 text-blue-400 border-blue-500/20'
                   }`}>
                     {lastTokenUsage.effort_given} Effort Mode
