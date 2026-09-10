@@ -178,7 +178,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     setIdentityDragging(true);
     const onMove = (ev: MouseEvent) => {
       if (!identityResizeRef.current) return;
-      const dy = identityResizeRef.current.startY - ev.clientY;
+      const dy = ev.clientY - identityResizeRef.current.startY;
       const next = Math.max(60, Math.min(600, identityResizeRef.current.startHeight + dy));
       setIdentityHeight(next);
     };
@@ -1698,7 +1698,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   viewBox="0 0 10 10"
                   className={cn("transition-colors", identityDragging ? "fill-red-400/60" : "fill-red-400/30")}
                 >
-                  <path d="M0 10 L10 10 L10 0 Z" />
+                  <path d="M0 10 L10 10 L0 0 Z" />
                 </svg>
               </div>
             </div>
