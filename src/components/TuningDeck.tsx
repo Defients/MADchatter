@@ -56,6 +56,7 @@ import {
   EyeOff,
   RefreshCw,
   MousePointer2,
+  BarChart3,
 } from "lucide-react";
 import { playMessageSound, enumerateAudioOutputs, setAudioOutputSink, setSoundUrl, setSoundVolume as setSoundVolumeFn } from "../lib/sound";
 import { formatChatLog } from "../lib/chatUtils";
@@ -551,6 +552,39 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           </h2>
         </div>
         <div className="flex items-center justify-end gap-1.5 shrink-0">
+          {/* Analytics button — opens the Analytics dashboard overlay */}
+          <Tooltip>
+            <TooltipTrigger render={
+              <button
+                type="button"
+                onClick={() => { useAppStore.getState().setAnalyticsPanelOpen(true); playSfx('hud_open'); }}
+                className="rounded-lg p-1.5 border bg-white/5 border-white/5 text-gray-400 hover:text-cyan-400 hover:bg-cyan-500/10 hover:border-cyan-500/30 transition-all flex items-center gap-1"
+              >
+                <BarChart3 className="w-3.5 h-3.5" />
+                <span className="text-[9px] font-bold uppercase font-mono tracking-wider">Stats</span>
+              </button>
+            } />
+            <TooltipContent
+              side="bottom"
+              align="center"
+              sideOffset={8}
+              className="max-w-sm p-0 bg-[#1a1a22] border border-cyan-500/20 text-left rounded-lg shadow-2xl"
+            >
+              <div className="p-3 space-y-2">
+                <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
+                  <BarChart3 className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider text-cyan-300">Analytics Dashboard</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-gray-300">
+                  Opens the session analytics overlay with live stats, sentiment trends, AutoForge decision history, action accuracy, stream health, and <span className="text-cyan-300">token spend by feature</span>.
+                </p>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
+                  <kbd className="text-[9px] font-mono bg-white/5 rounded px-1 py-0.5 text-gray-400 border border-white/10">D</kbd>
+                  <span>keyboard shortcut to toggle</span>
+                </div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger render={
               <button
