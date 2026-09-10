@@ -163,6 +163,34 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   // Creative Tools inline input state
   const [showTemplateInput, setShowTemplateInput] = useState(false);
   const [templateName, setTemplateName] = useState("");
+
+  // Bot Identity textarea drag-to-resize state
+  const DEFAULT_IDENTITY_HEIGHT = 96; // ~4 rows
+  const [identityHeight, setIdentityHeight] = useState<number | null>(null);
+  const [identityDragging, setIdentityDragging] = useState(false);
+  const identityResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  const startIdentityResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const currentHeight = identityHeight ?? DEFAULT_IDENTITY_HEIGHT;
+    identityResizeRef.current = { startY: e.clientY, startHeight: currentHeight };
+    setIdentityDragging(true);
+    const onMove = (ev: MouseEvent) => {
+      if (!identityResizeRef.current) return;
+      const dy = identityResizeRef.current.startY - ev.clientY;
+      const next = Math.max(60, Math.min(600, identityResizeRef.current.startHeight + dy));
+      setIdentityHeight(next);
+    };
+    const onUp = () => {
+      identityResizeRef.current = null;
+      setIdentityDragging(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [identityHeight]);
   const [showMoodPicker, setShowMoodPicker] = useState(false);
   const [showSequenceInput, setShowSequenceInput] = useState(false);
   const [sequenceName, setSequenceName] = useState("");
@@ -1646,13 +1674,34 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         </div>
         {botIdentityMode === "custom" && (
           <div className="space-y-1">
-            <textarea
-              value={botIdentityStory}
-              onChange={(e) => setBotIdentityStory(e.target.value)}
-              placeholder="Write a persona backstory the bot will use when accused of being AI. e.g. 'I'm a 24-year-old gamer from Ohio who dropped out of college to stream full-time. I love pizza and hate Mondays.'"
-              rows={4}
-              className="w-full text-[11px] bg-black/30 border border-red-500/20 rounded-lg px-2 py-1.5 text-gray-200 placeholder:text-gray-600 outline-none focus:border-red-500/40 resize-none leading-relaxed"
-            />
+            <div className="relative">
+              <textarea
+                value={botIdentityStory}
+                onChange={(e) => setBotIdentityStory(e.target.value)}
+                placeholder="Write a persona backstory the bot will use when accused of being AI. e.g. 'I'm a 24-year-old gamer from Ohio who dropped out of college to stream full-time. I love pizza and hate Mondays.'"
+                rows={4}
+                style={identityHeight ? { height: `${identityHeight}px` } : undefined}
+                className="w-full text-[11px] bg-black/30 border border-red-500/20 rounded-lg px-2 py-1.5 text-gray-200 placeholder:text-gray-600 outline-none focus:border-red-500/40 resize-none leading-relaxed overflow-y-auto themed-scroll"
+              />
+              {/* Bottom-left drag-triangle to expand vertically */}
+              <div
+                onMouseDown={startIdentityResize}
+                className={cn(
+                  "absolute bottom-0 left-0 w-4 h-4 cursor-sw-resize select-none flex items-end justify-start",
+                  identityDragging ? "opacity-100" : "opacity-40 hover:opacity-100"
+                )}
+                title="Drag down to expand"
+              >
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 10 10"
+                  className={cn("transition-colors", identityDragging ? "fill-red-400/60" : "fill-red-400/30")}
+                >
+                  <path d="M0 10 L10 10 L10 0 Z" />
+                </svg>
+              </div>
+            </div>
             <p className="text-[9px] text-gray-600 italic">
               When someone asks if the bot is AI, it will stay in character using this story. Keep it brief and believable.
             </p>
