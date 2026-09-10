@@ -68,6 +68,7 @@ import { playSfx } from "../lib/sfx";
 import { computeFrameDelta, DELTA_THRESHOLD } from "../lib/frameDiff";
 import { createMarker } from "../lib/chatUtils";
 import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
+import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
@@ -1193,6 +1194,24 @@ export function ForgeLayout() {
     return () => window.removeEventListener("snap-capture", onSnap);
   }, []);
 
+  // When a new audio segment arrives, check if any active bot's name is
+  // mentioned (using fuzzy matching for Whisper mishears). If so, dispatch a
+  // targeted force-check so the mentioned bot responds immediately instead of
+  // waiting up to 15s for the next interval tick.
+  const checkAudioMention = (segment: string) => {
+    const state = useAppStore.getState();
+    if (!state.multiBotEnabled || !state.autoForgeEnabled) return;
+    for (const bot of state.bots) {
+      if (!bot.active || !bot.session?.username) continue;
+      if (isNameMentioned(segment, bot.session.username)) {
+        console.log(`[AudioMention] @${bot.session.username} mentioned in audio — forcing check`);
+        window.dispatchEvent(new CustomEvent("autoforge-force-check", {
+          detail: { botId: bot.id, audioMention: true },
+        }));
+      }
+    }
+  };
+
   const handleVoiceCapture = async () => {
     if (windowSelected) {
       if (!isMicCapturing) {
@@ -1245,6 +1264,7 @@ export function ForgeLayout() {
         const audioOnlyStream = new MediaStream(audioTracks.map(t => t.clone()));
         const showedPrompt = await startEmbedWhisper(audioOnlyStream, (formattedSegment) => {
           appendAudioTranscript(formattedSegment);
+          checkAudioMention(formattedSegment);
         });
         if (!showedPrompt) {
           toast.success("Capture started — video + audio transcription via Whisper...");
@@ -1300,6 +1320,7 @@ export function ForgeLayout() {
       toast.info("Starting microphone transcription via Whisper...");
       const showedPrompt = await startEmbedWhisper(sharedStream, (formattedSegment) => {
         appendAudioTranscript(formattedSegment);
+        checkAudioMention(formattedSegment);
       });
       if (!showedPrompt) {
         setIsMicCapturing(true);

@@ -11,6 +11,7 @@ import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
 import { actionRateLimiter } from "../lib/actionRateLimiter";
+import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { getAvailableEmoteNames } from "../lib/emotes";
 
@@ -118,18 +119,31 @@ export function useAutoForgeBot(botId: string) {
       });
 
       // ── Mention detection for THIS bot's username ────────────────────────
+      // Uses fuzzy matching so Whisper mishears (e.g. "kovrycha" → "cory cha")
+      // still trigger a mention. Checks both chat log and audio transcript.
       const botUsername = (bot.session.username || "").toLowerCase();
       const recentMessages = store.chatLog.slice(-15).filter((m) => !m.marker);
       const mentionedLines: string[] = [];
       if (botUsername) {
         for (const msg of recentMessages) {
-          const lower = msg.text.toLowerCase();
-          if (lower.includes(botUsername) || lower.includes(`@${botUsername}`)) {
+          if (isNameMentioned(msg.text, botUsername)) {
             mentionedLines.push(`${msg.user}: ${msg.text}`);
           }
         }
       }
-      const isMentioned = mentionedLines.length > 0;
+      // Also check audio transcript for name mentions (the legacy loop does
+      // this but self-disables in multi-bot mode, so the per-bot loop must
+      // handle it here).
+      const audioMentionLines: string[] = [];
+      if (botUsername && store.audioTranscript) {
+        const audioLines = store.audioTranscript.split("\n").slice(-15);
+        for (const line of audioLines) {
+          if (isNameMentioned(line, botUsername)) {
+            audioMentionLines.push(`[AUDIO] ${line}`);
+          }
+        }
+      }
+      const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
 
       // ── Mirror mention/spike detection into global stats ────────────────
       // The legacy loop handles these globally but self-disables in multi-bot
@@ -138,12 +152,14 @@ export function useAutoForgeBot(botId: string) {
       // Report can merge them without duplication.
       if (isMentioned) {
         store.incrementStat("mentionsDetected");
+        const allMentionLines = [...mentionedLines, ...audioMentionLines];
+        const source = audioMentionLines.length > 0 && mentionedLines.length === 0 ? "audio" : mentionedLines.length > 0 && audioMentionLines.length === 0 ? "chat" : "chat+audio";
         store.addBotAutoForgeEvent(botId, {
           timestamp: Date.now(),
           type: "mention",
           severity: "high",
-          summary: `[${bot.session.username}] Mentioned by chat: ${mentionedLines.slice(0, 3).join(" | ")}`,
-          details: { mentionedLines, botUsername, botId },
+          summary: `[${bot.session.username}] Mentioned (${source}): ${allMentionLines.slice(0, 3).join(" | ")}`,
+          details: { mentionedLines, audioMentionLines, botUsername, botId },
         });
       }
       if (activitySpike) {
@@ -223,7 +239,7 @@ export function useAutoForgeBot(botId: string) {
         chatVelocity,
         activitySpike,
         isMentioned,
-        mentionedLines,
+        mentionedLines: [...mentionedLines, ...audioMentionLines],
         contextTokenLimit: bot.persona.config.autoForgeContextTokens ?? 4000,
         r34lEnabled: store.r34lEnabled,
         botUsername,
