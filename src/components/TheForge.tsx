@@ -26,10 +26,11 @@ import {
   Key,
   Copy,
   X,
+  Trash2,
 } from "lucide-react";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { motion } from "motion/react";
-import { ThemedTooltip } from "./ui/tooltip";
+import { ThemedTooltip, Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const calculateCost = (prompt: number, completion: number) => {
   const inputCost = (prompt / 1_000_000) * 0.075;
@@ -304,6 +305,61 @@ export function TheForge() {
     playSfx('variant_close');
   };
 
+  // ── Hold-to-Clear: 1.25s hold animates from red → orange → yellow, then clears all variants
+  const HOLD_DURATION_MS = 1250;
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdRafRef = useRef<number>(0);
+  const [holdProgress, setHoldProgress] = useState(0);
+
+  const startHold = () => {
+    const start = performance.now();
+    const tick = (now: number) => {
+      const elapsed = now - start;
+      const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
+      setHoldProgress(progress);
+      if (progress < 1) {
+        holdRafRef.current = requestAnimationFrame(tick);
+      }
+    };
+    holdRafRef.current = requestAnimationFrame(tick);
+    holdTimerRef.current = setTimeout(() => {
+      setVariants([]);
+      setHoldProgress(0);
+      playSfx('clear_context');
+      toast.success("All forged variants cleared.");
+    }, HOLD_DURATION_MS);
+  };
+
+  const cancelHold = () => {
+    if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+    if (holdRafRef.current) { cancelAnimationFrame(holdRafRef.current); }
+    setHoldProgress(0);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+      if (holdRafRef.current) cancelAnimationFrame(holdRafRef.current);
+    };
+  }, []);
+
+  // Interpolate hold color: red (#ef4444) → orange (#f97316) → yellow (#eab308)
+  const holdColor = useMemo(() => {
+    const p = holdProgress;
+    if (p < 0.5) {
+      const t = p / 0.5;
+      const r = 0xef + Math.round((0xf9 - 0xef) * t);
+      const g = 0x44 + Math.round((0x73 - 0x44) * t);
+      const b = 0x44 + Math.round((0x16 - 0x44) * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    const t = (p - 0.5) / 0.5;
+    const r = 0xf9 + Math.round((0xea - 0xf9) * t);
+    const g = 0x73 + Math.round((0xb3 - 0x73) * t);
+    const b = 0x16 + Math.round((0x08 - 0x16) * t);
+    return `rgb(${r}, ${g}, ${b})`;
+  }, [holdProgress]);
+
   return (
     <div data-tutorial="forge" className="flex flex-col h-full bg-transparent relative w-full items-center justify-between">
       {/* Subtle cosmic grid background */}
@@ -326,6 +382,52 @@ export function TheForge() {
                     {lastTokenUsage.effort_given} Effort Mode
                   </span>
                 </div>
+                {/* Hold-to-Clear button — dead center of the header */}
+                <Tooltip>
+                  <TooltipTrigger render={
+                    <button
+                      type="button"
+                      onMouseDown={startHold}
+                      onMouseUp={cancelHold}
+                      onMouseLeave={cancelHold}
+                      onTouchStart={(e) => { e.preventDefault(); startHold(); }}
+                      onTouchEnd={cancelHold}
+                      className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold text-[10px] uppercase tracking-wider transition-all overflow-hidden select-none"
+                      style={{
+                        color: holdProgress > 0 ? '#fff' : '#f87171',
+                        backgroundColor: holdProgress > 0 ? holdColor : 'rgba(239, 68, 68, 0.08)',
+                        borderColor: holdProgress > 0 ? holdColor : 'rgba(239, 68, 68, 0.3)',
+                        boxShadow: holdProgress > 0 ? `0 0 ${4 + holdProgress * 16}px ${holdColor}` : 'none',
+                      }}
+                      aria-label="Hold to clear all forged variants"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{holdProgress > 0 ? 'Clearing...' : 'Hold to Clear'}</span>
+                      {holdProgress > 0 && (
+                        <span
+                          className="absolute bottom-0 left-0 h-0.5 transition-none"
+                          style={{ width: `${holdProgress * 100}%`, backgroundColor: holdColor }}
+                        />
+                      )}
+                    </button>
+                  } />
+                  <TooltipContent
+                    side="bottom"
+                    align="center"
+                    sideOffset={8}
+                    className="max-w-xs p-0 bg-[#1a1a22] border border-red-500/20 text-left rounded-lg shadow-2xl"
+                  >
+                    <div className="p-3 space-y-2">
+                      <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
+                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                        <span className="text-[11px] font-bold uppercase font-mono tracking-wider text-red-300">Purge Forge Output</span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-gray-300">
+                        <span className="text-red-300 font-semibold">Hold</span> the button for 1.25 seconds to clear all forged variants from the screen. The button shifts from red to orange to yellow as the hold progresses — release early to cancel.
+                      </p>
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
                 <div className="flex flex-wrap items-center gap-y-1.5 gap-x-4 text-[11px] w-full md:w-auto justify-between md:justify-end">
                   <div>
                     <span className="text-gray-500 mr-1">PROMPT:</span>
