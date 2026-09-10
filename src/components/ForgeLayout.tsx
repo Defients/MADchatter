@@ -3001,7 +3001,7 @@ export function ForgeLayout() {
               id="right-rail"
               order={3}
               minSize="12%"
-              maxSize="40%"
+              maxSize="35%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 const percentage = typeof size === "number" ? size : size.asPercentage;
