@@ -249,7 +249,7 @@ export function AutoForgeHUD() {
               </div>
               {multiBotActive && activeBots.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1 justify-end max-w-[60%]">
-                  {activeBots.map((bot) => (
+                  {activeBots.map((bot, idx) => (
                     <ThemedTooltip key={bot.id} content={`Force @${bot.session?.username ?? bot.id}`}>
                       <button
                         onClick={(e) => {
@@ -260,9 +260,9 @@ export function AutoForgeHUD() {
                           window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: bot.id } }));
                           setTimeout(() => setBurstIntensity(0), 30000);
                         }}
-                        className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors max-w-[80px] truncate"
+                        className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
                       >
-                        {bot.session?.username ?? bot.id}
+                        #{idx + 1}
                       </button>
                     </ThemedTooltip>
                   ))}
@@ -375,7 +375,7 @@ export function AutoForgeHUD() {
                 </span>
                 {multiBotActive && activeBots.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                    {activeBots.map((bot) => (
+                    {activeBots.map((bot, idx) => (
                       <ThemedTooltip key={bot.id} content={`Force @${bot.session?.username ?? bot.id}`}>
                         <button
                           onClick={(e) => {
@@ -386,9 +386,9 @@ export function AutoForgeHUD() {
                             window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: bot.id } }));
                             setTimeout(() => setBurstIntensity(0), 30000);
                           }}
-                          className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors max-w-[70px] truncate"
+                          className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
                         >
-                          {bot.session?.username ?? bot.id}
+                          #{idx + 1}
                         </button>
                       </ThemedTooltip>
                     ))}
