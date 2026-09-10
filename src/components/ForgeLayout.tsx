@@ -2005,7 +2005,7 @@ export function ForgeLayout() {
                   );
                 })}
                 {variants.length > 0 && (
-                  <div className="flex flex-col items-center gap-1 py-4">
+                  <div className="flex flex-col items-center gap-1 py-4 pb-8">
                     <FidgetSpinner size={48} />
                   </div>
                 )}
@@ -2262,7 +2262,7 @@ export function ForgeLayout() {
                   {/* Fidget Spinner — hidden when mega spinner is showing in center empty state */}
                   {variants.length > 0 && (
                   <ThemedTooltip content="Fidget Spinner — drag to flick, click to boost, hold center to charge & lock">
-                    <div className="flex flex-col items-center gap-1">
+                    <div className="flex flex-col items-center gap-1 pb-6">
                       <FidgetSpinner size={Math.max(36, 47 * iconScale)} />
                     </div>
                   </ThemedTooltip>
