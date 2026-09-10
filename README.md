@@ -7,6 +7,8 @@
 <p align="center"><strong>Read the room. Forge the reply.</strong><br>
 An AI chat co-pilot for Twitch, Kick, and Joystick streams.</p>
 
+<p align="center">Created by <strong>Deffy Urz</strong> · Released under the <a href="LICENSE">MIT License</a></p>
+
 <p align="center">
   <a href="#what-you-can-do">Explore the features</a> ·
   <a href="#get-started">Get started</a> ·
@@ -179,4 +181,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the source map, contribution conventi
 - [Contributing](CONTRIBUTING.md)
 - [Screenshot guide](docs/SCREENSHOTS.md)
 
-**License:** this repository currently has no `LICENSE` file. No project license is declared here.
+**License:** this project is licensed under the [MIT License](LICENSE). See the `LICENSE` file for details. Created by **Deffy Urz**.
