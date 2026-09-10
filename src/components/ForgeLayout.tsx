@@ -357,6 +357,11 @@ export function ForgeLayout() {
   const [visualCountdown, setVisualCountdown] = useState(0);
   const [tabCaptureMode, setTabCaptureMode] = useState(false);
   const tabCaptureModeRef = useRef(false);
+  // Stores the display surface type ("monitor" | "window" | "browser") from the
+  // capture track settings. Used to adjust crop coordinates — monitor and window
+  // captures include the browser chrome (search bar, tabs) in the video frame,
+  // so viewport-relative coordinates need an offset to map correctly.
+  const captureSurfaceTypeRef = useRef<string>("window");
   // Smart capture — AI dynamically adjusts interval based on scene change rate
   // Levels: 0=Off, 1=Light, 2=Balanced, 3=Aggressive
   const SMART_LEVELS = [
@@ -1196,6 +1201,7 @@ export function ForgeLayout() {
       setWindowSelected(false);
       setTabCaptureMode(false);
       tabCaptureModeRef.current = false;
+      captureSurfaceTypeRef.current = "window";
       if (cachedStreamRef.current) {
         cachedStreamRef.current.getTracks().forEach(t => t.stop());
         cachedStreamRef.current = null;
@@ -1225,6 +1231,7 @@ export function ForgeLayout() {
       const trackLabel = videoTrack?.label || "";
       const isTabCapture = surfaceType === "browser" || trackLabel.toLowerCase().includes("tab");
       tabCaptureModeRef.current = isTabCapture;
+      captureSurfaceTypeRef.current = surfaceType;
       if (isTabCapture) {
         setTabCaptureMode(true);
         toast.warning("Same-tab capture detected — frames will be cropped to the stream embed only. Do NOT collapse the left sidepanel or resize panels, or the crop region will be wrong!", { duration: 8000 });
@@ -1370,11 +1377,45 @@ export function ForgeLayout() {
         const visBottom = Math.min(window.innerHeight, rect.bottom);
         if (visRight <= visLeft || visBottom <= visTop) return false; // not visible
 
-        // Scale from CSS pixels to video pixels
-        const scaleX = videoWidth / window.innerWidth;
-        const scaleY = videoHeight / window.innerHeight;
-        cropX = Math.round(visLeft * scaleX);
-        cropY = Math.round(visTop * scaleY);
+        // ── Coordinate mapping: viewport CSS px → video frame px ──────────
+        // getBoundingClientRect() returns coordinates relative to the browser
+        // viewport (below the chrome). For tab captures, the video frame IS
+        // the viewport, so the mapping is a simple scale. For monitor/window
+        // captures, the video frame includes the browser chrome (search bar,
+        // tabs, etc.) above the viewport, so we need to add an offset.
+        const surface = captureSurfaceTypeRef.current;
+        const isTab = surface === "browser";
+        // Chrome height = browser UI above the viewport (tabs + address bar + bookmarks)
+        const chromeHeight = window.outerHeight - window.innerHeight;
+
+        let scaleX: number, scaleY: number;
+        let offsetX = 0, offsetY = 0;
+
+        if (isTab) {
+          // Tab capture: video frame = viewport content area
+          scaleX = videoWidth / window.innerWidth;
+          scaleY = videoHeight / window.innerHeight;
+        } else if (surface === "monitor") {
+          // Monitor capture: video frame = full screen.
+          // The browser window is at (screenX, screenY) on the screen, and the
+          // viewport starts at (screenX, screenY + chromeHeight).
+          // Scale from CSS screen px to video px.
+          const screenW = window.screen.width || window.outerWidth;
+          const screenH = window.screen.height || window.outerHeight;
+          scaleX = videoWidth / screenW;
+          scaleY = videoHeight / screenH;
+          offsetX = window.screenX;
+          offsetY = window.screenY + chromeHeight;
+        } else {
+          // Window capture: video frame = browser window (includes chrome).
+          // The viewport starts at (0, chromeHeight) within the window.
+          scaleX = videoWidth / window.outerWidth;
+          scaleY = videoHeight / window.outerHeight;
+          offsetY = chromeHeight;
+        }
+
+        cropX = Math.round((offsetX + visLeft) * scaleX);
+        cropY = Math.round((offsetY + visTop) * scaleY);
         cropW = Math.round((visRight - visLeft) * scaleX);
         cropH = Math.round((visBottom - visTop) * scaleY);
         // Clamp to video bounds
@@ -1382,7 +1423,7 @@ export function ForgeLayout() {
         cropY = Math.max(0, Math.min(cropY, videoHeight - 1));
         cropW = Math.max(1, Math.min(cropW, videoWidth - cropX));
         cropH = Math.max(1, Math.min(cropH, videoHeight - cropY));
-        console.log(`[Visual] Cropping to stream embed: ${cropX},${cropY} ${cropW}x${cropH} (video ${videoWidth}x${videoHeight})`);
+        console.log(`[Visual] Cropping to stream embed: ${cropX},${cropY} ${cropW}x${cropH} (video ${videoWidth}x${videoHeight}, surface=${surface})`);
         return true;
       };
 
@@ -1393,11 +1434,18 @@ export function ForgeLayout() {
           console.log('[Visual] SNAP: No stream embed element found — using full frame');
         }
       } else if (tabCaptureModeRef.current) {
-        // Regular capture in tab mode — check if it's the same tab via dimensions
+        // Regular capture in tab mode — verify it's the same tab.
+        // For tab captures, the video frame IS the viewport content area, so
+        // video dimensions should match innerWidth/innerHeight × DPR closely.
+        // A loose tolerance (< 200) caused flaky same-tab detection, which
+        // made cropping toggle on/off unpredictably between captures.
         const dpr = window.devicePixelRatio || 1;
         const expectedW = Math.round(window.innerWidth * dpr);
         const expectedH = Math.round(window.innerHeight * dpr);
-        const dimMatch = Math.abs(videoWidth - expectedW) < 200 && Math.abs(videoHeight - expectedH) < 200;
+        // Tight tolerance: tab captures match viewport × DPR exactly (±2px
+        // for sub-pixel rounding). If it doesn't match, this is a different
+        // tab whose content is the stream itself — no crop needed.
+        const dimMatch = Math.abs(videoWidth - expectedW) <= 4 && Math.abs(videoHeight - expectedH) <= 4;
         console.log(`[Visual] Tab capture: video=${videoWidth}x${videoHeight}, expected=${expectedW}x${expectedH}, dpr=${dpr}, sameTab=${dimMatch}`);
         if (dimMatch) {
           cropToStreamEmbed();
