@@ -290,9 +290,8 @@ export function useAutoForgeBot(botId: string) {
       // ── C1: AutoForge Rule Engine — evaluate user-defined rules ──────────
       // Mirrors the legacy useAutoForge rule evaluation. Rules are shared
       // (global), not per-bot — they fire based on shared stream context.
-      // Rule actions (send_message, trigger_full_forge, etc.) use the
-      // singleton send path via the rule engine's own executeAction; this is
-      // a known v1 limitation (rule sends don't go through per-bot identity).
+      // Rule send actions go through this bot's identity via botId, so
+      // send_message/send_emote rules send as the bot whose tick fired them.
       const autoForgeRules = store.autoForgeRules;
       if (autoForgeRules.length > 0) {
         const recentChatText = store.chatLog
@@ -321,7 +320,7 @@ export function useAutoForgeBot(botId: string) {
           audioEnergyRms: store.audioEnergy?.rms ?? 0,
         };
 
-        const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx);
+        const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx, botId);
         const firedRules = ruleResults.filter((r) => r.fired);
         if (firedRules.length > 0) {
           const ruleActions = firedRules.reduce((s, r) => s + r.actionsExecuted, 0);

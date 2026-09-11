@@ -87,7 +87,7 @@ function evaluateConditions(
 
 // ─── Action Execution ────────────────────────────────────────────────────────
 
-async function executeAction(action: RuleAction): Promise<boolean> {
+async function executeAction(action: RuleAction, botId?: string): Promise<boolean> {
   const state = useAppStore.getState();
   const channel = state.streamMetadata?.channelName;
 
@@ -98,7 +98,9 @@ async function executeAction(action: RuleAction): Promise<boolean> {
         toast.error(`Rule action failed: no channel or payload`);
         return false;
       }
-      const sendFn = getPlatformSendFn(state.platform);
+      // In multi-bot mode, send through the specified bot's identity.
+      // When botId is omitted (legacy single-bot mode), uses the singleton.
+      const sendFn = getPlatformSendFn(state.platform, botId);
       try {
         await sendFn(channel, action.payload);
         return true;
@@ -192,7 +194,8 @@ export function evaluateRule(
 
 export async function fireRule(
   rule: AutoForgeRule,
-  ctx: RuleEngineContext
+  ctx: RuleEngineContext,
+  botId?: string
 ): Promise<RuleEvaluationResult> {
   const { shouldFire, reason } = evaluateRule(rule, ctx);
 
@@ -218,7 +221,7 @@ export async function fireRule(
     if (action.delayMs > 0) {
       await new Promise((r) => setTimeout(r, action.delayMs));
     }
-    const success = await executeAction(action);
+    const success = await executeAction(action, botId);
     if (success) actionsExecuted++;
   }
 
@@ -240,7 +243,8 @@ export async function fireRule(
 
 export async function evaluateAllRules(
   rules: AutoForgeRule[],
-  ctx: RuleEngineContext
+  ctx: RuleEngineContext,
+  botId?: string
 ): Promise<RuleEvaluationResult[]> {
   const results: RuleEvaluationResult[] = [];
 
@@ -249,7 +253,7 @@ export async function evaluateAllRules(
     const currentRule = useAppStore.getState().autoForgeRules.find((r) => r.id === rule.id);
     if (!currentRule) continue;
 
-    const result = await fireRule(currentRule, ctx);
+    const result = await fireRule(currentRule, ctx, botId);
     results.push(result);
   }
 

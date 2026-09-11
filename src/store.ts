@@ -7,7 +7,7 @@ import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 14;
+const SETTINGS_VERSION = 15;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -767,11 +767,18 @@ export const useAppStore = create<AppState>()(
       })),
       clearStreamEvents: () => set({ streamEvents: [] }),
       appendAudioTranscript: (line) =>
-        set((state) => ({
-          audioTranscript: state.audioTranscript
+        set((state) => {
+          const updated = state.audioTranscript
             ? state.audioTranscript + "\n" + line
-            : line,
-        })),
+            : line;
+          // Cap at ~50KB to prevent unbounded growth during long voice sessions
+          const MAX_AUDIO_TRANSCRIPT = 50000;
+          return {
+            audioTranscript: updated.length > MAX_AUDIO_TRANSCRIPT
+              ? updated.slice(-MAX_AUDIO_TRANSCRIPT)
+              : updated,
+          };
+        }),
       chatLog: [],
       appendChatLog: (msg) =>
         set((state) => {
@@ -798,7 +805,7 @@ export const useAppStore = create<AppState>()(
       pinnedMemories: [],
       addPinnedMemory: (item) =>
         set((state) => ({
-          pinnedMemories: [...state.pinnedMemories, { ...item, id: generateId() }],
+          pinnedMemories: [...state.pinnedMemories, { ...item, id: generateId() }].slice(-50),
         })),
       removePinnedMemory: (id) =>
         set((state) => ({
@@ -1000,7 +1007,7 @@ export const useAppStore = create<AppState>()(
       // ─── Auto-Memory System ───────────────────────────────────
       autoMemories: [],
       setAutoMemories: (memories) => set({ autoMemories: memories }),
-      addAutoMemory: (memory) => set((state) => ({ autoMemories: [...state.autoMemories, memory] })),
+      addAutoMemory: (memory) => set((state) => ({ autoMemories: [...state.autoMemories, memory].slice(-500) })),
       updateAutoMemory: (id, updates) => set((state) => ({
         autoMemories: state.autoMemories.map((m) => (m.id === id ? { ...m, ...updates } : m)),
       })),
@@ -1019,9 +1026,10 @@ export const useAppStore = create<AppState>()(
       userProfiles: [],
       setUserProfiles: (profiles) => set({ userProfiles: profiles }),
       upsertUserProfile: (profile) => set((state) => ({
-        userProfiles: state.userProfiles.some((p) => p.username === profile.username)
+        userProfiles: (state.userProfiles.some((p) => p.username === profile.username)
           ? state.userProfiles.map((p) => (p.username === profile.username ? profile : p))
-          : [...state.userProfiles, profile],
+          : [...state.userProfiles, profile]
+        ).slice(-200),
       })),
       removeUserProfile: (username) => set((state) => ({
         userProfiles: state.userProfiles.filter((p) => p.username !== username),
@@ -1030,7 +1038,7 @@ export const useAppStore = create<AppState>()(
 
       insideJokes: [],
       setInsideJokes: (jokes) => set({ insideJokes: jokes }),
-      addInsideJoke: (joke) => set((state) => ({ insideJokes: [...state.insideJokes, joke] })),
+      addInsideJoke: (joke) => set((state) => ({ insideJokes: [...state.insideJokes, joke].slice(-100) })),
       updateInsideJoke: (id, updates) => set((state) => ({
         insideJokes: state.insideJokes.map((j) => (j.id === id ? { ...j, ...updates } : j)),
       })),
@@ -1299,7 +1307,7 @@ export const useAppStore = create<AppState>()(
             effortLevel: currentConfig.effortLevel,
           },
         };
-        set((state) => ({ personaPresets: [preset, ...state.personaPresets], activePersonaId: id }));
+        set((state) => ({ personaPresets: [preset, ...state.personaPresets].slice(0, 30), activePersonaId: id }));
       },
       deleteCustomPersonaPreset: (id) =>
         set((state) => ({
@@ -1311,7 +1319,7 @@ export const useAppStore = create<AppState>()(
       forgeTemplates: [],
       addForgeTemplate: (template) =>
         set((state) => ({
-          forgeTemplates: [...state.forgeTemplates, { ...template, id: generateId(), createdAt: Date.now() }],
+          forgeTemplates: [...state.forgeTemplates, { ...template, id: generateId(), createdAt: Date.now() }].slice(-50),
         })),
       removeForgeTemplate: (id) =>
         set((state) => ({ forgeTemplates: state.forgeTemplates.filter((t) => t.id !== id) })),
@@ -1349,7 +1357,7 @@ export const useAppStore = create<AppState>()(
       reactionSequences: [],
       addReactionSequence: (seq) =>
         set((state) => ({
-          reactionSequences: [...state.reactionSequences, { ...seq, id: generateId(), createdAt: Date.now() }],
+          reactionSequences: [...state.reactionSequences, { ...seq, id: generateId(), createdAt: Date.now() }].slice(-50),
         })),
       removeReactionSequence: (id) =>
         set((state) => ({ reactionSequences: state.reactionSequences.filter(s => s.id !== id) })),
@@ -1358,7 +1366,7 @@ export const useAppStore = create<AppState>()(
       keywordTriggerRules: [],
       addKeywordTriggerRule: (rule) =>
         set((state) => ({
-          keywordTriggerRules: [...state.keywordTriggerRules, { ...rule, id: generateId(), matchCount: 0, lastTriggeredMs: null }],
+          keywordTriggerRules: [...state.keywordTriggerRules, { ...rule, id: generateId(), matchCount: 0, lastTriggeredMs: null }].slice(-50),
         })),
       updateKeywordTriggerRule: (id, updates) =>
         set((state) => ({
@@ -1379,7 +1387,7 @@ export const useAppStore = create<AppState>()(
       // ─── Session Goals ─────────────────────────────────────
       sessionGoals: [],
       addSessionGoal: (goal) =>
-        set((state) => ({ sessionGoals: [...state.sessionGoals, { ...goal, id: generateId() }] })),
+        set((state) => ({ sessionGoals: [...state.sessionGoals, { ...goal, id: generateId() }].slice(-20) })),
       updateSessionGoal: (id, updates) =>
         set((state) => ({
           sessionGoals: state.sessionGoals.map((g) => (g.id === id ? { ...g, ...updates } : g)),
@@ -1415,7 +1423,7 @@ export const useAppStore = create<AppState>()(
       autoForgeSequences: [],
       addAutoForgeSequence: (seq) =>
         set((state) => ({
-          autoForgeSequences: [...state.autoForgeSequences, { ...seq, id: generateId(), createdAt: Date.now() }],
+          autoForgeSequences: [...state.autoForgeSequences, { ...seq, id: generateId(), createdAt: Date.now() }].slice(-50),
         })),
       removeAutoForgeSequence: (id) =>
         set((state) => ({ autoForgeSequences: state.autoForgeSequences.filter((s) => s.id !== id) })),
@@ -1448,7 +1456,7 @@ export const useAppStore = create<AppState>()(
             createdAt: Date.now(),
             lastFiredMs: 0,
             fireCount: 0,
-          }],
+          }].slice(-50),
         })),
       removeAutoForgeRule: (id) =>
         set((state) => ({ autoForgeRules: state.autoForgeRules.filter((r) => r.id !== id) })),
@@ -2083,6 +2091,43 @@ export const useAppStore = create<AppState>()(
           if (Array.isArray(persistedState.bots)) {
             persistedState.bots.forEach((b: any) => {
               if (b?.runtime && b.runtime.directorNotes === undefined) b.runtime.directorNotes = [];
+            });
+          }
+        }
+        // v15: Cap unbounded persisted collections to prevent localStorage quota
+        // crashes. Truncates existing data that grew beyond the new caps.
+        if (version < 15 && persistedState) {
+          const caps: Record<string, number> = {
+            pinnedMemories: 50,
+            autoMemories: 500,
+            userProfiles: 200,
+            insideJokes: 100,
+            personaPresets: 30,
+            forgeTemplates: 50,
+            reactionSequences: 50,
+            keywordTriggerRules: 50,
+            sessionGoals: 20,
+            autoForgeSequences: 50,
+            autoForgeRules: 50,
+          };
+          for (const [key, cap] of Object.entries(caps)) {
+            if (Array.isArray(persistedState[key]) && persistedState[key].length > cap) {
+              persistedState[key] = persistedState[key].slice(-cap);
+            }
+          }
+          // Also cap per-bot runtime arrays that may have grown unbounded
+          if (Array.isArray(persistedState.bots)) {
+            persistedState.bots.forEach((b: any) => {
+              if (!b?.runtime) return;
+              if (Array.isArray(b.runtime.autoMemories) && b.runtime.autoMemories.length > 500) {
+                b.runtime.autoMemories = b.runtime.autoMemories.slice(-500);
+              }
+              if (Array.isArray(b.runtime.userProfiles) && b.runtime.userProfiles.length > 200) {
+                b.runtime.userProfiles = b.runtime.userProfiles.slice(-200);
+              }
+              if (Array.isArray(b.runtime.insideJokes) && b.runtime.insideJokes.length > 100) {
+                b.runtime.insideJokes = b.runtime.insideJokes.slice(-100);
+              }
             });
           }
         }
