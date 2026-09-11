@@ -352,7 +352,9 @@ export function getJoystickSession(): JoystickSession | null {
         return parsed as JoystickSession;
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[joystick] Failed to parse stored Joystick session:", e);
+  }
   return null;
 }
 

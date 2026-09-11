@@ -25,7 +25,9 @@ export function getKeys(): ApiKeys {
         customModel: parsed.customModel || "",
       };
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[keys] Failed to parse stored API keys from localStorage:", e);
+  }
   const deepgram = localStorage.getItem("VITE_DEEPGRAM_API_KEY") || "";
   return {
     geminiKey: "",
