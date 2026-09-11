@@ -1872,6 +1872,7 @@ export const useAppStore = create<AppState>()(
           autoForgeSequences: state.autoForgeSequences,
           autoForgeRules: state.autoForgeRules,
           perActionRateLimits: state.perActionRateLimits,
+          directorNotes: state.directorNotes,
           // Multi-bot: export personas + memory but NEVER sessions (tokens stay local).
           multiBotEnabled: state.multiBotEnabled,
           activeBotId: state.activeBotId,
@@ -1925,6 +1926,7 @@ export const useAppStore = create<AppState>()(
           if (data.autoForgeSequences) set({ autoForgeSequences: data.autoForgeSequences });
           if (data.autoForgeRules) set({ autoForgeRules: data.autoForgeRules });
           if (data.perActionRateLimits) set({ perActionRateLimits: data.perActionRateLimits });
+        if (data.directorNotes) set({ directorNotes: data.directorNotes });
           // Multi-bot: restore personas + memory (sessions intentionally absent
           // in exports — user must re-auth each bot after import).
           if (data.multiBotEnabled !== undefined) set({ multiBotEnabled: data.multiBotEnabled });
@@ -1985,6 +1987,9 @@ export const useAppStore = create<AppState>()(
         autoForgeSequences: state.autoForgeSequences,
         autoForgeRules: state.autoForgeRules,
         perActionRateLimits: state.perActionRateLimits,
+        // Director notes (user-created private directives). The v14 migration
+        // injects the default; partialize ensures they actually persist.
+        directorNotes: state.directorNotes,
         // Multi-bot (additive): persisted so multi-bot state survives reload.
         // Sessions live here too (same localStorage risk profile as the legacy
         // twitch_session/kick_session keys); they are stripped from exportSettings.
