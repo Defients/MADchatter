@@ -1997,7 +1997,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           <div className="grid grid-cols-2 gap-2 pt-1 overflow-visible">
           {/* Emote Density */}
           <div className="space-y-1.5 overflow-visible">
-            <div className="flex justify-between text-xs font-bold text-gray-300 items-center">
+            <div className="flex justify-between text-xs font-bold text-gray-300 items-center h-9">
               <span>Emote Density</span>
               <Badge key={config.emoteDensity} className="bg-transparent border-0 shadow-none h-auto text-gray-300 text-[9px] font-bold uppercase font-mono p-0 relative overflow-visible rounded-none z-[9999] emote-slide-in mr-1">
                 {(config.emoteDensity as any) === "minimal" ? (
@@ -2029,7 +2029,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
 
           {/* Toxicity Filter */}
           <div className="space-y-1.5 overflow-visible">
-            <div className="flex justify-between text-xs font-bold text-gray-300 items-center">
+            <div className="flex justify-between text-xs font-bold text-gray-300 items-center h-9">
               <span>Toxicity Filter</span>
               <span className="text-[20px] leading-none">
                 {(config.toxicityFilter as any) === "family" ? "🧸" : (config.toxicityFilter as any) === "unfiltered" ? "🔥" : "✅"}
