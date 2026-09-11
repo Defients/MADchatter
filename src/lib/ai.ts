@@ -24,6 +24,29 @@ import {
   recordFallback,
 } from "./providerFallback";
 
+// ─── AI Request Timeout ──────────────────────────────────────────────────────
+// Default timeout for AI provider calls. Prevents the AutoForge loop from
+// hanging indefinitely when a provider is slow or unresponsive.
+const AI_REQUEST_TIMEOUT_MS = 45_000;
+
+/**
+ * Wraps a promise with a timeout. If the promise doesn't resolve within
+ * `timeoutMs`, rejects with a timeout error. The underlying request is NOT
+ * cancelled (use SDK-level timeout/abort for that) but the caller is unblocked
+ * so the AutoForge loop can back off and retry.
+ */
+export function withAiTimeout<T>(promise: Promise<T>, timeoutMs: number = AI_REQUEST_TIMEOUT_MS, operation: string = "AI request"): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (result) => { clearTimeout(timer); resolve(result); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 /**
  * R34L adaptive profile segment. When R34L is on and the recent chat log has
  * enough signal, build a "CHAT STYLE PROFILE" block that steers the model
@@ -360,7 +383,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       parts.push({ inlineData: { data: base64Data, mimeType } });
     }
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await ai.models.generateContent({
+    const response = await withAiTimeout(ai.models.generateContent({
       model,
       contents: [{ role: "user", parts }],
       config: {
@@ -370,7 +393,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         temperature: temp,
         maxOutputTokens: maxTokensToUse,
       },
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateChat/gemini`);
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
       usage = {
@@ -386,7 +409,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     if (params.screenshot) {
       content.push({ type: "image_url", image_url: { url: params.screenshot } });
     }
-    const response = await ai.chat.completions.create({
+    const response = await withAiTimeout(ai.chat.completions.create({
       model,
       temperature: temp,
       max_tokens: maxTokensToUse,
@@ -395,7 +418,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         { role: "system", content: systemPrompt },
         { role: "user", content },
       ],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateChat/openai`);
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
@@ -413,13 +436,13 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       content.push({ type: "image", source: { type: "base64", media_type: mimeType as any, data: base64Data } });
     }
     content.push({ type: "text", text: userMessageContent });
-    const response = await ai.messages.create({
+    const response = await withAiTimeout(ai.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: maxTokensToUse,
       temperature: temp,
       system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
       messages: [{ role: "user", content }],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateChat/claude`);
     generatedJsonStr = (response.content.find((c: any) => c.type === "text") as any)?.text || "";
     if (response.usage) {
       usage = {
@@ -598,7 +621,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, "");
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await ai.models.generateContent({
+    const response = await withAiTimeout(ai.models.generateContent({
       model,
       contents: [{
         role: "user",
@@ -607,7 +630,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
           { inlineData: { data: base64Data, mimeType } },
         ],
       }],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateVisionContext/gemini`);
     if (response.usageMetadata) {
       usage = {
         prompt_tokens: response.usageMetadata.promptTokenCount,
@@ -619,7 +642,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await ai.chat.completions.create({
+    const response = await withAiTimeout(ai.chat.completions.create({
       model,
       max_tokens: 1024,
       messages: [{
@@ -629,7 +652,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
           { type: "image_url", image_url: { url: screenshot } },
         ],
       }],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateVisionContext/openai`);
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.prompt_tokens,
@@ -642,7 +665,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, "");
-    const response = await ai.messages.create({
+    const response = await withAiTimeout(ai.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       messages: [{
@@ -652,7 +675,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
           { type: "text", text: prompt },
         ],
       }],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateVisionContext/claude`);
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.input_tokens,
@@ -710,7 +733,7 @@ Custom Instruction: ${params.customInstruction || "None"}
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await ai.models.generateContent({
+    const response = await withAiTimeout(ai.models.generateContent({
       model,
       contents: userMessageContent,
       config: {
@@ -719,7 +742,7 @@ Custom Instruction: ${params.customInstruction || "None"}
         responseSchema: refineResponseSchema as any,
         temperature: 0.8,
       },
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `refineSuggestion/gemini`);
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
       usage = {
@@ -731,7 +754,7 @@ Custom Instruction: ${params.customInstruction || "None"}
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await ai.chat.completions.create({
+    const response = await withAiTimeout(ai.chat.completions.create({
       model,
       temperature: 0.8,
       max_tokens: 1024,
@@ -740,7 +763,7 @@ Custom Instruction: ${params.customInstruction || "None"}
         { role: "system", content: REFINE_SYSTEM_PROMPT },
         { role: "user", content: userMessageContent },
       ],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `refineSuggestion/openai`);
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
@@ -751,13 +774,13 @@ Custom Instruction: ${params.customInstruction || "None"}
     }
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const response = await ai.messages.create({
+    const response = await withAiTimeout(ai.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       temperature: 0.8,
       system: REFINE_SYSTEM_PROMPT + "\n\nYou must output ONLY valid JSON matching the schema format.",
       messages: [{ role: "user", content: userMessageContent }],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `refineSuggestion/claude`);
     generatedJsonStr = (response.content[0] as any).text;
     if (response.usage) {
       usage = {
@@ -851,7 +874,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await ai.models.generateContent({
+    const response = await withAiTimeout(ai.models.generateContent({
       model,
       contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
       config: {
@@ -859,7 +882,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         temperature: 0.7,
         maxOutputTokens: 1024,
       },
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateAutoForgeBriefing/gemini`);
     if (response.usageMetadata) {
       usage = {
         prompt_tokens: response.usageMetadata.promptTokenCount,
@@ -871,7 +894,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await ai.chat.completions.create({
+    const response = await withAiTimeout(ai.chat.completions.create({
       model,
       temperature: 0.7,
       max_tokens: 1024,
@@ -879,7 +902,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessageContent },
       ],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateAutoForgeBriefing/openai`);
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.prompt_tokens,
@@ -890,13 +913,13 @@ Write it like a friend catching you up — casual but informative. Don't just li
     return { text: response.choices[0].message.content || "Unable to generate briefing.", tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const response = await ai.messages.create({
+    const response = await withAiTimeout(ai.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 1024,
       temperature: 0.7,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessageContent }],
-    });
+    }), AI_REQUEST_TIMEOUT_MS, `generateAutoForgeBriefing/claude`);
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.input_tokens,
@@ -993,7 +1016,7 @@ DECIDE NOW.`;
       if (provider === "gemini") {
         const ai = new GoogleGenAI({ apiKey });
         const model = currentProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-        const response = await ai.models.generateContent({
+        const response = await withAiTimeout(ai.models.generateContent({
           model,
           contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
           config: {
@@ -1002,7 +1025,7 @@ DECIDE NOW.`;
             responseSchema: autoforgeResponseSchema as any,
             temperature: 0.8,
           },
-        });
+        }), AI_REQUEST_TIMEOUT_MS, `autoforgeDecide/gemini`);
         generatedJsonStr = response.text || "{}";
         if (response.usageMetadata) {
           usage = {
@@ -1014,7 +1037,7 @@ DECIDE NOW.`;
       } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
         const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
         const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-        const response = await ai.chat.completions.create({
+        const response = await withAiTimeout(ai.chat.completions.create({
           model,
           temperature: 0.8,
           response_format: { type: "json_object" },
@@ -1022,7 +1045,7 @@ DECIDE NOW.`;
             { role: "system", content: systemPrompt },
             { role: "user", content: userMessageContent },
           ],
-        });
+        }), AI_REQUEST_TIMEOUT_MS, `autoforgeDecide/openai`);
         generatedJsonStr = response.choices[0].message.content || "{}";
         if (response.usage) {
           usage = {
@@ -1033,13 +1056,13 @@ DECIDE NOW.`;
         }
       } else if (provider === "claude") {
         const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-        const response = await ai.messages.create({
+        const response = await withAiTimeout(ai.messages.create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
           temperature: 0.8,
           system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
           messages: [{ role: "user", content: userMessageContent }],
-        });
+        }), AI_REQUEST_TIMEOUT_MS, `autoforgeDecide/claude`);
         generatedJsonStr = (response.content[0] as any).text;
         if (response.usage) {
           usage = {

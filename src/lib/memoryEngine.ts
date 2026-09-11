@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey, getKeys, getActiveProvider, openAiCompatEndpoint } from "./keys";
+import { withAiTimeout } from "./ai";
 import { MEMORY_EXTRACTION_PROMPT } from "./prompts";
 import type { TokenUsage } from "./ai";
 import type {
@@ -159,7 +160,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await ai.models.generateContent({
+    const response = await withAiTimeout(ai.models.generateContent({
       model,
       contents: [{ role: "user", parts: [{ text: userMessage }] }],
       config: {
@@ -167,7 +168,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         responseMimeType: "application/json",
         temperature: 0.5,
       },
-    });
+    }), 45_000, `extractMemories/gemini`);
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
       usage = {
@@ -179,7 +180,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await ai.chat.completions.create({
+    const response = await withAiTimeout(ai.chat.completions.create({
       model,
       temperature: 0.5,
       response_format: { type: "json_object" },
@@ -187,7 +188,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ],
-    });
+    }), 45_000, `extractMemories/openai`);
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
@@ -198,13 +199,13 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
     }
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const response = await ai.messages.create({
+    const response = await withAiTimeout(ai.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 2048,
       temperature: 0.5,
       system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
       messages: [{ role: "user", content: userMessage }],
-    });
+    }), 45_000, `extractMemories/claude`);
     generatedJsonStr = (response.content[0] as any).text || "{}";
     if (response.usage) {
       usage = {
