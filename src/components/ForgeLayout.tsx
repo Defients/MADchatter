@@ -2927,7 +2927,7 @@ export function ForgeLayout() {
                     <span className="text-gray-600 shrink-0 font-mono">|</span>
 
                     {/* Channel name */}
-                    <div className="forge-channel-name flex items-center gap-1 min-w-0 font-bold text-orange-400 text-sm">
+                    <div className="forge-channel-name flex items-center gap-1 shrink-0 font-bold text-orange-400 text-sm">
                       {editingChannel ? (
                         <input
                           ref={channelInputRef}
@@ -2963,7 +2963,7 @@ export function ForgeLayout() {
                     <button
                       type="button"
                       onClick={() => setMarqueeSpeed((s) => s === "normal" ? "slow" : s === "slow" ? "off" : "normal")}
-                      className="forge-stream-detail title-marquee-wrap min-w-0 text-gray-400 max-w-[200px] overflow-hidden text-xs cursor-pointer hover:text-gray-300 transition-colors text-left"
+                      className="forge-stream-detail title-marquee-wrap flex-1 min-w-0 text-gray-400 overflow-hidden text-xs cursor-pointer hover:text-gray-300 transition-colors text-left"
                       title={`${titleText} — click to cycle marquee speed (${marqueeSpeed === "normal" ? "normal" : marqueeSpeed === "slow" ? "slow" : "off"})`}
                     >
                       {titleOverflows && marqueeSpeed !== "off" ? (
@@ -3061,7 +3061,7 @@ export function ForgeLayout() {
                       />
                       <TooltipContent
                         side="bottom"
-                        className="bg-[#1a1a22] border border-white/10 text-gray-200 rounded-lg shadow-2xl px-3 py-1.5 text-xs font-medium whitespace-nowrap"
+                        className="bg-[#1a1a22] border border-white/10 text-gray-200 rounded-lg shadow-2xl px-3 py-1.5 text-xs font-medium whitespace-nowrap max-w-none"
                       >
                         <span className="text-gray-400">Cycle Theme (</span>
                         <span className="text-gray-300">Default</span>

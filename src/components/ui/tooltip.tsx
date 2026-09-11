@@ -30,13 +30,14 @@ function TooltipContent({
   align = "center",
   alignOffset = 0,
   hideArrow = false,
+  zIndex,
   children,
   ...props
 }: TooltipPrimitive.Popup.Props &
   Pick<
     TooltipPrimitive.Positioner.Props,
     "align" | "alignOffset" | "side" | "sideOffset"
-  > & { hideArrow?: boolean }) {
+  > & { hideArrow?: boolean; zIndex?: number }) {
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Positioner
@@ -44,7 +45,8 @@ function TooltipContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
-        className="isolate z-50"
+        className="isolate"
+        style={{ zIndex: zIndex ?? 50 }}
       >
         <TooltipPrimitive.Popup
           data-slot="tooltip-content"
@@ -81,6 +83,7 @@ function ThemedTooltip({
   sideOffset = 6,
   hideArrow = false,
   className,
+  zIndex,
 }: {
   children: ReactElement;
   content: ReactNode;
@@ -89,6 +92,7 @@ function ThemedTooltip({
   sideOffset?: number;
   hideArrow?: boolean;
   className?: string;
+  zIndex?: number;
 }) {
   return (
     <Tooltip>
@@ -98,6 +102,7 @@ function ThemedTooltip({
         align={align}
         sideOffset={sideOffset}
         hideArrow={hideArrow}
+        zIndex={zIndex}
         className={cn(
           "bg-[#1a1a22] border border-white/10 text-gray-200 rounded-lg shadow-2xl px-3 py-1.5 text-xs font-medium",
           className

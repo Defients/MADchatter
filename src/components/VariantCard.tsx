@@ -177,7 +177,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
             {variant.profile}
           </Badge>
           {variant.best && (
-            <ThemedTooltip content="Highest-ranked variant by local scoring">
+            <ThemedTooltip content="Highest-ranked variant by local scoring" zIndex={25001}>
               <Badge
                 variant="outline"
                 className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-cyan-500/15 border-cyan-400/40 text-cyan-300 pointer-events-none"
@@ -194,7 +194,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           >
             {variant.message.length} chars
           </Badge>
-          <ThemedTooltip content="Estimated token size of this comment">
+          <ThemedTooltip content="Estimated token size of this comment" zIndex={25001}>
             <Badge
               variant="outline"
               className="text-[9px] bg-yellow-500/15 border-yellow-500/20 text-yellow-400 font-mono font-bold pointer-events-none"
@@ -209,7 +209,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
             CONF: {Math.round(variant.confidence * 100)}%
           </Badge>
           {onClose && (
-            <ThemedTooltip content="Close card">
+            <ThemedTooltip content="Close card" zIndex={25001}>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -226,7 +226,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
 
       {/* Card Body */}
       <div className="flex-1 p-3 flex flex-col justify-center">
-        <ThemedTooltip content="Double-click to copy">
+        <ThemedTooltip content="Double-click to copy" zIndex={25001}>
           <div className="bg-[#18181B] border border-white/5 rounded-xl p-3 relative shadow-inner" onDoubleClick={handleDoubleClick}>
             <MessageSquare className="absolute -left-2 -top-2 w-4 h-4 text-gray-600 fill-current opacity-10" />
             <p className="text-sm text-gray-200 leading-relaxed font-semibold">
@@ -247,7 +247,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       {/* Card Actions */}
       <div className="p-2.5 bg-[#0F0F12] border-t border-white/5 flex gap-2 shrink-0">
         {/* Copy Button */}
-        <ThemedTooltip content="Copy message to clipboard">
+        <ThemedTooltip content="Copy message to clipboard" zIndex={25001}>
           <Button
             variant="outline"
             size="icon"
@@ -260,7 +260,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
 
         {/* Refine Dialog Trigger */}
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <ThemedTooltip content="Refine Suggestion">
+          <ThemedTooltip content="Refine Suggestion" zIndex={25001}>
             <DialogTrigger
               render={
                 <Button
@@ -371,6 +371,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
                 <TooltipContent
                   side="top"
                   sideOffset={6}
+                  zIndex={25001}
                   className="bg-[#1a1a1f] border border-green-500/30 text-green-300 text-[11px] font-semibold rounded-lg px-2.5 py-1.5 shadow-xl flex items-center gap-1.5"
                 >
                   <AtSign className="w-3 h-3 text-green-400/70 shrink-0" />
