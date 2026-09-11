@@ -7,6 +7,7 @@ import {
   ResizableHandle,
 } from "./ui/resizable";
 import { TheForge } from "./TheForge";
+import { VersionBadge } from "./VersionBadge";
 import { TuningDeck } from "./TuningDeck";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { useAppStore } from "../store";
@@ -61,7 +62,7 @@ import { SENTIMENT_DOT_COLORS } from "../lib/sentiment";
 import type { SentimentLabel } from "../types";
 import { visionRequest } from "../lib/ai";
 import { getActiveProvider } from "../lib/keys";
-import { getPlatformSendFn } from "../lib/platformSend";
+import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
@@ -204,6 +205,7 @@ const getRightSizeDefault = () => (isFHDViewport() ? 28 : 21.6);
 
 export function ForgeLayout() {
   const isMobile = useIsMobile();
+  const chatConnection = useAppStore((s) => s.tmiReadState);
   const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
   const {
     streamMetadata,
@@ -243,13 +245,6 @@ export function ForgeLayout() {
     smartRepliesLoading,
     isAutoForgeThinking,
     sentimentHistory,
-    addSentMessage,
-    incrementMessagesSent,
-    addAutoForgeEvent,
-    setLastManualSendMs,
-    addBotSentMessage,
-    incrementBotStat,
-    addBotAutoForgeEvent,
   } = useAppStore();
 
   const {
@@ -650,7 +645,6 @@ export function ForgeLayout() {
   const [editingChannel, setEditingChannel] = useState(false);
   const [channelInput, setChannelInput] = useState("");
   const channelInputRef = useRef<HTMLInputElement>(null);
-  const [offlineTitle, setOfflineTitle] = useState("BRB... touching grass 🌱");
 
   // Channel-change warning overlay state
   const [pendingChannel, setPendingChannel] = useState<string | null>(null);
@@ -660,29 +654,6 @@ export function ForgeLayout() {
     autoMemory: false,
     longTermMemory: false,
   });
-
-  useEffect(() => {
-    if (!streamMetadata?.channelName) {
-      const titles = [
-        "BRB... touching grass 🌱",
-        "Stream went to get snacks 🍿",
-        "Raid shadow legends irl 🏰",
-        "Currently arguing with a wall 🧱",
-        "Gone fishing... for viewers 🎣",
-        "Stream is charging its social battery 🔋",
-        "Taking a mental health pixel break 🎮",
-        "Stream got distracted by a butterfly 🦋",
-        "AFK — Away From Keyboard (and sanity) ⌨️",
-        "Stream is vibing in the void 🕳️",
-        "Plotting world domination... slowly 🌍",
-        "Stream caught a case of the Mondays 😵",
-        "Currently being a NPC in real life 🤖",
-        "Stream is loading... please wait ⏳",
-        "Gone to find the missing sock 🧦",
-      ];
-      setOfflineTitle(titles[Math.floor(Math.random() * titles.length)]);
-    }
-  }, [streamMetadata?.channelName]);
 
   // Load 7TV + FrankerFaceZ + BTTV emotes for the current channel
   useEffect(() => {
@@ -713,61 +684,25 @@ export function ForgeLayout() {
     const channel = streamMetadata?.channelName;
     if (!channel) return;
     const state = useAppStore.getState();
-    // Default to the first active authenticated bot in multi-bot mode.
-    // The header SendAsPicker was removed; the ChatSender dropdown in the
-    // MultiBotPanel still sets manualSendBotId for the direct-send path.
-    const fallbackBotId = state.multiBotEnabled
-      ? (state.bots.find((b) => b.active && b.session)?.id ?? state.manualSendBotId ?? undefined)
-      : state.manualSendBotId ?? undefined;
-    const selectedBotId = fallbackBotId;
-    const sendFn = getPlatformSendFn(state.platform, selectedBotId);
     try {
-      await sendFn(channel, text);
-      state.setLastManualSendMs(Date.now());
+      await sendManualMessage({ message: text, channel, source: "smart_reply" });
       if (state.messageSoundEnabled) playMessageSound();
-      const sentBot = selectedBotId ? state.bots.find((b) => b.id === selectedBotId) : null;
-      if (state.multiBotEnabled && sentBot) {
-        state.addBotSentMessage(sentBot.id, {
-          message: text,
-          channel,
-          timestamp: Date.now(),
-          source: "manual",
-          botId: sentBot.id,
-        });
-        state.incrementBotStat(sentBot.id, "messagesSent");
-        state.addBotAutoForgeEvent(sentBot.id, {
-          timestamp: Date.now(),
-          type: "action_sent",
-          severity: "high",
-          summary: `Smart reply as @${sentBot.session?.username}: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
-          details: { source: "smart_reply", message: text, channel, botId: sentBot.id },
-        });
-      } else {
-        addSentMessage({ message: text, channel, timestamp: Date.now(), source: "manual" });
-        incrementMessagesSent();
-        useAppStore.getState().incrementStat("manualActions");
-        addAutoForgeEvent({
-          timestamp: Date.now(),
-          type: "action_sent",
-          severity: "high",
-          summary: `Smart reply: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
-          details: { source: "smart_reply", message: text, channel },
-        });
-      }
+      setSmartReplies([]);
       toast.success("Reply sent!");
       playSfx('send_message');
     } catch (e: any) {
       toast.error(e.message || "Failed to send reply");
       playSfx('error');
     }
-    setSmartReplies([]);
   };
 
   // Smart reply keyboard shortcuts (1/2/3 to send)
   useEffect(() => {
     if (smartReplies.length === 0) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.defaultPrevented || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
       const idx = parseInt(e.key, 10) - 1;
       if (idx >= 0 && idx < smartReplies.length) {
         e.preventDefault();
@@ -896,11 +831,10 @@ export function ForgeLayout() {
     if (!msg || !channel || sidebarChatSending) return;
     setSidebarChatSending(true);
     try {
-      const sendFn = getPlatformSendFn(platform);
-      await sendFn(channel, msg);
+      await sendManualMessage({ message: msg, channel });
       if (messageSoundEnabled && platform === 'joystick') playMessageSound();
       speakMessage(msg);
-      setSidebarChatMsg("");
+      setSidebarChatMsg((current) => current.trim() === msg ? "" : current);
       toast.success("Message sent to chat!");
     } catch (e: any) {
       toast.error("Failed to send message", { description: e?.message || String(e) });
@@ -2136,9 +2070,10 @@ export function ForgeLayout() {
         /* ═══ Mobile Layout — tabbed, bottom bar, single panel at a time ═══ */
         <div className="flex flex-col h-full w-full bg-transparent relative z-10 overflow-hidden">
           {/* Compact Header — logo + login only */}
-          <div className="shrink-0 h-[42px] border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-2 z-40 safe-top">
+          <div className="forge-mobile-header shrink-0 border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-2 z-40 safe-top">
             <div className="flex items-center shrink-0 gap-2">
               <img src={logoUrl} alt="MADchatter" className="relative z-10 h-[28px] w-auto forge-logo-glow cursor-pointer select-none" style={{ opacity: 0.8 }} />
+              <VersionBadge />
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {activeUser ? (
@@ -2765,7 +2700,7 @@ export function ForgeLayout() {
                                 type="text"
                                 value={sidebarChatMsg}
                                 onChange={(e) => setSidebarChatMsg(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSidebarChatSend(); } }}
+                                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleSidebarChatSend(); } }}
                                 placeholder="Send a message to chat..."
                                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-teal-500/40 focus:bg-white/[0.07] transition-all"
                                 disabled={sidebarChatSending}
@@ -2833,7 +2768,7 @@ export function ForgeLayout() {
               order={2}
               minSize="5%"
               defaultSize={`${Math.max(5, 100 - (leftCollapsed ? leftCollapsedSize : leftPanelSize) - rightSize)}%`}
-              className="bg-transparent z-10 relative"
+              className="forge-workspace bg-transparent z-10 relative"
             >
               {/* Gold hexagon background with golden sparkles */}
               <div className="forge-hex-bg" aria-hidden="true">
@@ -2841,17 +2776,16 @@ export function ForgeLayout() {
               </div>
               <div className="flex flex-col h-full overflow-x-hidden relative z-10">
                 {/* Top-Center Frame: Compact Header — Logo left, Stream Info center, Login right */}
-                <div data-tutorial="command-palette" className="shrink-0 h-[42px] border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-3 z-40 relative overflow-visible">
+                <div data-tutorial="command-palette" className="forge-app-header shrink-0 border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-3 z-40 relative">
                   {/* Far-Left: MADchatter Logo */}
-                  <div className="flex items-center shrink-0" style={{ overflow: 'visible' }}>
+                  <div className="forge-brand flex items-center shrink-0 gap-2">
                     <div className="forge-header-aura" />
                     <img
                       src={logoUrl}
                       alt="MADchatter"
-                      className="relative z-10 h-[81px] w-auto forge-logo-glow cursor-pointer select-none"
+                      className="relative z-10 h-[44px] w-auto forge-logo-glow cursor-pointer select-none"
                       style={{
-                        opacity: 0.8,
-                        marginTop: '42px',
+                        opacity: 0.95,
                       }}
                       onClick={() => {
                         const now = Date.now();
@@ -2865,37 +2799,28 @@ export function ForgeLayout() {
                         }
                       }}
                     />
+                    <VersionBadge />
                   </div>
 
                   {/* Center: LIVE Status + Channel + Title + Viewers */}
-                  <div className="flex-1 flex items-center justify-center gap-2.5 min-w-0">
+                  <div className="forge-channel-summary flex-1 flex items-center justify-center gap-2.5 min-w-0">
                     {/* LIVE / OFFLINE badge */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {streamMetadata?.channelName ? (
-                        <>
-                          <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
-                          <span className="font-black text-red-400 uppercase font-mono tracking-widest text-xs">
-                            LIVE
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="w-2.5 h-2.5 rounded-full bg-gray-600" />
-                          <span className="font-black text-gray-500 uppercase font-mono tracking-widest text-xs">
-                            OFFLINE
-                          </span>
-                        </>
-                      )}
+                    <div className="forge-connection flex items-center gap-1.5 shrink-0" role="status" title={`Chat connection: ${chatConnection}`}>
+                      <span aria-hidden="true" className={cn("w-1.5 h-1.5 rounded-full", chatConnection === 'connected' ? 'bg-emerald-400' : chatConnection === 'connecting' ? 'bg-amber-400 animate-pulse' : chatConnection === 'error' ? 'bg-red-400' : 'bg-gray-500')} />
+                      <span className={cn("font-semibold uppercase font-mono tracking-wider text-[10px]", chatConnection === 'connected' ? 'text-emerald-400' : chatConnection === 'connecting' ? 'text-amber-400' : chatConnection === 'error' ? 'text-red-400' : 'text-gray-400')}>
+                        {chatConnection === 'connected' ? 'Chat connected' : chatConnection === 'connecting' ? 'Connecting' : chatConnection === 'error' ? 'Connection error' : 'Not connected'}
+                      </span>
                     </div>
 
                     <span className="text-gray-600 shrink-0 font-mono">|</span>
 
                     {/* Channel name */}
-                    <div className="flex items-center gap-1 shrink-0 font-bold text-orange-400 text-sm">
+                    <div className="forge-channel-name flex items-center gap-1 min-w-0 font-bold text-orange-400 text-sm">
                       {editingChannel ? (
                         <input
                           ref={channelInputRef}
                           type="text"
+                          aria-label="Stream channel name"
                           value={channelInput}
                           onChange={(e) => setChannelInput(e.target.value)}
                           onBlur={commitChannel}
@@ -2912,29 +2837,26 @@ export function ForgeLayout() {
                             type="button"
                             onClick={startEditingChannel}
                             data-tutorial="channel"
-                            className="hover:text-orange-300 transition-colors cursor-pointer text-sm"
+                            className="truncate hover:text-orange-300 transition-colors cursor-pointer text-sm"
+                            title={streamMetadata?.channelName || 'Choose a channel'}
                           >
-                            @{streamMetadata?.channelName || "sodapoppin"}
+                            {streamMetadata?.channelName ? `@${streamMetadata.channelName}` : 'Set channel'}
                           </button>
                         </ThemedTooltip>
                       )}
                     </div>
 
-                    <span className="text-gray-600 shrink-0">•</span>
+                    <span className="forge-stream-detail text-gray-600 shrink-0" aria-hidden="true">•</span>
 
                     {/* Title marquee */}
-                    <div className="title-marquee-wrap flex items-center gap-1 text-gray-300 max-w-[300px] overflow-hidden">
-                      <div className="overflow-hidden flex-1">
-                        <span className="inline-block whitespace-nowrap title-marquee text-sm font-medium">
-                          {(streamMetadata?.channelName ? (streamMetadata?.title || "Late night gaming variety!") : offlineTitle)}&nbsp;||&nbsp;{(streamMetadata?.channelName ? (streamMetadata?.title || "Late night gaming variety!") : offlineTitle)}&nbsp;||&nbsp;
-                        </span>
-                      </div>
+                    <div className="forge-stream-detail min-w-0 text-gray-400 max-w-[300px] truncate text-xs" title={streamMetadata?.title || undefined}>
+                      {streamMetadata?.channelName ? (streamMetadata.title || 'Waiting for stream details') : 'Your next conversation starts here'}
                     </div>
 
-                    <span className="text-gray-600 shrink-0">•</span>
+                    <span className="forge-stream-detail text-gray-600 shrink-0" aria-hidden="true">•</span>
 
                     {/* Viewer count */}
-                    <div className="flex items-center gap-1.5 text-gray-300 shrink-0">
+                    <div className="forge-stream-detail flex items-center gap-1.5 text-gray-300 shrink-0">
                       <Users className="w-4 h-4 text-orange-500" />
                       <span className="font-bold text-sm">{(streamMetadata?.channelName ? (streamMetadata?.viewerCount || 0) : 0).toLocaleString()}</span>
                       <span className="text-gray-500 text-xs font-medium">viewers</span>
@@ -2973,6 +2895,7 @@ export function ForgeLayout() {
                           <button
                             {...props}
                             type="button"
+                            aria-label="Cycle color theme"
                             onClick={() => {
                               const s = useAppStore.getState();
                               // If Urz light theme is active, turn it off and cycle normally

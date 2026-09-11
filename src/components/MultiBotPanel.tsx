@@ -8,7 +8,7 @@ import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
 import { removeTwitchSessionForBot } from "../lib/twitch";
 import { removeKickSessionForBot } from "../lib/kick";
-import { getPlatformSendFn } from "../lib/platformSend";
+import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { ThemedTooltip } from "./ui/tooltip";
@@ -508,7 +508,7 @@ function DirectorNoteInput() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               handleSend();
             }
@@ -577,27 +577,10 @@ function ChatSender() {
     setSending(true);
     const toastId = toast.loading("Sending to chat...", { description: `@${sendableBots.find((b) => b.id === botId)?.session?.username}: "${message.substring(0, 40)}"` });
     try {
-      const sendFn = getPlatformSendFn(platform, botId);
-      await sendFn(channel, message);
-      state.setLastManualSendMs(Date.now());
+      await sendManualMessage({ message, channel, botId });
       if (state.messageSoundEnabled) playMessageSound();
       speakMessage(message);
-      state.addBotSentMessage(botId, {
-        message,
-        channel,
-        timestamp: Date.now(),
-        source: "manual",
-        botId,
-      });
-      state.incrementBotStat(botId, "messagesSent");
-      state.addBotAutoForgeEvent(botId, {
-        timestamp: Date.now(),
-        type: "action_sent",
-        severity: "high",
-        summary: `Direct send as @${sendableBots.find((b) => b.id === botId)?.session?.username}: "${message.substring(0, 60)}${message.length > 60 ? "..." : ""}"`,
-        details: { source: "manual", message, channel, botId },
-      });
-      setText("");
+      setText((current) => current.trim() === message ? "" : current);
       toast.success("Sent to chat", { id: toastId });
     } catch (e: any) {
       toast.error(e?.message || "Failed to send message", { id: toastId });
@@ -629,7 +612,7 @@ function ChatSender() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               handleSend();
             }

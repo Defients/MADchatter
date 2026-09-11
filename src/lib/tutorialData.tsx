@@ -231,7 +231,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "Welcome to the Forge!",
     description: (
       <>
-        Click here to set your stream channel name. We've pre-filled <span className="text-teal-400 font-bold">'skippypoppin'</span> and loaded real chat data so you can see how everything works.
+        Click here to set your stream channel name. Empty sessions preview <span className="text-teal-400 font-bold">'skippypoppin'</span> with sample chat so you can see how everything works. Existing session context stays in place during the tour.
       </>
     ),
     position: "bottom",

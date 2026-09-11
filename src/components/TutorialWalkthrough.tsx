@@ -65,8 +65,11 @@ export function TutorialWalkthrough() {
   const [cardPos, setCardPos] = useState<{ left: number; top: number }>({ left: 100, top: 100 });
   const rafRef = useRef<number | null>(null);
   const messageTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const tutorialChannelRef = useRef<string | null>(null);
-  const multibotWasEnabledRef = useRef<boolean | null>(null);
+  type AppState = ReturnType<typeof useAppStore.getState>;
+  type DemoContext = Pick<AppState, "streamMetadata" | "chatLog" | "audioTranscript" | "pinnedMemories" | "goldenMemoryId" | "visualSnapshotUrl" | "visualContextTags" | "visualSnapshotHistory">;
+  const demoContextRef = useRef<{ original: DemoContext; owned: Partial<DemoContext> } | null>(null);
+  type BotSelection = Pick<AppState, "bots" | "activeBotId" | "manualSendBotId">;
+  const temporaryBotsRef = useRef<{ original: BotSelection; owned: BotSelection } | null>(null);
 
   const totalSteps = TUTORIAL_STEPS.length;
   const currentStep = TUTORIAL_STEPS[tutorialStep];
@@ -108,15 +111,38 @@ export function TutorialWalkthrough() {
 
   const loadSampleData = useCallback(() => {
     const state = useAppStore.getState();
+    // Existing sessions use their own context for the tour. Never replace it with a demo.
+    if (state.streamMetadata.channelName || state.chatLog.length || state.audioTranscript ||
+      state.pinnedMemories.length || state.longTermMemory || state.visualSnapshotUrl ||
+      state.visualSnapshotHistory.length || state.variants.length || state.autoForgeEnabled) return;
+    const original: DemoContext = {
+      streamMetadata: state.streamMetadata, chatLog: state.chatLog, audioTranscript: state.audioTranscript,
+      pinnedMemories: state.pinnedMemories, goldenMemoryId: state.goldenMemoryId,
+      visualSnapshotUrl: state.visualSnapshotUrl, visualContextTags: state.visualContextTags,
+      visualSnapshotHistory: state.visualSnapshotHistory,
+    };
+    demoContextRef.current = { original, owned: {} };
+    const captureOwned = (...keys: (keyof DemoContext)[]) => {
+      const demo = demoContextRef.current;
+      if (!demo) return;
+      const current = useAppStore.getState();
+      for (const key of keys) Object.assign(demo.owned, { [key]: current[key] });
+    };
+    const demoStillActive = () => !!demoContextRef.current &&
+      useAppStore.getState().streamMetadata.channelName === "skippypoppin";
+    const canWrite = (key: keyof DemoContext) => {
+      const demo = demoContextRef.current;
+      return demo && Object.is(useAppStore.getState()[key],
+        Object.prototype.hasOwnProperty.call(demo.owned, key) ? demo.owned[key] : demo.original[key]);
+    };
     const timedMessages = parseChunceLogWithDelays();
-    const prevChannel = state.streamMetadata?.channelName || null;
-    tutorialChannelRef.current = prevChannel;
     state.updateStreamMetadata({
       channelName: "skippypoppin",
       title: "Divinity Original Sin 2 — Act 1 Fort Joy",
       category: "Games",
       viewerCount: 4283,
     });
+    captureOwned("streamMetadata");
     const existingLog = useAppStore.getState().chatLog;
     const hasTutorialData = existingLog.some(
       (m) => !m.marker && m.user === "thecreature" && m.text.includes("Chunce"),
@@ -127,11 +153,16 @@ export function TutorialWalkthrough() {
         cumulative += timed.delayMs;
         const isBannedMsg = timed.message.user === "thecreature" && timed.message.text.includes("tru dat");
         const id = setTimeout(() => {
+          if (!demoStillActive() || !canWrite("chatLog")) return;
           useAppStore.getState().appendChatLog(timed.message);
+          captureOwned("chatLog");
           if (isBannedMsg) {
-            setTimeout(() => {
+            const banTimer = setTimeout(() => {
+              if (!demoStillActive() || !canWrite("chatLog")) return;
               useAppStore.getState().markUserBanned("thecreature");
+              captureOwned("chatLog");
             }, 3500);
+            messageTimeoutsRef.current.push(banTimer);
           }
         }, cumulative);
         messageTimeoutsRef.current.push(id);
@@ -176,7 +207,9 @@ export function TutorialWalkthrough() {
       ];
       for (const line of transcriptLines) {
         const id = setTimeout(() => {
+          if (!demoStillActive() || !canWrite("audioTranscript")) return;
           useAppStore.getState().appendAudioTranscript(line.text);
+          captureOwned("audioTranscript");
         }, line.delay);
         messageTimeoutsRef.current.push(id);
       }
@@ -192,22 +225,28 @@ export function TutorialWalkthrough() {
           timestamp: mem.timestamp,
         });
       }
+      captureOwned("pinnedMemories");
       // Mark the first memory ("i did it Chunce") as the Golden Memory
       // addPinnedMemory generates new IDs in the store, so read back the actual IDs
-      setTimeout(() => {
+      const goldenTimer = setTimeout(() => {
+        if (!demoStillActive() || !canWrite("pinnedMemories") || !canWrite("goldenMemoryId")) return;
         const memories = useAppStore.getState().pinnedMemories;
         if (memories.length > 0) {
           useAppStore.getState().setGoldenMemory(memories[0].id);
+          captureOwned("goldenMemoryId");
         }
       }, 2000);
+      messageTimeoutsRef.current.push(goldenTimer);
     }
     // Set the KEKW image as the visual snapshot
     if (!useAppStore.getState().visualSnapshotUrl) {
       useAppStore.getState().setVisualSnapshot(kekwImg, ["KEKW", "emote", "reaction"]);
+      captureOwned("visualSnapshotUrl", "visualContextTags", "visualSnapshotHistory");
     }
   }, []);
 
   const startTutorial = useCallback(() => {
+    if (useAppStore.getState().tutorialActive) return;
     loadSampleData();
     setTutorialStep(0);
     setTutorialActive(true);
@@ -234,8 +273,26 @@ export function TutorialWalkthrough() {
       clearTimeout(id);
     }
     messageTimeoutsRef.current = [];
-    // Clear all sample stream data
-    useAppStore.getState().clearAllContext();
+    // Restore only fields still owned by the demo. Preserve edits made during the tour.
+    const demo = demoContextRef.current;
+    if (demo) {
+      const current = useAppStore.getState();
+      const restore: Partial<DemoContext> = {};
+      for (const key of Object.keys(demo.owned) as (keyof DemoContext)[]) {
+        if (key === "streamMetadata") continue;
+        if (Object.is(current[key], demo.owned[key])) Object.assign(restore, { [key]: demo.original[key] });
+      }
+      const metadata = { ...current.streamMetadata };
+      for (const key of (current.streamMetadata.channelName === demo.owned.streamMetadata?.channelName
+        ? Object.keys(demo.original.streamMetadata) : []) as (keyof AppState["streamMetadata"])[]) {
+        if (Object.is(metadata[key], demo.owned.streamMetadata?.[key])) {
+          Object.assign(metadata, { [key]: demo.original.streamMetadata[key] });
+        }
+      }
+      restore.streamMetadata = metadata;
+      useAppStore.setState(restore);
+      demoContextRef.current = null;
+    }
     useAppStore.getState().setIsAutoForgeHUDOpen(false);
     // Reset AutoForge header color if it was changed
     const header = document.querySelector('[data-tutorial="autoforge-header"]') as HTMLElement | null;
@@ -243,17 +300,18 @@ export function TutorialWalkthrough() {
       header.style.color = "";
       header.style.textShadow = "";
     }
-    if (tutorialChannelRef.current !== null) {
-      useAppStore.getState().updateStreamMetadata({
-        channelName: tutorialChannelRef.current,
-      });
-      tutorialChannelRef.current = null;
-    }
     // Restore multi-bot state to what it was before the tutorial
-    if (multibotWasEnabledRef.current === false) {
-      useAppStore.getState().disableMultiBot();
+    if (temporaryBotsRef.current) {
+      // Enabling the tour panel copies legacy state. Discard that temporary copy
+      // instead of syncing demo/persona changes back over the user's legacy state.
+      const { original, owned } = temporaryBotsRef.current;
+      const current = useAppStore.getState();
+      if (current.multiBotEnabled && current.bots === owned.bots &&
+        current.activeBotId === owned.activeBotId && current.manualSendBotId === owned.manualSendBotId) {
+        useAppStore.setState({ ...original, multiBotEnabled: false });
+      }
+      temporaryBotsRef.current = null;
     }
-    multibotWasEnabledRef.current = null;
   }, []);
 
   const finishTutorial = useCallback(() => {
@@ -301,11 +359,15 @@ export function TutorialWalkthrough() {
     // Director Notes step: enable multi-bot so the DirectorNoteInput renders
     if (currentStep?.selector === '[data-tutorial="multibot-panel"]') {
       const state = useAppStore.getState();
-      if (multibotWasEnabledRef.current === null) {
-        multibotWasEnabledRef.current = state.multiBotEnabled;
-      }
       if (!state.multiBotEnabled) {
+        const original: BotSelection = {
+          bots: state.bots, activeBotId: state.activeBotId, manualSendBotId: state.manualSendBotId,
+        };
         state.enableMultiBot();
+        const enabled = useAppStore.getState();
+        temporaryBotsRef.current ??= { original, owned: {
+          bots: enabled.bots, activeBotId: enabled.activeBotId, manualSendBotId: enabled.manualSendBotId,
+        } };
       }
       window.dispatchEvent(new CustomEvent("tutorial-open-multibot"));
     }

@@ -77,7 +77,8 @@ export function StatusBar() {
   const [isDragging, setIsDragging] = useState(false);
   const [dockX, setDockX] = useState(() => {
     const saved = localStorage.getItem('forge-statusbar-x');
-    return saved ? parseInt(saved) : 0;
+    const value = Number(saved);
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
   });
   const dragRef = useRef<{ startX: number; startDockX: number } | null>(null);
 
@@ -90,6 +91,18 @@ export function StatusBar() {
   const showAudioHealth = showAudio || showHealth;
   const showSentimentQueue = showSentiment || showQueue;
   const dockRef = useRef<HTMLDivElement>(null);
+  // A saved position from a wider display must never hide the dock.
+  useEffect(() => {
+    const clampDock = () => {
+      const width = dockRef.current?.offsetWidth ?? 0;
+      setDockX(x => Math.max(0, Math.min(x, window.innerWidth - width)));
+    };
+    const observer = new ResizeObserver(clampDock);
+    if (dockRef.current) observer.observe(dockRef.current);
+    window.addEventListener('resize', clampDock);
+    clampDock();
+    return () => { observer.disconnect(); window.removeEventListener('resize', clampDock); };
+  }, []);
   const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const DEFAULT_LOG_HEIGHT = 256; // max-h-64 = 16rem = 256px
@@ -201,7 +214,7 @@ export function StatusBar() {
   return (
     <>
       {/* Collapsible Status Bar — bottom-left */}
-      <div ref={dockRef} data-tutorial="statusbar" className="fixed bottom-0 z-40 flex flex-col" style={{ left: `${dockX}px` }}>
+      <div ref={dockRef} data-tutorial="statusbar" className="forge-status-dock fixed bottom-0 z-40 flex flex-col max-w-full" style={{ left: `${dockX}px` }}>
         <AnimatePresence>
           {showHistory && (
             <motion.div
@@ -236,6 +249,7 @@ export function StatusBar() {
                       <button
                         type="button"
                         onClick={handleCopyHistory}
+                        aria-label="Copy sent message log"
                         disabled={allSent.length === 0}
                         className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30"
                       >
@@ -246,6 +260,7 @@ export function StatusBar() {
                       <button
                         type="button"
                         onClick={handleClearHistory}
+                        aria-label="Clear sent message log"
                         disabled={allSent.length === 0}
                         className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-30"
                       >
@@ -285,7 +300,7 @@ export function StatusBar() {
         </AnimatePresence>
 
         {/* Status Bar */}
-        <div className="flex items-center gap-3 px-3 py-1.5 bg-[#121217]/95 backdrop-blur-md border border-white/10 border-b-0 rounded-tr-lg shadow-xl">
+        <div className="forge-status-surface flex items-center gap-3 px-3 py-1.5 bg-[#121217]/95 backdrop-blur-md border border-white/10 border-b-0 rounded-tr-lg shadow-xl">
           {/* Drag Handle */}
           <ThemedTooltip content="Drag to reposition along bottom">
             <div
@@ -446,6 +461,8 @@ export function StatusBar() {
             <button
               type="button"
               onClick={() => { setShowHistory(!showHistory); playSfx('history_toggle'); }}
+              aria-label={showHistory ? 'Hide sent message log' : 'Show sent message log'}
+              aria-expanded={showHistory}
               className="ml-1 p-0.5 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors"
             >
               {showHistory ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}

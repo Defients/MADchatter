@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../store";
+import { PersonaPortrait } from "./PersonaPortrait";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { cn } from "../lib/utils";
 import { generateChat } from "../lib/ai";
 import { getActiveProvider } from "../lib/keys";
-import { getPlatformSendFn } from "../lib/platformSend";
+import { sendManualMessage } from "../lib/manualSend";
 import { playSfx } from "../lib/sfx";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { SettingsPanel } from "./SettingsPanel";
@@ -402,6 +403,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   const handleForge = async (count?: number, autoSend?: boolean) => {
     const { config: cfg, streamMetadata: sm, audioTranscript: at, chatLog: cl, visualSnapshotUrl: vsu, visualContextTags: vct, longTermMemory: ltm, pinnedMemories: pm, goldenMemoryId: gmid, isForging: forging, autoMemoryConfig: cl_autoMemoryConfig, autoMemories: cl_autoMemories, userProfiles: cl_userProfiles, insideJokes: cl_insideJokes, personalityState: cl_personalityState } = forgeDataRef.current;
     if (forging) return;
+    const forgePlatform = useAppStore.getState().platform;
     setIsForging(true);
     toast.loading(count ? `Forging ${count} co-pilot variant${count > 1 ? "s" : ""}...` : "Forging new co-pilot variants...", { id: "forging-variants" });
 
@@ -470,21 +472,10 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       if (autoSend && suggestions.length > 0) {
         setTimeout(() => {
           const bestVariant = suggestions[0].message;
-          toast.loading("AutoForge is selecting and sending...", { id: "autoforge-send" });
-          useAppStore.getState().addSentMessage({
-            message: bestVariant,
-            channel: sm.channelName,
-            timestamp: Date.now(),
-            source: "autoforge",
-          });
-          useAppStore.getState().incrementMessagesSent();
-          useAppStore.getState().addAutoForgeEvent({
-            timestamp: Date.now(),
-            type: "action_sent",
-            severity: "high",
-            summary: `AutoForge sent: "${bestVariant.substring(0, 60)}${bestVariant.length > 60 ? "..." : ""}"`,
-            details: { source: "autoforge", message: bestVariant, channel: sm.channelName },
-          });
+          if (useAppStore.getState().streamMetadata.channelName !== sm.channelName || useAppStore.getState().platform !== forgePlatform) {
+            toast.info("Auto-send cancelled because the channel or platform changed.");
+            return;
+          }
           window.dispatchEvent(new CustomEvent("autoforge-send-message", { detail: { message: bestVariant } }));
         }, 1500); // 1.5 seconds delay so the user can see it generated
       }
@@ -1873,7 +1864,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       </div>
 
       {/* 1. Core Profile selector */}
-      <div data-tutorial="persona" className="space-y-1.5 shrink-0">
+      <div data-tutorial="persona" className="persona-selector space-y-1.5 shrink-0">
         <div className="flex justify-between items-center text-xs font-bold text-gray-300 px-0.5">
           <span className="flex items-center gap-1">
             <Bot className="w-3.5 h-3.5 text-gray-400" />
@@ -1905,19 +1896,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 }}
                 className={`group flex items-center justify-center ${rightSize < 20 ? 'gap-1.5' : 'gap-2.5'} py-2 px-2 rounded-lg border text-[10px] font-bold transition-all ${active ? p.activeColor : `bg-[#0a0a0f] border-white/5 text-gray-400 ${p.color}`}`}
               >
-                {(() => {
-                  const imgSize = rightSize < 20 ? 28 : rightSize < 22 ? 32 : 36;
-                  if (p.imageStatic && p.image) return (
-                    <div className="relative shrink-0" style={{ width: `${imgSize}px`, height: `${imgSize}px` }}>
-                      <img src={p.imageStatic} alt="" className={`absolute inset-0 w-full h-full rounded object-cover transition-opacity duration-200 ${active ? "opacity-0" : "opacity-100 group-hover:opacity-0"}`} />
-                      <img src={p.image} alt="" className={`absolute inset-0 w-full h-full rounded object-cover transition-opacity duration-200 ${active ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`} />
-                    </div>
-                  );
-                  if (p.image) return (
-                    <img src={p.image} alt="" className="rounded object-cover shrink-0" style={{ width: `${imgSize}px`, height: `${imgSize}px` }} />
-                  );
-                  return null;
-                })()}
+                <PersonaPortrait image={p.image} still={p.imageStatic} active={active} size={rightSize < 20 ? 28 : rightSize < 22 ? 32 : 36} />
                 <div className="flex flex-col items-start">
                   <span className={`text-[11px] ${p.fontClass}`}>{p.label}</span>
                   <span className="text-[9px] font-mono opacity-60">{p.desc}</span>
@@ -2715,17 +2694,36 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                     <span className="text-[10px] text-gray-400 truncate flex-1">{seq.reactions.join(" → ")}</span>
                     <button
                       onClick={() => {
-                        const platform = useAppStore.getState().platform;
-                        const channel = useAppStore.getState().streamMetadata?.channelName;
-                        const sendFn = getPlatformSendFn(platform);
-                        if (sendFn && channel) {
-                          seq.reactions.forEach((r, i) => {
-                            setTimeout(() => sendFn(channel, r).catch(console.error), i * 1500);
-                          });
-                          toast.success(`Sending sequence: ${seq.name}`);
-                        } else {
-                          toast.error("No platform connection available");
+                        const state = useAppStore.getState();
+                        const channel = state.streamMetadata?.channelName;
+                        if (!channel) {
+                          toast.error("Set a channel before sending a sequence.");
+                          return;
                         }
+                        const availableBots = state.bots.filter((bot) => bot.active && bot.session && bot.platform === state.platform);
+                        const botId = state.multiBotEnabled && state.platform !== "joystick"
+                          ? (availableBots.find((bot) => bot.id === state.manualSendBotId) ?? availableBots[0])?.id
+                          : undefined;
+                        let cancelled = false;
+                        seq.reactions.forEach((message, index) => {
+                          setTimeout(async () => {
+                            if (cancelled) return;
+                            const current = useAppStore.getState();
+                            if (current.platform !== state.platform || current.streamMetadata.channelName !== channel ||
+                              current.multiBotEnabled !== state.multiBotEnabled || current.manualSendBotId !== state.manualSendBotId) {
+                              cancelled = true;
+                              toast.info("Reaction sequence cancelled because the chat destination or identity changed.");
+                              return;
+                            }
+                            try {
+                              await sendManualMessage({ message, channel, botId });
+                            } catch (error) {
+                              cancelled = true;
+                              toast.error("Reaction sequence stopped", { description: error instanceof Error ? error.message : String(error) });
+                            }
+                          }, index * 1500);
+                        });
+                        toast.info(`Sending sequence: ${seq.name}`);
                       }}
                       className="opacity-0 group-hover:opacity-100 text-[9px] px-1 rounded bg-green-500/20 text-green-300 hover:bg-green-500/30 font-bold transition-opacity"
                     >

@@ -24,8 +24,8 @@ import { useIsMobile } from './hooks/useMediaQuery';
 import { getKeys } from './lib/keys';
 import { tmiSendManager } from './lib/twitch';
 import { KickChatClient, kickSendManager, fetchKickMetadata } from './lib/kick';
-import { JoystickChatClient, getJoystickBasicAuthKey, getJoystickSession, getJoystickBotUsername } from './lib/joystick';
-import { getPlatformSendFn } from './lib/platformSend';
+import { JoystickChatClient, joystickSendManager, getJoystickBasicAuthKey, getJoystickSession, getJoystickBotUsername } from './lib/joystick';
+import { sendManualMessage } from './lib/manualSend';
 import { playMessageSound, setAudioOutputSink, setSoundUrl, setSoundVolume } from './lib/sound';
 import { playSfx, initSfxAudioContext } from './lib/sfx';
 import { createChatMessage } from './lib/chatUtils';
@@ -47,6 +47,21 @@ export default function App() {
   const [maxRageShake, setMaxRageShake] = React.useState(false);
   const [maxRageSettled, setMaxRageSettled] = React.useState(false);
   const isMobile = useIsMobile();
+  const lightMode = useAppStore((s) => s.lightThemeActive);
+  const colorTheme = useAppStore((s) => s.theme);
+  // Portals (tooltips, welcome, toasts) live outside the app wrapper.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('dark', !lightMode);
+    root.classList.toggle('light-theme', lightMode);
+    root.classList.toggle('cosmotech', colorTheme === 'cosmotech');
+    root.classList.toggle('corrupture', colorTheme === 'corrupture');
+    root.style.colorScheme = lightMode ? 'light' : 'dark';
+    return () => {
+      root.classList.remove('dark', 'light-theme', 'cosmotech', 'corrupture');
+      root.style.removeProperty('color-scheme');
+    };
+  }, [lightMode, colorTheme]);
   const { 
     clearAllContext, 
     setVariants, 
@@ -469,23 +484,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, [streamMetadata?.channelName, platform]);
 
-  // 4. Send connection state listener (Twitch or Kick)
+  // 4. Subscribe only to the selected platform's send connection state.
   useEffect(() => {
-    if (platform === 'kick') {
-      const unsub = kickSendManager.onStateChange((state) => {
-        setTmiSendState(state as any);
-      });
-      return () => { unsub(); };
-    }
-    const unsub = tmiSendManager.onStateChange((state) => {
-      setTmiSendState(state as any);
-    });
-    return () => { unsub(); };
+    const manager = platform === 'joystick' ? joystickSendManager
+      : platform === 'kick' ? kickSendManager : tmiSendManager;
+    setTmiSendState(manager.getState() as any);
+    return manager.onStateChange((state) => setTmiSendState(state as any));
   }, [setTmiSendState, platform]);
 
   // 5. Keyboard Shortcuts listener (Ctrl+K palette & hotkeys F, C, S, A, R, H)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || e.isComposing) return;
       // Toggle Command Palette (⌘K / Ctrl+K)
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -494,9 +504,11 @@ export default function App() {
         return;
       }
 
-      // Skip single-key shortcuts when user is typing in inputs or textareas
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // Skip single-key shortcuts when user is typing or using a dialog
       const target = e.target as HTMLElement;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      if (target && (target.closest('input, textarea, select, [role="dialog"]') || target.isContentEditable)) {
         return;
       }
 
@@ -630,22 +642,8 @@ export default function App() {
     const toastId = toast.loading(`Sending top variant to @${channelName}...`);
 
     const currentPlatform = useAppStore.getState().platform;
-    const s = useAppStore.getState();
-    // In multi-bot mode, send as the selected manual-send bot identity.
-    // In legacy mode, manualSendBotId is null → singleton send path.
-    const sendBotId = s.multiBotEnabled ? s.manualSendBotId : undefined;
     try {
-      const sendFn = getPlatformSendFn(currentPlatform, sendBotId);
-      await sendFn(channelName, topMsg);
-      useAppStore.getState().addSentMessage({
-        message: topMsg,
-        channel: channelName,
-        timestamp: Date.now(),
-        source: "manual",
-        botId: sendBotId ?? undefined,
-      });
-      useAppStore.getState().incrementMessagesSent();
-      useAppStore.getState().incrementStat("manualActions");
+      await sendManualMessage({ message: topMsg, channel: channelName });
       const platformLabel = currentPlatform === 'kick' ? 'Kick' : currentPlatform === 'joystick' ? 'Joystick' : 'Twitch';
       toast.success(`Sent top variant to ${platformLabel} chat!`, { id: toastId });
       playSfx('send_message');
@@ -666,9 +664,9 @@ export default function App() {
       <MentionOverlay />
       {/* B12: Hype Mode Visual Effect */}
       {hypeLevel >= 2 && <div className="hype-mode-overlay" />}
-      <div id="main-content" className="contents">
+      <main id="main-content" tabIndex={-1} className="flex-1 min-h-0 min-w-0 outline-none">
       <ForgeLayout />
-      </div>
+      </main>
       {/* Per-bot AutoForge loops (renders null; mounts the useAutoForgeBot
           instances that drive multi-bot AutoForge). */}
       {multiBotLoops}

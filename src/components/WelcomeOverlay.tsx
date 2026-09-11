@@ -28,6 +28,8 @@ import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useAppStore } from "../store";
 import { getKeys } from "../lib/keys";
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { VersionBadge } from "./VersionBadge";
+import logoUrl from "../../madchatter-logo1.png";
 
 const STORAGE_KEY = "madchatter-welcome-seen";
 
@@ -169,7 +171,7 @@ export function WelcomeOverlay() {
             {/* Top accent bar */}
             <div className="h-[2px] w-full bg-gradient-to-r from-orange-500 via-purple-500 to-cyan-500" />
 
-            <div className="p-10 md:p-14 max-h-[85vh] overflow-y-auto forge-scroll">
+            <div className="p-5 sm:p-10 md:p-14 max-h-[85dvh] overflow-y-auto forge-scroll">
               {/* Joystick install notification */}
               {platform === 'joystick' && (
                 <motion.div
@@ -201,7 +203,7 @@ export function WelcomeOverlay() {
               {/* Header */}
               <div className="text-center mb-10">
                 <motion.img
-                  src="https://madchatter.fun/assets/madchatter-wide.png"
+                  src={logoUrl}
                   alt="MADchatter"
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
@@ -209,6 +211,7 @@ export function WelcomeOverlay() {
                   className="mx-auto h-28 w-auto mb-3 object-contain"
                   style={{ filter: "drop-shadow(0 0 16px rgba(255, 250, 250, 0.25))" }}
                 />
+                <VersionBadge />
                 <p className="text-sm text-gray-400 mt-3 max-w-md mx-auto leading-relaxed">
                   Your AI-powered stream chat co-pilot. Capture, tune, forge, and ship — all in one place.
                 </p>

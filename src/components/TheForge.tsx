@@ -7,7 +7,7 @@ import { generateChat, refineSuggestion, rankVariants } from "../lib/ai";
 import { getTwitchSession } from "../lib/twitch";
 import { getKickSession } from "../lib/kick";
 import { getJoystickSession } from "../lib/joystick";
-import { getPlatformSendFn } from "../lib/platformSend";
+import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
@@ -56,10 +56,7 @@ export function TheForge() {
     config,
     lastTokenUsage,
     setLastTokenUsage,
-    addSentMessage,
-    incrementMessagesSent,
     incrementForgeCount,
-    addAutoForgeEvent,
     autoMemoryConfig,
     autoMemories,
     userProfiles,
@@ -193,60 +190,15 @@ export function TheForge() {
     }
   };
 
-  const handleSend = async (message: string, botId?: string) => {
+  const handleSend = async (message: string, botId?: string, source: "manual" | "autoforge" = "manual") => {
     const toastId = toast.loading("Sending message to stream chat...", {
       description: `Message: "${message.substring(0, 30)}..."`
     });
     try {
       const state = useAppStore.getState();
-      const platform = state.platform;
-      // Multi-bot: send as the specified bot; otherwise default to the first
-      // active authenticated bot (the header SendAsPicker was removed). The
-      // ChatSender dropdown still sets manualSendBotId for direct sends.
-      const selectedBotId = botId ?? (state.multiBotEnabled
-        ? (state.manualSendBotId ?? state.bots.find((b) => b.active && b.session)?.id ?? undefined)
-        : undefined);
-      const sendFn = getPlatformSendFn(platform, selectedBotId);
-      await sendFn(streamMetadata.channelName, message);
-      // A8: Record manual send time for AutoForge pacing awareness
-      state.setLastManualSendMs(Date.now());
+      await sendManualMessage({ message, channel: streamMetadata.channelName, botId, source });
       if (state.messageSoundEnabled) playMessageSound();
       speakMessage(message);
-      const sentBot = selectedBotId ? state.bots.find((b) => b.id === selectedBotId) : null;
-      if (state.multiBotEnabled && sentBot) {
-        // Record into the chosen bot's runtime (independent history).
-        state.addBotSentMessage(sentBot.id, {
-          message,
-          channel: streamMetadata.channelName,
-          timestamp: Date.now(),
-          source: "manual",
-          botId: sentBot.id,
-        });
-        state.incrementBotStat(sentBot.id, "messagesSent");
-        state.addBotAutoForgeEvent(sentBot.id, {
-          timestamp: Date.now(),
-          type: "action_sent",
-          severity: "high",
-          summary: `Manual send as @${sentBot.session?.username}: "${message.substring(0, 60)}${message.length > 60 ? "..." : ""}"`,
-          details: { source: "manual", message, channel: streamMetadata.channelName, botId: sentBot.id },
-        });
-      } else {
-        addSentMessage({
-          message,
-          channel: streamMetadata.channelName,
-          timestamp: Date.now(),
-          source: "manual",
-        });
-        incrementMessagesSent();
-        useAppStore.getState().incrementStat("manualActions");
-        addAutoForgeEvent({
-          timestamp: Date.now(),
-          type: "action_sent",
-          severity: "high",
-          summary: `Manual Forge send: "${message.substring(0, 60)}${message.length > 60 ? "..." : ""}"`,
-          details: { source: "manual", message, channel: streamMetadata.channelName },
-        });
-      }
       toast.success("Sent to chat!", { id: toastId });
       playSfx('send_message');
     } catch (e: any) {
@@ -262,7 +214,7 @@ export function TheForge() {
     const onAutoSend = (e: Event) => {
       const customEvent = e as CustomEvent;
       if (customEvent.detail?.message) {
-        handleSendRef.current(customEvent.detail.message);
+        handleSendRef.current(customEvent.detail.message, undefined, "autoforge");
       }
     };
     window.addEventListener("autoforge-send-message", onAutoSend);
@@ -449,13 +401,14 @@ export function TheForge() {
           </div>
         ) : !setupStatus.complete ? (
           /* Setup Guide — shown until login + channel + API key are configured */
-          <div className="flex flex-col items-center justify-center text-center max-w-xl mx-auto py-8">
+          <div className="forge-onboarding flex flex-col items-center justify-center text-center max-w-xl mx-auto py-8">
+            <div className="forge-eyebrow mb-4">CAPTURE. TUNE. CONNECT.</div>
             <div className="mb-6">
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-                className="text-3xl font-black tracking-tight flex items-center justify-center gap-0"
+                className="forge-welcome-title text-3xl font-black tracking-tight flex items-center justify-center gap-0"
               >
                 {"Welcome to".split("").map((ch, i) => (
                   <motion.span
@@ -506,7 +459,7 @@ export function TheForge() {
             </div>
 
             {/* Setup Checklist */}
-            <div className="space-y-2 w-full mb-5">
+            <div className="forge-setup-steps space-y-2 w-full mb-5">
               {/* Step 1: Log In */}
               <div className={`bg-[#121217]/50 border p-3 rounded-xl flex items-center gap-3 text-left backdrop-blur transition-colors ${setupStatus.loggedIn ? "border-green-500/20" : "border-white/5 hover:border-white/10"}`}>
                 {setupStatus.loggedIn ? (
