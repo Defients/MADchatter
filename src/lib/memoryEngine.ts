@@ -242,6 +242,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
 export async function applyExtractionResults(
   result: MemoryExtractionResult,
   config: AutoMemoryConfig,
+  channel: string,
 ): Promise<{ memoriesAdded: number; profilesUpdated: number; jokesCreated: number }> {
   const now = Date.now();
   let memoriesAdded = 0;
@@ -260,7 +261,7 @@ export async function applyExtractionResults(
       isVerified: m.confidence >= config.autoVerifyThreshold,
       subjectUsername: m.subjectUsername || undefined,
     }));
-    await memoryStore.addMemories(newMemories);
+    await memoryStore.addMemories(channel, newMemories);
     memoriesAdded = newMemories.length;
   }
 
@@ -268,7 +269,7 @@ export async function applyExtractionResults(
   if (result.updatedProfiles && result.updatedProfiles.length > 0) {
     for (const update of result.updatedProfiles) {
       if (!update.username) continue;
-      const existing = await memoryStore.getProfile(update.username);
+      const existing = await memoryStore.getProfile(channel, update.username);
       const profile: UserProfile = existing || {
         username: update.username,
         firstSeenAt: now,
@@ -309,7 +310,7 @@ export async function applyExtractionResults(
         console.log(`[Memory] ${profile.username}: ${progressed.reason}`);
       }
 
-      await memoryStore.upsertProfile(merged);
+      await memoryStore.upsertProfile(channel, merged);
       profilesUpdated++;
     }
   }
@@ -327,13 +328,13 @@ export async function applyExtractionResults(
       variations: [],
       originTimestamp: j.originTimestamp || now,
     }));
-    await memoryStore.addJokes(newJokes);
+    await memoryStore.addJokes(channel, newJokes);
     jokesCreated = newJokes.length;
   }
 
   // Apply personality shift
   if (result.personalityShift && config.personalityEvolutionEnabled) {
-    const current = await memoryStore.getPersonality();
+    const current = await memoryStore.getPersonality(channel);
     if (current) {
       const updated: PersonalityState = {
         ...current,
@@ -341,12 +342,12 @@ export async function applyExtractionResults(
         mood: result.personalityShift.mood || current.mood,
         comfortLevel: result.personalityShift.comfortLevel ?? current.comfortLevel,
       };
-      await memoryStore.savePersonality(updated);
+      await memoryStore.savePersonality(channel, updated);
     }
   }
 
   // Log extraction
-  await memoryStore.addExtractionLog({
+  await memoryStore.addExtractionLog(channel, {
     id: generateId(),
     timestamp: now,
     summary: result.summary || `Extraction: ${memoriesAdded} memories, ${profilesUpdated} profiles, ${jokesCreated} jokes`,
@@ -409,8 +410,8 @@ export function pruneJokes(jokes: InsideJoke[], maxJokes: number): { kept: Insid
 
 // ─── Memory Boosting ────────────────────────────────────────────
 
-export async function boostMemory(memoryId: string): Promise<void> {
-  const allMemories = await memoryStore.getAllMemories();
+export async function boostMemory(channel: string, memoryId: string): Promise<void> {
+  const allMemories = await memoryStore.getAllMemories(channel);
   const memory = allMemories.find((m) => m.id === memoryId);
   if (!memory) return;
   const updated: AutoMemory = {
@@ -419,11 +420,11 @@ export async function boostMemory(memoryId: string): Promise<void> {
     lastReferencedAt: Date.now(),
     strength: Math.min(1.0, memory.strength + 0.1),
   };
-  await memoryStore.updateMemory(updated);
+  await memoryStore.updateMemory(channel, updated);
 }
 
-export async function boostJoke(jokeId: string, variationText?: string): Promise<void> {
-  const allJokes = await memoryStore.getAllJokes();
+export async function boostJoke(channel: string, jokeId: string, variationText?: string): Promise<void> {
+  const allJokes = await memoryStore.getAllJokes(channel);
   const joke = allJokes.find((j) => j.id === jokeId);
   if (!joke) return;
   const updated: InsideJoke = {
@@ -436,16 +437,16 @@ export async function boostJoke(jokeId: string, variationText?: string): Promise
       ? [...joke.variations, { text: variationText, timestamp: Date.now() }].slice(-20)
       : joke.variations,
   };
-  await memoryStore.updateJoke(updated);
+  await memoryStore.updateJoke(channel, updated);
 }
 
 // ─── Run Full Decay Cycle ───────────────────────────────────────
 
-export async function runDecayCycle(config: AutoMemoryConfig): Promise<void> {
+export async function runDecayCycle(config: AutoMemoryConfig, channel: string): Promise<void> {
   const [memories, jokes, profiles] = await Promise.all([
-    memoryStore.getAllMemories(),
-    memoryStore.getAllJokes(),
-    memoryStore.getAllProfiles(),
+    memoryStore.getAllMemories(channel),
+    memoryStore.getAllJokes(channel),
+    memoryStore.getAllProfiles(channel),
   ]);
 
   // Apply decay
@@ -458,14 +459,14 @@ export async function runDecayCycle(config: AutoMemoryConfig): Promise<void> {
   const { kept: keptProfiles, pruned: prunedProfiles } = pruneProfiles(profiles, config.maxProfiles);
 
   // Persist kept items
-  await memoryStore.clearMemories();
-  await memoryStore.addMemories(keptMemories);
-  await memoryStore.clearJokes();
-  await memoryStore.addJokes(keptJokes);
+  await memoryStore.clearMemories(channel);
+  await memoryStore.addMemories(channel, keptMemories);
+  await memoryStore.clearJokes(channel);
+  await memoryStore.addJokes(channel, keptJokes);
 
   // Prune profiles by removing pruned ones
   for (const p of prunedProfiles) {
-    await memoryStore.deleteProfile(p.username);
+    await memoryStore.deleteProfile(channel, p.username);
   }
 
   const decayed = keptMemories.length < memories.length || keptJokes.length < jokes.length || keptProfiles.length < profiles.length;

@@ -44,8 +44,8 @@ export function scoreJokeRelevance(joke: InsideJoke, contextText: string): numbe
   return Math.min(1.0, score);
 }
 
-export async function recordJokeUsage(jokeId: string, variationText: string): Promise<void> {
-  const allJokes = await memoryStore.getAllJokes();
+export async function recordJokeUsage(channel: string, jokeId: string, variationText: string): Promise<void> {
+  const allJokes = await memoryStore.getAllJokes(channel);
   const joke = allJokes.find((j) => j.id === jokeId);
   if (!joke) return;
   const updated: InsideJoke = {
@@ -56,21 +56,21 @@ export async function recordJokeUsage(jokeId: string, variationText: string): Pr
     status: "active",
     variations: [...joke.variations, { text: variationText, timestamp: Date.now() }].slice(-20),
   };
-  await memoryStore.updateJoke(updated);
+  await memoryStore.updateJoke(channel, updated);
 }
 
-export async function retireJoke(jokeId: string): Promise<void> {
-  const allJokes = await memoryStore.getAllJokes();
+export async function retireJoke(channel: string, jokeId: string): Promise<void> {
+  const allJokes = await memoryStore.getAllJokes(channel);
   const joke = allJokes.find((j) => j.id === jokeId);
   if (!joke) return;
-  await memoryStore.updateJoke({ ...joke, status: "retired" });
+  await memoryStore.updateJoke(channel, { ...joke, status: "retired" });
 }
 
-export async function boostJokeStrength(jokeId: string): Promise<void> {
-  const allJokes = await memoryStore.getAllJokes();
+export async function boostJokeStrength(channel: string, jokeId: string): Promise<void> {
+  const allJokes = await memoryStore.getAllJokes(channel);
   const joke = allJokes.find((j) => j.id === jokeId);
   if (!joke) return;
-  await memoryStore.updateJoke({
+  await memoryStore.updateJoke(channel, {
     ...joke,
     strength: Math.min(1.0, joke.strength + 0.2),
     lastUsedAt: Date.now(),

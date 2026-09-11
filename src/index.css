@@ -1000,7 +1000,7 @@
 }
 
 .title-marquee {
-  animation: title-marquee-scroll 18s linear infinite;
+  animation: title-marquee-scroll 30s linear infinite;
 }
 
 .title-marquee-wrap:hover .title-marquee {

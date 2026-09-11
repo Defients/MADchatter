@@ -32,6 +32,7 @@ export function useAutoMemory() {
   const lastExtractionRef = useRef<number>(Date.now());
   const lastDecayRef = useRef<number>(Date.now());
   const initializedRef = useRef(false);
+  const initializedChannelRef = useRef<string>("");
   // Re-entrance guard: prevents overlapping extraction/decay cycles
   const busyRef = useRef(false);
   // Tracks action history length for comfort-level delta calculation
@@ -43,18 +44,22 @@ export function useAutoMemory() {
   const chatLogRef = useRef(chatLog);
   chatLogRef.current = chatLog;
 
-  // Load from IndexedDB on mount + start session
+  const channel = (streamMetadata?.channelName || "default").toLowerCase();
+
+  // Load from IndexedDB on mount + start session. Re-runs when the channel
+  // changes so auto-memory is reloaded for the new streamer.
   useEffect(() => {
-    if (initializedRef.current) return;
     if (!autoMemoryConfig.enabled) return;
+    if (initializedRef.current && initializedChannelRef.current === channel) return;
     initializedRef.current = true;
+    initializedChannelRef.current = channel;
 
     (async () => {
       try {
         const [memories, profiles, jokes] = await Promise.all([
-          memoryStore.getAllMemories(),
-          memoryStore.getAllProfiles(),
-          memoryStore.getAllJokes(),
+          memoryStore.getAllMemories(channel),
+          memoryStore.getAllProfiles(channel),
+          memoryStore.getAllJokes(channel),
         ]);
         setAutoMemories(memories);
         setUserProfiles(profiles);
@@ -62,7 +67,7 @@ export function useAutoMemory() {
 
         // Start new session
         if (autoMemoryConfig.crossSessionPersistence) {
-          const personality = await startNewSession();
+          const personality = await startNewSession(channel);
           setPersonalityState(personality);
         } else {
           const fresh: PersonalityState = {
@@ -80,10 +85,11 @@ export function useAutoMemory() {
         }
 
         // Run initial decay
-        await runDecayCycle(autoMemoryConfig);
+        await runDecayCycle(autoMemoryConfig, channel);
 
         if (memories.length || profiles.length || jokes.length) {
           console.log("[AutoMemory] Initialized from IndexedDB:", {
+            channel,
             memories: memories.length,
             profiles: profiles.length,
             jokes: jokes.length,
@@ -93,16 +99,16 @@ export function useAutoMemory() {
         console.error("[AutoMemory] Failed to initialize:", e);
       }
     })();
-  }, [autoMemoryConfig.enabled]);
+  }, [autoMemoryConfig.enabled, channel]);
 
   // Save personality on unmount
   useEffect(() => {
     return () => {
       if (personalityState && autoMemoryConfig.crossSessionPersistence) {
-        saveSessionEnd(personalityState).catch(console.error);
+        saveSessionEnd((streamMetadata?.channelName || "default").toLowerCase(), personalityState).catch(console.error);
       }
     };
-  }, [personalityState, autoMemoryConfig.crossSessionPersistence]);
+  }, [personalityState, autoMemoryConfig.crossSessionPersistence, streamMetadata?.channelName]);
 
   // Extraction + decay loop
   useEffect(() => {
@@ -142,14 +148,14 @@ export function useAutoMemory() {
             if (result.tokenUsage) {
               useAppStore.getState().recordTokenUsage("memory_extraction", result.tokenUsage);
             }
-            const stats = await applyExtractionResults(result, state.autoMemoryConfig);
+            const stats = await applyExtractionResults(result, state.autoMemoryConfig, channel);
 
             if (stats.memoriesAdded > 0 || stats.profilesUpdated > 0 || stats.jokesCreated > 0) {
               // Reload from IndexedDB
               const [memories, profiles, jokes] = await Promise.all([
-                memoryStore.getAllMemories(),
-                memoryStore.getAllProfiles(),
-                memoryStore.getAllJokes(),
+                memoryStore.getAllMemories(channel),
+                memoryStore.getAllProfiles(channel),
+                memoryStore.getAllJokes(channel),
               ]);
               setAutoMemories(memories);
               setUserProfiles(profiles);
@@ -163,7 +169,7 @@ export function useAutoMemory() {
                   sessionJokesCreated: state.personalityState.sessionJokesCreated + stats.jokesCreated,
                 };
                 setPersonalityState(updated);
-                await memoryStore.savePersonality(updated);
+                await memoryStore.savePersonality(channel, updated);
               }
 
               console.log("[AutoMemory] Extraction complete:", stats, result.summary);
@@ -187,10 +193,10 @@ export function useAutoMemory() {
       const decayInterval = 30 * 60 * 1000;
       if (now - lastDecayRef.current >= decayInterval) {
         try {
-          await runDecayCycle(state.autoMemoryConfig);
+          await runDecayCycle(state.autoMemoryConfig, channel);
           const [memories, jokes] = await Promise.all([
-            memoryStore.getAllMemories(),
-            memoryStore.getAllJokes(),
+            memoryStore.getAllMemories(channel),
+            memoryStore.getAllJokes(channel),
           ]);
           setAutoMemories(memories);
           setInsideJokes(jokes);
@@ -274,7 +280,7 @@ export function useAutoMemory() {
         // Persist if anything changed
         if (updated !== state.personalityState) {
           setPersonalityState(updated);
-          memoryStore.savePersonality(updated).catch(() => {});
+          memoryStore.savePersonality(channel, updated).catch(() => {});
         }
       }
       } finally {
@@ -283,7 +289,7 @@ export function useAutoMemory() {
     }, 30000); // Check every 30 seconds
 
     return () => clearInterval(interval);
-  }, [autoMemoryConfig.enabled, setAutoMemories, setUserProfiles, setInsideJokes, setPersonalityState]);
+  }, [autoMemoryConfig.enabled, channel, setAutoMemories, setUserProfiles, setInsideJokes, setPersonalityState]);
 
   // Expose memory context builder for other hooks to use
   const buildMemoryContext = useCallback((): string => {

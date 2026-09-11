@@ -27,9 +27,10 @@ import {
   Copy,
   X,
   Trash2,
+  GripVertical,
 } from "lucide-react";
 import { FidgetSpinner } from "./FidgetSpinner";
-import { motion } from "motion/react";
+import { motion, useDragControls } from "motion/react";
 import { ThemedTooltip } from "./ui/tooltip";
 
 const calculateCost = (prompt: number, completion: number) => {
@@ -268,6 +269,9 @@ export function TheForge() {
   const [holdProgress, setHoldProgress] = useState(0);
 
   const startHold = () => {
+    // Clear any in-flight timer/raf from a previous attempt
+    if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+    if (holdRafRef.current) { cancelAnimationFrame(holdRafRef.current); }
     const start = performance.now();
     const tick = (now: number) => {
       const elapsed = now - start;
@@ -281,6 +285,7 @@ export function TheForge() {
     holdTimerRef.current = setTimeout(() => {
       setVariants([]);
       setHoldProgress(0);
+      holdTimerRef.current = null;
       playSfx('clear_context');
       toast.success("All forged variants cleared.");
     }, HOLD_DURATION_MS);
@@ -316,18 +321,96 @@ export function TheForge() {
     return `rgb(${r}, ${g}, ${b})`;
   }, [holdProgress]);
 
+  // ── Draggable forge group: header is the drag handle, variants follow
+  const forgeGroupRef = useRef<HTMLDivElement>(null);
+  const forgeContainerRef = useRef<HTMLDivElement>(null);
+  const dragControls = useDragControls();
+  const [forgeOffset, setForgeOffset] = useState(() => {
+    try {
+      const saved = localStorage.getItem("forge-group-offset");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { x: 0, y: 0 };
+  });
+  useEffect(() => {
+    localStorage.setItem("forge-group-offset", JSON.stringify(forgeOffset));
+  }, [forgeOffset]);
+
+  // Re-clamp the forge offset when the workspace container resizes
+  // (e.g. left/right sidebar collapse/expand)
+  useEffect(() => {
+    const container = forgeContainerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() => {
+      const el = forgeGroupRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const padding = 8;
+      setForgeOffset((prev) => {
+        // If the group is already fully inside the container, no adjustment needed
+        if (
+          rect.left >= containerRect.left + padding &&
+          rect.right <= containerRect.right - padding &&
+          rect.top >= containerRect.top + padding &&
+          rect.bottom <= containerRect.bottom - padding
+        ) return prev;
+        // Shift back into bounds — move the minimum amount needed
+        let nx = prev.x, ny = prev.y;
+        if (rect.right > containerRect.right - padding) nx += containerRect.right - padding - rect.right;
+        if (rect.left < containerRect.left + padding) nx += containerRect.left + padding - rect.left;
+        if (rect.bottom > containerRect.bottom - padding) ny += containerRect.bottom - padding - rect.bottom;
+        if (rect.top < containerRect.top + padding) ny += containerRect.top + padding - rect.top;
+        return { x: nx, y: ny };
+      });
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [variants.length]);
+
   return (
     <div data-tutorial="forge" className="flex flex-col h-full bg-transparent relative w-full items-center justify-between">
       {/* Subtle cosmic grid background */}
       <div className="absolute inset-0 bg-[url('https://transparenttextures.com/patterns/cubes.png')] opacity-[0.015] pointer-events-none" />
 
       {/* Main Content Area */}
-      <div className="flex-1 w-full max-w-6xl p-4 overflow-y-auto overflow-x-hidden z-10 flex flex-col justify-center">
+      <div ref={forgeContainerRef} className="flex-1 w-full max-w-6xl p-4 overflow-y-auto overflow-x-hidden z-10 flex flex-col justify-center">
         {variants.length > 0 ? (
-          <div className="space-y-3 w-full">
+          <motion.div
+            ref={forgeGroupRef}
+            drag
+            dragListener={false}
+            dragControls={dragControls}
+            dragMomentum={false}
+            style={{ x: forgeOffset.x, y: forgeOffset.y }}
+            onDragEnd={(_, info) => {
+              const el = forgeGroupRef.current;
+              if (!el) return;
+              const rect = el.getBoundingClientRect();
+              const container = forgeContainerRef.current;
+              if (!container) return;
+              const containerRect = container.getBoundingClientRect();
+              const padding = 8;
+              // Clamp the drag delta so the group stays inside the workspace area
+              const clampedX = Math.max(
+                containerRect.left - rect.left + padding,
+                Math.min(info.offset.x, containerRect.right - rect.right - padding)
+              );
+              const clampedY = Math.max(
+                containerRect.top - rect.top + padding,
+                Math.min(info.offset.y, containerRect.bottom - rect.bottom - padding)
+              );
+              setForgeOffset({ x: forgeOffset.x + clampedX, y: forgeOffset.y + clampedY });
+            }}
+            className="space-y-3 w-full"
+          >
             {lastTokenUsage && (
-              <div className="bg-[#121217]/90 border border-white/5 rounded-xl p-3 flex flex-col md:flex-row items-start md:items-center justify-between text-xs font-mono text-gray-400 gap-2 backdrop-blur shadow-xl">
+              <div
+                onPointerDown={(e) => dragControls.start(e)}
+                className="bg-[#121217]/95 border border-white/10 rounded-xl p-3 flex flex-col md:flex-row items-start md:items-center justify-between text-xs font-mono text-gray-400 gap-2 backdrop-blur-md shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_1px_rgba(255,255,255,0.05)_inset] cursor-grab active:cursor-grabbing select-none hover:border-white/20 hover:shadow-[0_4px_32px_rgba(0,0,0,0.6),0_0_1px_rgba(255,255,255,0.08)_inset] transition-all"
+              >
                 <div className="flex items-center gap-2">
+                  <GripVertical className="w-3.5 h-3.5 text-gray-600 shrink-0" />
                   <Coins className="w-4 h-4 text-yellow-400 animate-pulse" />
                   <span className="font-bold text-gray-200 uppercase tracking-wider">Forge Resource Transaction</span>
                   <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${
@@ -342,12 +425,16 @@ export function TheForge() {
                 {/* Hold-to-Clear button — dead center of the header */}
                 <button
                   type="button"
-                  onMouseDown={startHold}
-                  onMouseUp={cancelHold}
-                  onMouseLeave={cancelHold}
-                  onTouchStart={(e) => { e.preventDefault(); startHold(); }}
-                  onTouchEnd={cancelHold}
-                  className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold text-[10px] uppercase tracking-wider transition-all overflow-hidden select-none"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    startHold();
+                  }}
+                  onPointerUp={(e) => {
+                    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+                    cancelHold();
+                  }}
+                  onPointerCancel={cancelHold}
+                  className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold text-[10px] uppercase tracking-wider transition-all overflow-hidden select-none touch-none"
                   style={{
                     color: holdProgress > 0 ? '#fff' : '#f87171',
                     backgroundColor: holdProgress > 0 ? holdColor : 'rgba(239, 68, 68, 0.08)',
@@ -398,7 +485,7 @@ export function TheForge() {
                 />
               ))}
             </div>
-          </div>
+          </motion.div>
         ) : !setupStatus.complete ? (
           /* Setup Guide — shown until login + channel + API key are configured */
           <div className="forge-onboarding flex flex-col items-center justify-center text-center max-w-xl mx-auto py-8">

@@ -74,12 +74,6 @@ import { getTwitchSession } from "../lib/twitch";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
-import { ChannelChangeWarningOverlay } from "./ChannelChangeWarningOverlay";
-import {
-  computeChannelExportWorthwhile,
-  exportChannelData,
-  type ChannelExportWorthwhile,
-} from "../lib/exportChannelData";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
@@ -187,7 +181,7 @@ function CollapseButtonPortal({ targetRef, onClick }: { targetRef: React.RefObje
 // Single source of truth for the right-panel localStorage key, default size,
 // and stale keys to clean up. Bump RIGHT_SIZE_KEY_VERSION when changing the
 // default so returning users get the new value instead of their old saved one.
-const RIGHT_SIZE_KEY_VERSION = 7;
+const RIGHT_SIZE_KEY_VERSION = 8;
 const RIGHT_SIZE_KEY = `forge-panel-right-size-v${RIGHT_SIZE_KEY_VERSION}`;
 const RIGHT_SIZE_STALE_KEYS = [
   "forge-panel-right-size",
@@ -196,12 +190,13 @@ const RIGHT_SIZE_STALE_KEYS = [
   "forge-panel-right-size-v4",
   "forge-panel-right-size-v5",
   "forge-panel-right-size-v6",
+  "forge-panel-right-size-v7",
 ].filter((k) => k !== RIGHT_SIZE_KEY);
 
 const isFHDViewport = () =>
   typeof window !== "undefined" && Math.round(window.innerWidth) === 1920;
 
-const getRightSizeDefault = () => (isFHDViewport() ? 28 : 21.6);
+const getRightSizeDefault = () => (isFHDViewport() ? 29 : 24);
 
 export function ForgeLayout() {
   const isMobile = useIsMobile();
@@ -232,6 +227,8 @@ export function ForgeLayout() {
     goldenMemoryId,
     setGoldenMemory,
     clearAllContext,
+    saveCurrentChannelSnapshot,
+    restoreChannelSnapshot,
     theme,
     setStreamCaptureActive,
     sentMessages,
@@ -290,9 +287,9 @@ export function ForgeLayout() {
     const saved = localStorage.getItem(RIGHT_SIZE_KEY);
     const defaultSize = getRightSizeDefault();
     const parsed = saved ? parseFloat(saved) : defaultSize;
-    // Clamp to the current maxSize (30%) so stale oversized values from
+    // Clamp to the current maxSize (36%) so stale oversized values from
     // older versions don't leak through if the version key wasn't bumped.
-    return isNaN(parsed) || parsed <= 0 || parsed > 30 ? defaultSize : parsed;
+    return isNaN(parsed) || parsed <= 0 || parsed > 36 ? defaultSize : parsed;
   });
 
   useEffect(() => {
@@ -689,14 +686,25 @@ export function ForgeLayout() {
   const [viewerCountHidden, setViewerCountHidden] = useState(() => localStorage.getItem("forge-viewer-count-hidden") === "true");
   useEffect(() => { localStorage.setItem("forge-viewer-count-hidden", viewerCountHidden.toString()); }, [viewerCountHidden]);
 
-  // Channel-change warning overlay state
-  const [pendingChannel, setPendingChannel] = useState<string | null>(null);
-  const [channelWarningOpen, setChannelWarningOpen] = useState(false);
-  const [channelExportWorthwhile, setChannelExportWorthwhile] = useState<ChannelExportWorthwhile>({
-    autoForgeReport: false,
-    autoMemory: false,
-    longTermMemory: false,
+  // Title marquee — detect overflow so short titles don't scroll
+  const titleText = streamMetadata?.channelName ? (streamMetadata.title || 'Waiting for stream details') : 'Your next conversation starts here';
+  const titleMeasureRef = useRef<HTMLSpanElement>(null);
+  const [titleOverflows, setTitleOverflows] = useState(false);
+  useEffect(() => {
+    const el = titleMeasureRef.current;
+    if (!el) return;
+    setTitleOverflows(el.offsetWidth > el.parentElement!.clientWidth);
+  }, [titleText]);
+
+  // Marquee speed cycle: normal → slow → off → normal
+  const [marqueeSpeed, setMarqueeSpeed] = useState<"normal" | "slow" | "off">(() => {
+    return (localStorage.getItem("forge-marquee-speed") as "normal" | "slow" | "off") || "normal";
   });
+  useEffect(() => { localStorage.setItem("forge-marquee-speed", marqueeSpeed); }, [marqueeSpeed]);
+  const marqueeDuration = marqueeSpeed === "normal" ? "30s" : marqueeSpeed === "slow" ? "60s" : undefined;
+
+  // Channel switching guard: prevents auto-save racing with a channel switch
+  const isSwitchingRef = useRef(false);
 
   // Load 7TV + FrankerFaceZ + BTTV emotes for the current channel
   useEffect(() => {
@@ -720,6 +728,33 @@ export function ForgeLayout() {
       channelInputRef.current.select();
     }
   }, [editingChannel]);
+
+  // Debounced auto-save: every 60s, save the current channel's LTM + AutoForge
+  // events to channelStore. Covers refresh/crash recovery. Skipped during
+  // active channel switches (isSwitchingRef) to avoid races.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isSwitchingRef.current) return;
+      const channel = useAppStore.getState().streamMetadata?.channelName;
+      if (!channel) return;
+      saveCurrentChannelSnapshot().catch((e) =>
+        console.error("[channelStore] Auto-save failed:", e),
+      );
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [saveCurrentChannelSnapshot]);
+
+  // Save the current channel's snapshot on unmount / page hide so refreshes
+  // don't lose recent LTM/event changes.
+  useEffect(() => {
+    const save = () => {
+      const channel = useAppStore.getState().streamMetadata?.channelName;
+      if (!channel) return;
+      saveCurrentChannelSnapshot().catch(() => {});
+    };
+    window.addEventListener("beforeunload", save);
+    return () => window.removeEventListener("beforeunload", save);
+  }, [saveCurrentChannelSnapshot]);
 
   // Send a smart reply and record it in the sent log / stats so anti-repetition
   // and analytics see it (previously smart replies were sent but not tracked).
@@ -761,7 +796,7 @@ export function ForgeLayout() {
     setEditingChannel(true);
   };
 
-  const commitChannel = () => {
+  const commitChannel = async () => {
     const trimmed = channelInput.trim().replace(/^@/, "");
     if (!trimmed) {
       setEditingChannel(false);
@@ -769,66 +804,30 @@ export function ForgeLayout() {
     }
     const currentName = streamMetadata?.channelName || "";
     if (trimmed.toLowerCase() === currentName.toLowerCase()) {
-      // Same channel (case-insensitive) — no clear, no warning
+      // Same channel (case-insensitive) — nothing to do
       setEditingChannel(false);
       return;
     }
-    // Channel is changing — check if there's worthwhile data to export first
-    const worthwhile = computeChannelExportWorthwhile();
-    const anyWorthwhile =
-      worthwhile.autoForgeReport || worthwhile.autoMemory || worthwhile.longTermMemory;
-    if (anyWorthwhile) {
-      // Defer the channel switch until the user picks an export option
-      setChannelExportWorthwhile(worthwhile);
-      setPendingChannel(trimmed);
-      setChannelWarningOpen(true);
-      setEditingChannel(false);
-    } else {
-      // Nothing worthwhile — proceed immediately (original behavior)
+    // Non-destructive channel switch:
+    // 1) Save current channel's LTM + AutoForge events to channelStore
+    // 2) Clear ephemeral context (chat/transcript/visual)
+    // 3) Restore target channel's LTM + AutoForge events from channelStore
+    // 4) Update stream metadata (triggers useAutoMemory to reload auto-memory)
+    // No warning popup — switching is no longer destructive.
+    isSwitchingRef.current = true;
+    try {
+      if (currentName) {
+        await saveCurrentChannelSnapshot();
+      }
       clearAllContext();
       setVariants([]);
       updateStreamMetadata({ channelName: trimmed });
-      setEditingChannel(false);
+      await restoreChannelSnapshot(trimmed.toLowerCase());
+    } finally {
+      isSwitchingRef.current = false;
     }
-  };
-
-  const applyChannelChange = (newChannel: string) => {
-    clearAllContext();
-    setVariants([]);
-    updateStreamMetadata({ channelName: newChannel });
-    setPendingChannel(null);
-    setChannelWarningOpen(false);
-  };
-
-  const handleExportAndContinue = async () => {
-    if (!pendingChannel) return { autoForgeReport: false, autoMemory: false, longTermMemory: false };
-    const oldChannel = streamMetadata?.channelName || "";
-    const result = await exportChannelData({
-      includeAutoForgeReport: channelExportWorthwhile.autoForgeReport,
-      includeAutoMemory: channelExportWorthwhile.autoMemory,
-      includeLongTermMemory: channelExportWorthwhile.longTermMemory,
-      channelName: oldChannel,
-    });
-    const exportedCount = [result.autoForgeReport, result.autoMemory, result.longTermMemory].filter(
-      Boolean,
-    ).length;
-    if (exportedCount > 0) {
-      toast.success(`Exported ${exportedCount} file${exportedCount > 1 ? "s" : ""} & switched to @${pendingChannel}`);
-    } else {
-      toast.success(`Switched to @${pendingChannel}`);
-    }
-    applyChannelChange(pendingChannel);
-    return result;
-  };
-
-  const handleContinueWithoutExport = () => {
-    if (!pendingChannel) return;
-    applyChannelChange(pendingChannel);
-  };
-
-  const handleCancelChannelChange = () => {
-    setPendingChannel(null);
-    setChannelWarningOpen(false);
+    setEditingChannel(false);
+    toast.success(`Switched to @${trimmed}`);
   };
 
   // Collapsed panel width tracking for icon scaling
@@ -957,6 +956,9 @@ export function ForgeLayout() {
       return;
     }
     const data = {
+      format: "madchatter-memories",
+      version: 1,
+      channel: streamMetadata?.channelName || "",
       exportedAt: new Date().toISOString(),
       memories: pinnedMemories,
       goldenMemoryId,
@@ -993,6 +995,8 @@ export function ForgeLayout() {
         if (data.goldenMemoryId) {
           setGoldenMemory(data.goldenMemoryId);
         }
+        // Save the active channel's snapshot so the imported LTM persists
+        saveCurrentChannelSnapshot().catch(() => {});
         toast.success(`Imported ${valid.length} memories`);
       } catch {
         toast.error("Failed to parse memory file");
@@ -2480,14 +2484,10 @@ export function ForgeLayout() {
                     )}
                   </div>
 
-                  {/* Fidget Spinner — hidden when mega spinner is showing in center empty state */}
-                  {variants.length > 0 && (
-                  <ThemedTooltip content="Fidget Spinner — drag to flick, click to boost, hold center to charge & lock">
-                    <div className="flex flex-col items-center gap-1 pb-6">
-                      <FidgetSpinner size={Math.max(36, 47 * iconScale)} />
-                    </div>
-                  </ThemedTooltip>
-                  )}
+                  {/* Fidget Spinner — always available in the collapsed sidebar */}
+                  <div className="flex flex-col items-center gap-1 pb-6">
+                    <FidgetSpinner size={Math.max(36, 47 * iconScale)} showSpinCount={false} />
+                  </div>
                 </div>
               ) : (
                 /* Expanded Context Rail — 4 widget panels stacked vertically */
@@ -2848,36 +2848,80 @@ export function ForgeLayout() {
                   {/* Far-Left: MADchatter Logo */}
                   <div className="forge-brand flex items-center shrink-0 gap-2">
                     <div className="forge-header-aura" />
-                    <img
-                      src={logoUrl}
-                      alt="MADchatter"
-                      className="relative z-10 h-[44px] w-auto forge-logo-glow cursor-pointer select-none"
-                      style={{
-                        opacity: 0.95,
-                      }}
-                      onClick={() => {
-                        const now = Date.now();
-                        logoClickTimesRef.current = logoClickTimesRef.current.filter(
-                          (t) => now - t < 3000,
-                        );
-                        logoClickTimesRef.current.push(now);
-                        if (logoClickTimesRef.current.length >= 7) {
-                          logoClickTimesRef.current = [];
-                          window.dispatchEvent(new CustomEvent('easter-egg-secret-lab'));
-                        }
-                      }}
-                    />
-                    <VersionBadge />
+                    <ThemedTooltip
+                      content={
+                        <span className="font-mono font-bold text-[11px] tracking-widest text-orange-400" style={{ textShadow: "0 0 8px rgba(255,107,0,0.4)" }}>
+                          v{__APP_VERSION__}
+                        </span>
+                      }
+                    >
+                      <img
+                        src={logoUrl}
+                        alt="MADchatter"
+                        className="relative z-10 h-[44px] w-auto forge-logo-glow cursor-pointer select-none"
+                        style={{
+                          opacity: 0.95,
+                        }}
+                        onClick={() => {
+                          const now = Date.now();
+                          logoClickTimesRef.current = logoClickTimesRef.current.filter(
+                            (t) => now - t < 3000,
+                          );
+                          logoClickTimesRef.current.push(now);
+                          if (logoClickTimesRef.current.length >= 7) {
+                            logoClickTimesRef.current = [];
+                            window.dispatchEvent(new CustomEvent('easter-egg-secret-lab'));
+                          }
+                        }}
+                      />
+                    </ThemedTooltip>
                   </div>
 
                   {/* Center: LIVE Status + Channel + Title + Viewers */}
                   <div className="forge-channel-summary flex-1 flex items-center justify-center gap-2.5 min-w-0">
-                    {/* LIVE / OFFLINE badge */}
-                    <div className="forge-connection flex items-center gap-1.5 shrink-0" role="status" title={`Chat connection: ${chatConnection}`}>
-                      <span aria-hidden="true" className={cn("w-1.5 h-1.5 rounded-full", chatConnection === 'connected' ? 'bg-emerald-400' : chatConnection === 'connecting' ? 'bg-amber-400 animate-pulse' : chatConnection === 'error' ? 'bg-red-400' : 'bg-gray-500')} />
-                      <span className={cn("font-semibold uppercase font-mono tracking-wider text-[10px]", chatConnection === 'connected' ? 'text-emerald-400' : chatConnection === 'connecting' ? 'text-amber-400' : chatConnection === 'error' ? 'text-red-400' : 'text-gray-400')}>
-                        {chatConnection === 'connected' ? 'Chat connected' : chatConnection === 'connecting' ? 'Connecting' : chatConnection === 'error' ? 'Connection error' : 'Not connected'}
-                      </span>
+                    {/* Chat connection status dot — hover for details */}
+                    <div className="forge-connection flex items-center shrink-0" role="status">
+                      <ThemedTooltip
+                        side="bottom"
+                        align="center"
+                        hideArrow
+                        content={
+                          <div className="flex flex-col gap-0.5">
+                            <span className={cn(
+                              "font-bold uppercase tracking-wider text-[10px]",
+                              chatConnection === 'connected' ? 'text-emerald-400'
+                                : chatConnection === 'connecting' ? 'text-amber-400'
+                                : chatConnection === 'error' ? 'text-red-400'
+                                : 'text-gray-400',
+                            )}>
+                              {chatConnection === 'connected' ? 'Chat connected'
+                                : chatConnection === 'connecting' ? 'Connecting'
+                                : chatConnection === 'error' ? 'Connection error'
+                                : 'Not connected'}
+                            </span>
+                            <span className="text-gray-400 font-normal">
+                              {chatConnection === 'connected'
+                                ? 'Receiving live chat messages.'
+                                : chatConnection === 'connecting'
+                                ? 'Establishing connection to chat…'
+                                : chatConnection === 'error'
+                                ? 'Chat connection failed — check your platform connection.'
+                                : 'Connect a Twitch, Kick, or Joystick account to read chat.'}
+                            </span>
+                          </div>
+                        }
+                      >
+                        <span
+                          aria-label={`Chat connection: ${chatConnection}`}
+                          className={cn(
+                            "w-2 h-2 rounded-full block cursor-default",
+                            chatConnection === 'connected' ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                              : chatConnection === 'connecting' ? 'bg-amber-400 animate-pulse'
+                              : chatConnection === 'error' ? 'bg-red-400'
+                              : 'bg-gray-500',
+                          )}
+                        />
+                      </ThemedTooltip>
                     </div>
 
                     <span className="text-gray-600 shrink-0 font-mono">|</span>
@@ -2905,8 +2949,7 @@ export function ForgeLayout() {
                             type="button"
                             onClick={startEditingChannel}
                             data-tutorial="channel"
-                            className="truncate hover:text-orange-300 transition-colors cursor-pointer text-sm"
-                            title={streamMetadata?.channelName || 'Choose a channel'}
+                            className="whitespace-nowrap hover:text-orange-300 transition-colors cursor-pointer text-sm"
                           >
                             {streamMetadata?.channelName ? `@${streamMetadata.channelName}` : 'Set channel'}
                           </button>
@@ -2916,10 +2959,27 @@ export function ForgeLayout() {
 
                     <span className="forge-stream-detail text-gray-600 shrink-0" aria-hidden="true">•</span>
 
-                    {/* Title marquee */}
-                    <div className="forge-stream-detail min-w-0 text-gray-400 max-w-[300px] truncate text-xs" title={streamMetadata?.title || undefined}>
-                      {streamMetadata?.channelName ? (streamMetadata.title || 'Waiting for stream details') : 'Your next conversation starts here'}
-                    </div>
+                    {/* Title marquee — click to cycle speed: normal → slow → off */}
+                    <button
+                      type="button"
+                      onClick={() => setMarqueeSpeed((s) => s === "normal" ? "slow" : s === "slow" ? "off" : "normal")}
+                      className="forge-stream-detail title-marquee-wrap min-w-0 text-gray-400 max-w-[200px] overflow-hidden text-xs cursor-pointer hover:text-gray-300 transition-colors text-left"
+                      title={`${titleText} — click to cycle marquee speed (${marqueeSpeed === "normal" ? "normal" : marqueeSpeed === "slow" ? "slow" : "off"})`}
+                    >
+                      {titleOverflows && marqueeSpeed !== "off" ? (
+                        <div
+                          className="title-marquee inline-flex whitespace-nowrap"
+                          style={{ animationDuration: marqueeDuration }}
+                        >
+                          <span className="pr-8">{titleText}</span>
+                          <span className="pr-8">{titleText}</span>
+                        </div>
+                      ) : (
+                        <span className="truncate block">{titleText}</span>
+                      )}
+                      {/* Hidden span to measure if text overflows the container */}
+                      <span ref={titleMeasureRef} className="absolute invisible whitespace-nowrap" aria-hidden="true">{titleText}</span>
+                    </button>
 
                     <span className="forge-stream-detail text-gray-600 shrink-0" aria-hidden="true">•</span>
 
@@ -2933,7 +2993,6 @@ export function ForgeLayout() {
                       >
                         <Users className="w-4 h-4 text-orange-500" />
                         <span className="font-bold text-sm select-none">{viewerCountHidden ? "—" : (streamMetadata?.channelName ? (streamMetadata?.viewerCount || 0) : 0).toLocaleString()}</span>
-                        <span className="text-gray-500 text-xs font-medium">viewers</span>
                       </button>
                     </ThemedTooltip>
                   </div>
@@ -2941,20 +3000,23 @@ export function ForgeLayout() {
                   {/* Multi-Bot launcher + panel */}
                   <div className="relative shrink-0" data-tutorial="multibot-button">
                     <MultiBotButton active={multiBotPanelOpen} onClick={() => setMultiBotPanelOpen((v) => !v)} />
-                    <AnimatePresence>
-                      {multiBotPanelOpen && (
-                        <motion.div
-                          key="multibot-panel"
-                          className="fixed top-16 right-4 z-50"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.18, ease: "easeOut" }}
-                        >
-                          <MultiBotPanel onClose={() => setMultiBotPanelOpen(false)} />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    {createPortal(
+                      <AnimatePresence>
+                        {multiBotPanelOpen && (
+                          <motion.div
+                            key="multibot-panel"
+                            className="fixed top-16 right-4 z-[60]"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.18, ease: "easeOut" }}
+                          >
+                            <MultiBotPanel onClose={() => setMultiBotPanelOpen(false)} />
+                          </motion.div>
+                        )}
+                      </AnimatePresence>,
+                      document.body
+                    )}
                   </div>
 
                   {/* Mode indicator: appears only when multi-bot is actually engaged */}
@@ -2997,51 +3059,56 @@ export function ForgeLayout() {
                           </button>
                         )}
                       />
-                      <TooltipContent side="bottom">Cycle Theme (Default / CosmoTech™ / Corrupture™)</TooltipContent>
+                      <TooltipContent
+                        side="bottom"
+                        className="bg-[#1a1a22] border border-white/10 text-gray-200 rounded-lg shadow-2xl px-3 py-1.5 text-xs font-medium whitespace-nowrap"
+                      >
+                        <span className="text-gray-400">Cycle Theme (</span>
+                        <span className="text-gray-300">Default</span>
+                        <span className="text-gray-500"> / </span>
+                        <span className="font-bold tracking-wider" style={{ fontFamily: "'Orbitron', 'Inter', sans-serif" }}><span className="text-blue-400">Cosmo</span><span className="text-purple-500">Tech</span><span className="text-blue-400">™</span></span>
+                        <span className="text-gray-500"> / </span>
+                        <span className="font-bold tracking-wider" style={{ fontFamily: "'Courier New', monospace", color: "#C9A14A" }}>Corrupture™</span>
+                        <span className="text-gray-400">)</span>
+                      </TooltipContent>
                     </Tooltip>
                     </span>
 
                     {/* Platform selector tabs */}
                     <div data-tutorial="platform-tabs" className="flex gap-0.5 bg-black/40 rounded border border-white/5 p-0.5">
-                      <ThemedTooltip content="Twitch">
-                        <button
-                          onClick={() => setPlatform('twitch')}
-                          className={cn(
-                            "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
-                            platform === 'twitch'
-                              ? "bg-[#9146FF]/30 text-[#9146FF] border border-[#9146FF]/30"
-                              : "text-gray-600 hover:text-gray-400"
-                          )}
-                        >
-                          Twitch
-                        </button>
-                      </ThemedTooltip>
-                      <ThemedTooltip content="Kick">
-                        <button
-                          onClick={() => setPlatform('kick')}
-                          className={cn(
-                            "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
-                            platform === 'kick'
-                              ? "bg-[#53fc18]/20 text-[#53fc18] border border-[#53fc18]/30"
-                              : "text-gray-600 hover:text-gray-400"
-                          )}
-                        >
-                          Kick
-                        </button>
-                      </ThemedTooltip>
-                      <ThemedTooltip content="Joystick">
-                        <button
-                          onClick={() => setPlatform('joystick')}
-                          className={cn(
-                            "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
-                            platform === 'joystick'
-                              ? "bg-[#FF6B35]/20 text-[#FF6B35] border border-[#FF6B35]/30"
-                              : "text-gray-600 hover:text-gray-400"
-                          )}
-                        >
-                          Joystick
-                        </button>
-                      </ThemedTooltip>
+                      <button
+                        onClick={() => setPlatform('twitch')}
+                        className={cn(
+                          "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
+                          platform === 'twitch'
+                            ? "bg-[#9146FF]/30 text-[#9146FF] border border-[#9146FF]/30"
+                            : "text-gray-600 hover:text-gray-400"
+                        )}
+                      >
+                        Twitch
+                      </button>
+                      <button
+                        onClick={() => setPlatform('kick')}
+                        className={cn(
+                          "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
+                          platform === 'kick'
+                            ? "bg-[#53fc18]/20 text-[#53fc18] border border-[#53fc18]/30"
+                            : "text-gray-600 hover:text-gray-400"
+                        )}
+                      >
+                        Kick
+                      </button>
+                      <button
+                        onClick={() => setPlatform('joystick')}
+                        className={cn(
+                          "px-1.5 py-0.5 text-[8px] font-bold uppercase rounded transition-colors",
+                          platform === 'joystick'
+                            ? "bg-[#FF6B35]/20 text-[#FF6B35] border border-[#FF6B35]/30"
+                            : "text-gray-600 hover:text-gray-400"
+                        )}
+                      >
+                        Joystick
+                      </button>
                     </div>
 
                     {/* Platform logo icon / avatar */}
@@ -3211,7 +3278,7 @@ export function ForgeLayout() {
               id="right-rail"
               order={3}
               minSize="12%"
-              maxSize="30%"
+              maxSize="36%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 // Only persist to localStorage — do NOT update React state here.
@@ -3462,15 +3529,6 @@ export function ForgeLayout() {
       })}
       </>
       )}
-      <ChannelChangeWarningOverlay
-        open={channelWarningOpen}
-        newChannel={pendingChannel || ""}
-        oldChannel={streamMetadata?.channelName || ""}
-        worthwhile={channelExportWorthwhile}
-        onExportAndContinue={handleExportAndContinue}
-        onContinueWithoutExport={handleContinueWithoutExport}
-        onCancel={handleCancelChannelChange}
-      />
     </TooltipProvider>
   );
 }

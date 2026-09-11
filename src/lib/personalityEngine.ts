@@ -130,11 +130,11 @@ export function evolveTraits(
     .map(([trait]) => trait);
 }
 
-export async function startNewSession(): Promise<PersonalityState> {
-  const existing = await memoryStore.getPersonality();
+export async function startNewSession(channel: string): Promise<PersonalityState> {
+  const existing = await memoryStore.getPersonality(channel);
   if (!existing) {
     const fresh = createDefaultPersonality();
-    await memoryStore.savePersonality(fresh);
+    await memoryStore.savePersonality(channel, fresh);
     return fresh;
   }
 
@@ -149,12 +149,12 @@ export async function startNewSession(): Promise<PersonalityState> {
     sessionJokesCreated: 0,
     comfortLevel: driftedComfort,
   };
-  await memoryStore.savePersonality(updated);
+  await memoryStore.savePersonality(channel, updated);
   return updated;
 }
 
-export async function saveSessionEnd(state: PersonalityState): Promise<void> {
-  await memoryStore.savePersonality(state);
+export async function saveSessionEnd(channel: string, state: PersonalityState): Promise<void> {
+  await memoryStore.savePersonality(channel, state);
 }
 
 export function addRelationshipMilestone(

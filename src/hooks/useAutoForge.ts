@@ -637,7 +637,7 @@ export function useAutoForge() {
           // Boost referenced memories
           if (state.autoMemoryConfig?.enabled && decision.referenced_memory_ids) {
             for (const mid of decision.referenced_memory_ids) {
-              boostMemory(mid).catch(console.error);
+              boostMemory((state.streamMetadata.channelName || "default").toLowerCase(), mid).catch(console.error);
             }
           }
 
@@ -690,7 +690,7 @@ export function useAutoForge() {
                   punchlineLower.includes(payloadLower);
                 if (matchesJoke) {
                   // Record usage of the matched joke
-                  recordJokeUsage(bestMatch.joke.id, decision.action_payload).catch(console.error);
+                  recordJokeUsage((state.streamMetadata.channelName || "default").toLowerCase(), bestMatch.joke.id, decision.action_payload).catch(console.error);
                 } else {
                   // No active joke matches — downgrade to short_reaction
                   console.log("[AutoForge] joke_callback payload doesn't match any active joke — downgrading to short_reaction");
@@ -760,13 +760,13 @@ export function useAutoForge() {
           if (state.autoMemoryConfig?.enabled) {
             if (decision.referenced_memory_ids) {
               for (const mid of decision.referenced_memory_ids) {
-                boostMemory(mid).catch(console.error);
+                boostMemory((state.streamMetadata.channelName || "default").toLowerCase(), mid).catch(console.error);
               }
             }
             if (decision.referenced_joke_ids) {
               for (const jid of decision.referenced_joke_ids) {
-                boostJoke(jid, decision.action_payload).catch(console.error);
-                recordJokeUsage(jid, decision.action_payload).catch(console.error);
+                boostJoke((state.streamMetadata.channelName || "default").toLowerCase(), jid, decision.action_payload).catch(console.error);
+                recordJokeUsage((state.streamMetadata.channelName || "default").toLowerCase(), jid, decision.action_payload).catch(console.error);
               }
             }
           }

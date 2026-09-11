@@ -5,9 +5,10 @@ import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
 import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
+import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 15;
+const SETTINGS_VERSION = 16;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -312,6 +313,12 @@ interface AppState {
   setGoldenMemory: (id: string | null) => void;
   
   clearAllContext: () => void;
+
+  // Per-streamer persistence: save/restore LTM + AutoForge events to/from
+  // the channelSnapshots IndexedDB store. Auto-memory is channel-scoped
+  // directly in memoryStore (no swap needed).
+  saveCurrentChannelSnapshot: () => Promise<void>;
+  restoreChannelSnapshot: (channel: string) => Promise<void>;
 
   lastTokenUsage: {
     prompt_tokens: number;
@@ -842,6 +849,64 @@ export const useAppStore = create<AppState>()(
             runtime: { ...b.runtime, sentMessages: [] },
           })),
         })),
+
+      // Per-streamer persistence: save current LTM + AutoForge events to the
+      // channelSnapshots IndexedDB store. Called before channel switches and
+      // by the debounced auto-save. Auto-memory is channel-scoped directly in
+      // memoryStore, so it's not included here.
+      saveCurrentChannelSnapshot: async () => {
+        const state = get();
+        const channel = (state.streamMetadata?.channelName || "default").toLowerCase();
+        if (!channel) return;
+        // Merge global + per-bot AutoForge events (mirrors AutoForgeReport)
+        const global = state.autoForgeEventLog.map((e) => ({
+          ...e,
+          botName: undefined as string | undefined,
+        }));
+        const perBot = state.bots.flatMap((b) =>
+          b.runtime.autoForgeEvents.map((e) => ({ ...e, botName: b.session?.username })),
+        );
+        const merged = [...global, ...perBot].sort((a, b) => a.timestamp - b.timestamp);
+        await saveChannelSnapshot(channel, {
+          longTermMemory: state.longTermMemory,
+          pinnedMemories: state.pinnedMemories,
+          goldenMemoryId: state.goldenMemoryId,
+          autoForgeEvents: merged,
+        });
+      },
+
+      // Per-streamer persistence: restore LTM + AutoForge events from the
+      // channelSnapshots IndexedDB store for the given channel. If no snapshot
+      // exists, the current (cleared) state is left as-is (fresh start).
+      restoreChannelSnapshot: async (channel: string) => {
+        const snapshot: ChannelSnapshot | null = await loadChannelSnapshot(channel);
+        if (!snapshot) return;
+        set((state) => ({
+          longTermMemory: snapshot.longTermMemory,
+          pinnedMemories: snapshot.pinnedMemories,
+          goldenMemoryId: snapshot.goldenMemoryId,
+          // Restore global events; per-bot events go to the primary bot if in
+          // multi-bot mode, otherwise stay global.
+          autoForgeEventLog: state.multiBotEnabled
+            ? snapshot.autoForgeEvents.filter((e) => !e.botName)
+            : snapshot.autoForgeEvents,
+          bots: state.multiBotEnabled && state.bots[0]
+            ? state.bots.map((b, i) =>
+                i === 0
+                  ? {
+                      ...b,
+                      runtime: {
+                        ...b.runtime,
+                        autoForgeEvents: snapshot.autoForgeEvents.filter(
+                          (e) => e.botName === b.session?.username || (!e.botName && i === 0),
+                        ),
+                      },
+                    }
+                  : b,
+              )
+            : state.bots,
+        }));
+      },
 
       lastTokenUsage: null,
       tokenUsageByFeature: {
@@ -2153,6 +2218,13 @@ export const useAppStore = create<AppState>()(
             });
           }
         }
+        // v16: Per-streamer persistence architecture. No Zustand field changes —
+        // the new persistence lives in IndexedDB (channelStore + channel-scoped
+        // memoryStore). The migration is a no-op here; the IndexedDB schema
+        // migration (memoryStore v1→v2, channelStore v1) handles data backfill.
+        // Existing LTM/pinnedMemories/autoForgeEventLog stay in Zustand as before;
+        // they'll be saved to channelStore on the first channel switch or
+        // debounced auto-save.
         return persistedState;
       },
     }

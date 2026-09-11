@@ -16,6 +16,8 @@ import {
   CheckSquare,
   Square,
   Zap,
+  Package,
+  HardDrive,
 } from "lucide-react";
 import { useAppStore } from "../store";
 import * as memoryStore from "../lib/memoryStore";
@@ -24,6 +26,16 @@ import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import type { AutoMemory } from "../types";
 import { ThemedTooltip } from "./ui/tooltip";
+import {
+  buildUnifiedExport,
+  downloadUnifiedExport,
+  parseUnifiedExport,
+  applyUnifiedExport,
+  buildSingleChannelExport,
+  listAllKnownChannels,
+  deleteAllChannelData,
+} from "../lib/unifiedExport";
+import { listAllSnapshots } from "../lib/channelStore";
 
 export function MemoryPanel() {
   const {
@@ -43,7 +55,10 @@ export function MemoryPanel() {
     removeUserProfile,
     updateAutoMemory,
     addAutoMemory,
+    streamMetadata,
   } = useAppStore();
+
+  const channel = (streamMetadata?.channelName || "default").toLowerCase();
 
   const [activeTab, setActiveTab] = useState<"memories" | "profiles" | "jokes" | "personality">("memories");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -113,16 +128,23 @@ export function MemoryPanel() {
   }, [autoMemories]);
 
   const handleClearAll = useCallback(async () => {
-    await memoryStore.clearAllMemoryData();
+    await memoryStore.clearAllMemoryData(channel);
     setAutoMemories([]);
     setUserProfiles([]);
     setInsideJokes([]);
-    toast.success("All auto-memory data cleared");
-  }, [setAutoMemories, setUserProfiles, setInsideJokes]);
+    toast.success(`Auto-memory data cleared for @${channel}`);
+  }, [channel, setAutoMemories, setUserProfiles, setInsideJokes]);
 
   const handleExport = useCallback(async () => {
-    const data = await memoryStore.exportAllData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const data = await memoryStore.exportAllData(channel);
+    const file = {
+      format: "madchatter-auto-memory",
+      version: 1,
+      channel,
+      exportedAt: new Date().toISOString(),
+      ...data,
+    };
+    const blob = new Blob([JSON.stringify(file, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -130,7 +152,7 @@ export function MemoryPanel() {
     a.click();
     URL.revokeObjectURL(url);
     toast.success("Auto-memory data exported");
-  }, []);
+  }, [channel]);
 
   const handleImport = useCallback(
     async (e: ChangeEvent<HTMLInputElement>) => {
@@ -140,11 +162,18 @@ export function MemoryPanel() {
       reader.onload = async (ev) => {
         try {
           const data = JSON.parse(ev.target?.result as string);
-          await memoryStore.importAllData(data);
+          // Strip the header fields before passing to importAllData
+          const payload = {
+            memories: data.memories,
+            profiles: data.profiles,
+            jokes: data.jokes,
+            personality: data.personality,
+          };
+          await memoryStore.importAllData(channel, payload);
           const [memories, profiles, jokes] = await Promise.all([
-            memoryStore.getAllMemories(),
-            memoryStore.getAllProfiles(),
-            memoryStore.getAllJokes(),
+            memoryStore.getAllMemories(channel),
+            memoryStore.getAllProfiles(channel),
+            memoryStore.getAllJokes(channel),
           ]);
           setAutoMemories(memories);
           setUserProfiles(profiles);
@@ -157,19 +186,125 @@ export function MemoryPanel() {
       reader.readAsText(file);
       e.target.value = "";
     },
-    [setAutoMemories, setUserProfiles, setInsideJokes],
+    [channel, setAutoMemories, setUserProfiles, setInsideJokes],
   );
 
   const handleRunDecay = useCallback(async () => {
-    await runDecayCycle(autoMemoryConfig);
+    await runDecayCycle(autoMemoryConfig, channel);
     const [memories, jokes] = await Promise.all([
-      memoryStore.getAllMemories(),
-      memoryStore.getAllJokes(),
+      memoryStore.getAllMemories(channel),
+      memoryStore.getAllJokes(channel),
     ]);
     setAutoMemories(memories);
     setInsideJokes(jokes);
     toast.success("Decay cycle run complete");
-  }, [autoMemoryConfig, setAutoMemories, setInsideJokes]);
+  }, [autoMemoryConfig, channel, setAutoMemories, setInsideJokes]);
+
+  // ── Export All / Import All (unified format) ─────────────────────
+  const handleExportAll = useCallback(async () => {
+    try {
+      const file = await buildUnifiedExport();
+      downloadUnifiedExport(file);
+      toast.success(`Exported ${file.channels.length} channel${file.channels.length !== 1 ? "s" : ""}`);
+    } catch (e) {
+      toast.error("Failed to build unified export");
+      console.error(e);
+    }
+  }, []);
+
+  const handleImportAll = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const text = ev.target?.result as string;
+        const parsed = parseUnifiedExport(text);
+        if (!parsed.ok) {
+          const errMsg = "error" in parsed ? parsed.error : "Unknown error";
+          toast.error(`Import failed: ${errMsg}`);
+          return;
+        }
+        const file = parsed.file;
+        try {
+          const result = await applyUnifiedExport(file);
+          if (result.errors.length > 0) {
+            toast.warning(`Restored ${result.channelsRestored} channels with ${result.errors.length} errors`);
+          } else {
+            toast.success(`Restored ${result.channelsRestored} channel${result.channelsRestored !== 1 ? "s" : ""}`);
+          }
+          // Reload active channel's data if it was in the file
+          if (file.channels.some((c) => c.channel === channel)) {
+            const [memories, profiles, jokes] = await Promise.all([
+              memoryStore.getAllMemories(channel),
+              memoryStore.getAllProfiles(channel),
+              memoryStore.getAllJokes(channel),
+            ]);
+            setAutoMemories(memories);
+            setUserProfiles(profiles);
+            setInsideJokes(jokes);
+          }
+          // Refresh streamer list
+          refreshStreamerData();
+        } catch (e) {
+          toast.error("Failed to apply unified import");
+          console.error(e);
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    },
+    [channel, setAutoMemories, setUserProfiles, setInsideJokes],
+  );
+
+  // ── Streamer Data section ───────────────────────────────────────
+  const [showStreamerData, setShowStreamerData] = useState(false);
+  const [streamerList, setStreamerList] = useState<{ channel: string; updatedAt: number | null }[]>([]);
+
+  const refreshStreamerData = useCallback(async () => {
+    try {
+      const [snapshots, memoryChannels] = await Promise.all([
+        listAllSnapshots(),
+        memoryStore.listChannels(),
+      ]);
+      const map = new Map<string, number | null>();
+      for (const s of snapshots) map.set(s.channel, s.updatedAt);
+      for (const c of memoryChannels) if (!map.has(c)) map.set(c, null);
+      const list = [...map.entries()]
+        .map(([ch, updatedAt]) => ({ channel: ch, updatedAt }))
+        .sort((a, b) => a.channel.localeCompare(b.channel));
+      setStreamerList(list);
+    } catch (e) {
+      console.error("[MemoryPanel] Failed to list streamer data:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (memoryPanelOpen) refreshStreamerData();
+  }, [memoryPanelOpen, refreshStreamerData]);
+
+  const handleExportChannel = useCallback(async (ch: string) => {
+    try {
+      const file = await buildSingleChannelExport(ch);
+      downloadUnifiedExport(file);
+      toast.success(`Exported @${ch}`);
+    } catch (e) {
+      toast.error(`Failed to export @${ch}`);
+      console.error(e);
+    }
+  }, []);
+
+  const handleDeleteChannel = useCallback(async (ch: string) => {
+    if (!confirm(`Delete all persisted data for @${ch}? This cannot be undone.`)) return;
+    try {
+      await deleteAllChannelData(ch);
+      toast.success(`Deleted data for @${ch}`);
+      refreshStreamerData();
+    } catch (e) {
+      toast.error(`Failed to delete @${ch}`);
+      console.error(e);
+    }
+  }, [refreshStreamerData]);
 
   // B1: Memory editing
   const startEdit = useCallback((mem: AutoMemory) => {
@@ -244,7 +379,22 @@ export function MemoryPanel() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <ThemedTooltip content="Export">
+            <ThemedTooltip content="Export All (unified)">
+              <button
+                onClick={handleExportAll}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 transition-colors"
+              >
+                <Package className="w-4 h-4" />
+              </button>
+            </ThemedTooltip>
+            <ThemedTooltip content="Import All (unified)">
+              <label className="cursor-pointer p-1.5 rounded-lg text-gray-400 hover:text-purple-400 hover:bg-purple-500/10 transition-colors">
+                <Package className="w-4 h-4 rotate-180" />
+                <input type="file" accept=".json" className="hidden" onChange={handleImportAll} />
+              </label>
+            </ThemedTooltip>
+            <div className="w-px h-5 bg-white/10" />
+            <ThemedTooltip content="Export (this channel)">
               <button
                 onClick={handleExport}
                 className="p-1.5 rounded-lg text-gray-400 hover:text-blue-400 hover:bg-blue-500/10 transition-colors"
@@ -252,7 +402,7 @@ export function MemoryPanel() {
                 <Download className="w-4 h-4" />
               </button>
             </ThemedTooltip>
-            <ThemedTooltip content="Import">
+            <ThemedTooltip content="Import (this channel)">
               <label className="cursor-pointer p-1.5 rounded-lg text-gray-400 hover:text-green-400 hover:bg-green-500/10 transition-colors">
                 <Upload className="w-4 h-4" />
                 <input type="file" accept=".json" className="hidden" onChange={handleImport} />
@@ -266,7 +416,7 @@ export function MemoryPanel() {
                 <TrendingUp className="w-4 h-4" />
               </button>
             </ThemedTooltip>
-            <ThemedTooltip content="Clear all">
+            <ThemedTooltip content="Clear all (this channel)">
               <button
                 onClick={handleClearAll}
                 className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
@@ -281,6 +431,58 @@ export function MemoryPanel() {
               <X className="w-4 h-4" />
             </button>
           </div>
+        </div>
+
+        {/* Streamer Data section */}
+        <div className="border-b border-white/5">
+          <button
+            onClick={() => setShowStreamerData(!showStreamerData)}
+            className="flex items-center justify-between w-full px-4 py-2 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-gray-200"
+          >
+            <span className="flex items-center gap-1.5">
+              <HardDrive className="w-3 h-3" />
+              Streamer Data · {streamerList.length} persisted
+            </span>
+            <ChevronDown className={cn("w-3 h-3 transition-transform", showStreamerData && "rotate-180")} />
+          </button>
+          {showStreamerData && (
+            <div className="max-h-40 overflow-y-auto px-4 pb-2 space-y-1">
+              {streamerList.length === 0 && (
+                <div className="text-[10px] text-gray-600 py-2">No persisted streamers yet.</div>
+              )}
+              {streamerList.map((row) => (
+                <div
+                  key={row.channel}
+                  className={cn(
+                    "flex items-center gap-2 px-2 py-1 rounded-lg text-[10px]",
+                    row.channel === channel ? "bg-purple-500/10 border border-purple-500/30" : "bg-white/5",
+                  )}
+                >
+                  <span className={cn("font-bold", row.channel === channel ? "text-purple-300" : "text-gray-300")}>
+                    @{row.channel}
+                  </span>
+                  {row.channel === channel && <span className="text-[9px] text-purple-400">(active)</span>}
+                  <span className="text-gray-600 ml-1">
+                    {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "no snapshot"}
+                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    <button
+                      onClick={() => handleExportChannel(row.channel)}
+                      className="p-1 rounded text-gray-500 hover:text-blue-400 hover:bg-blue-500/10"
+                    >
+                      <Download className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteChannel(row.channel)}
+                      className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Enable toggle */}

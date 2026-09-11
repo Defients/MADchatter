@@ -609,7 +609,7 @@ export function useAutoForgeBot(botId: string) {
               // Mirrors the legacy useAutoForge post-send memory boosting.
               if (runtime.autoMemoryConfig?.enabled && decision.referenced_memory_ids) {
                 for (const mid of decision.referenced_memory_ids) {
-                  boostMemory(mid).catch(console.error);
+                  boostMemory((store.streamMetadata.channelName || "default").toLowerCase(), mid).catch(console.error);
                 }
               }
             }
@@ -770,7 +770,7 @@ export function useAutoForgeBot(botId: string) {
                 payloadLower.includes(punchlineLower) ||
                 punchlineLower.includes(payloadLower);
               if (matchesJoke) {
-                recordJokeUsage(bestMatch.joke.id, decision.action_payload).catch(console.error);
+                recordJokeUsage((store.streamMetadata.channelName || "default").toLowerCase(), bestMatch.joke.id, decision.action_payload).catch(console.error);
               } else {
                 console.log(`[AutoForgeBot ${bot.session.username}] joke_callback payload doesn't match any active joke — downgrading to short_reaction`);
                 effectiveDecision = "short_reaction";
@@ -875,13 +875,13 @@ export function useAutoForgeBot(botId: string) {
           if (runtime.autoMemoryConfig?.enabled) {
             if (decision.referenced_memory_ids) {
               for (const mid of decision.referenced_memory_ids) {
-                boostMemory(mid).catch(console.error);
+                boostMemory((store.streamMetadata.channelName || "default").toLowerCase(), mid).catch(console.error);
               }
             }
             if (decision.referenced_joke_ids) {
               for (const jid of decision.referenced_joke_ids) {
-                boostJoke(jid, decision.action_payload).catch(console.error);
-                recordJokeUsage(jid, decision.action_payload).catch(console.error);
+                boostJoke((store.streamMetadata.channelName || "default").toLowerCase(), jid, decision.action_payload).catch(console.error);
+                recordJokeUsage((store.streamMetadata.channelName || "default").toLowerCase(), jid, decision.action_payload).catch(console.error);
               }
             }
           }

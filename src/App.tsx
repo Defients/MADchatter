@@ -673,7 +673,7 @@ export default function App() {
 
       {/* Command Palette (⌘K) */}
       {openCommand && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh] bg-black/70 backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Command Palette" onClick={() => { setOpenCommand(false); playSfx('palette_close'); }} onKeyDown={(e) => { if (e.key === 'Escape') { setOpenCommand(false); playSfx('palette_close'); } }}>
+        <div className="fixed inset-0 z-[10002] flex items-start justify-center pt-[20vh] bg-black/70 backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Command Palette" onClick={() => { setOpenCommand(false); playSfx('palette_close'); }} onKeyDown={(e) => { if (e.key === 'Escape') { setOpenCommand(false); playSfx('palette_close'); } }}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg">
             <Command className="rounded-2xl border border-white/[0.08] shadow-[var(--elev-4)] bg-[#131318] text-white max-w-lg overflow-hidden">
               <CommandInput placeholder="Type a command or search..." className="text-white placeholder:text-gray-500" autoFocus />
@@ -685,21 +685,21 @@ export default function App() {
                     playSfx('palette_select');
                     window.dispatchEvent(new CustomEvent('forge-trigger')); 
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Forge New Batch (HotKey: F)
+                    <span className="font-bold text-white">Forge New Batch</span> <span className="text-gray-500">(HotKey: F)</span>
                   </CommandItem>
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
                     playSfx('palette_select');
                     window.dispatchEvent(new CustomEvent('capture-trigger')); 
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Capture Browser Stream (HotKey: C)
+                    <span className="font-bold text-white">Capture Browser Stream</span> <span className="text-gray-500">(HotKey: C)</span>
                   </CommandItem>
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
                     playSfx('palette_select');
                     handleSendTopVariant(); 
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Send Top Variant to Chat (HotKey: S)
+                    <span className="font-bold text-white">Send Top Variant to Chat</span> <span className="text-gray-500">(HotKey: S)</span>
                   </CommandItem>
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
@@ -711,7 +711,7 @@ export default function App() {
                     toast.success(`AutoForge is now ${newVal ? 'enabled' : 'disabled'}`);
                     playSfx(newVal ? 'autoforge_on' : 'autoforge_off');
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Toggle AutoForge (HotKey: A)
+                    <span className="font-bold text-white">Toggle AutoForge</span> <span className="text-gray-500">(HotKey: A)</span>
                   </CommandItem>
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
@@ -721,7 +721,7 @@ export default function App() {
                     s.setR34lEnabled(newVal);
                     toast.success(`R34L mode is now ${newVal ? 'enabled' : 'disabled'}`);
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Toggle R34L Typing Mode (HotKey: Shift+R)
+                    <span className="font-bold text-white">Toggle R34L Typing Mode</span> <span className="text-gray-500">(HotKey: Shift+R)</span>
                   </CommandItem>
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 
@@ -770,7 +770,7 @@ export default function App() {
                     s.setIsAutoForgeHUDOpen(isOpening);
                     playSfx(isOpening ? 'hud_open' : 'hud_close');
                   }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
-                    Toggle AutoForge HUD (HotKey: H)
+                    <span className="font-bold text-white">Toggle AutoForge HUD</span> <span className="text-gray-500">(HotKey: H)</span>
                   </CommandItem>
                   <CommandItem onSelect={() => { 
                     setOpenCommand(false); 

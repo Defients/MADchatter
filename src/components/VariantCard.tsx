@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Card } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -142,7 +143,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
     { label: "😏 Sarcastic", type: "sarcasm" }
   ];
 
-  return (
+  const card = (
     <div
       ref={cardRef}
       style={dragPos ? {
@@ -398,4 +399,8 @@ export const VariantCard: React.FC<VariantCardProps> = ({
     </Card>
     </div>
   );
+
+  // When dragging, portal to document.body so position:fixed is relative to the
+  // viewport, not the transformed motion.div forge group ancestor.
+  return dragPos ? createPortal(card, document.body) : card;
 };

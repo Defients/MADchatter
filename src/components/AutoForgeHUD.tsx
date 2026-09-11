@@ -1,12 +1,35 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useAppStore, selectMultiBotActive } from '../store';
 import type { Bot } from '../types';
-import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle } from 'lucide-react';
+import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx, playForceBurstSfx } from '../lib/sfx';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
 import { motion, AnimatePresence } from 'motion/react';
 import { ThemedTooltip } from './ui/tooltip';
+
+// ─── Next Check color thresholds ───────────────────────────────────────────
+// Short = hot/green (about to fire), long = cool/red (calm wait).
+function nextCheckColor(secs: number): string {
+  if (secs <= 10) return 'text-emerald-400';
+  if (secs <= 30) return 'text-yellow-400';
+  if (secs <= 90) return 'text-orange-400';
+  return 'text-red-400';
+}
+
+function nextCheckBarColor(secs: number): string {
+  if (secs <= 10) return 'bg-emerald-500';
+  if (secs <= 30) return 'bg-yellow-500';
+  if (secs <= 90) return 'bg-orange-500';
+  return 'bg-red-500';
+}
+
+// Glow when imminent (≤ 5s) — pulses to draw the eye.
+function nextCheckGlow(secs: number): string {
+  if (secs <= 5) return 'drop-shadow-[0_0_8px_rgba(52,211,153,0.9)]';
+  if (secs <= 10) return 'drop-shadow-[0_0_4px_rgba(250,204,21,0.6)]';
+  return '';
+}
 
 function RateLimitIndicator() {
   const [stats, setStats] = useState(() => actionRateLimiter.getStats());
@@ -100,6 +123,16 @@ export function AutoForgeHUD() {
   const [minimized, setMinimized] = useState(true);
   const [liteView, setLiteView] = useState(false);
 
+  // Micro-check acceleration tracking: detect when the next-check timer is
+  // shortened mid-cycle (activity spike, mention, manual cooldown) and flash
+  // a visual cue so the user can see the bot "waking up" sooner.
+  const [accelKey, setAccelKey] = useState(0);
+  const prevNextMsRef = useRef(0);
+
+  // Dry Run section expand state — Confidence Threshold slider is hidden by
+  // default to save space for a lesser-used feature.
+  const [dryRunExpanded, setDryRunExpanded] = useState(false);
+
   useEffect(() => {
     if (!isAutoForgeHUDOpen) return;
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -114,8 +147,6 @@ export function AutoForgeHUD() {
     window.addEventListener("tutorial-expand-hud", onExpand);
     return () => window.removeEventListener("tutorial-expand-hud", onExpand);
   }, []);
-
-  if (!isAutoForgeHUDOpen) return null;
 
   // In multi-bot mode the legacy global pacing fields are NOT updated (the
   // legacy loop stands down). Derive next/last/decision from per-bot runtimes
@@ -148,6 +179,23 @@ export function AutoForgeHUD() {
     }
   }
 
+  // ── Micro-check acceleration cue ────────────────────────────────────────
+  // Detect when the next-check timer was shortened mid-cycle (e.g. activity
+  // spike, mention, or manual cooldown floor). When the scheduled time moves
+  // earlier than what we previously saw, fire a one-shot flash so the user
+  // can see the bot "waking up" sooner.
+  useEffect(() => {
+    if (!effectiveNextActionMs) return;
+    const prev = prevNextMsRef.current;
+    if (prev && effectiveNextActionMs < prev - 1000) {
+      // Timer was pulled forward by > 1s — accelerate cue
+      setAccelKey((k) => k + 1);
+    }
+    prevNextMsRef.current = effectiveNextActionMs;
+  }, [effectiveNextActionMs]);
+
+  if (!isAutoForgeHUDOpen) return null;
+
   const timeSinceLast = effectiveLastActionMs
     ? Math.max(0, Math.floor((now - effectiveLastActionMs) / 1000))
     : 0;
@@ -155,6 +203,14 @@ export function AutoForgeHUD() {
   const timeUntilNext = effectiveNextActionMs
     ? Math.max(0, Math.floor((effectiveNextActionMs - now) / 1000))
     : 0;
+
+  // Progress bar: how close we are to firing (0% → 100% as time elapses).
+  // Based on the gap between the last action and the scheduled next action.
+  const totalCycleMs = effectiveNextActionMs && effectiveLastActionMs
+    ? Math.max(1000, effectiveNextActionMs - effectiveLastActionMs)
+    : 0;
+  const elapsedMs = effectiveLastActionMs ? Math.max(0, now - effectiveLastActionMs) : 0;
+  const cyclePct = totalCycleMs ? Math.min(100, Math.round((elapsedMs / totalCycleMs) * 100)) : 0;
 
   const decisionType = effectiveDecision?.decision || 'None';
   const decisionReason = effectiveDecision?.reason || 'Waiting for initial signal check...';
@@ -238,15 +294,36 @@ export function AutoForgeHUD() {
             onPointerDownCapture={(e) => e.stopPropagation()}
           >
             {/* Lite: Next Check + Force */}
-            <div className="flex items-center justify-between p-2 bg-white/5 rounded border border-white/5 relative">
-              <div className="flex flex-col">
+            <div className="flex items-center justify-between p-2 bg-white/5 rounded border border-white/5 relative overflow-hidden">
+              <div className="flex flex-col min-w-0 flex-1">
                 <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
                   <Sparkles className="w-3 h-3 text-purple-400" /> Next Check
                 </span>
-                <span className="text-xs font-mono text-purple-300 font-bold mt-0.5">
+                <span className={cn("text-xs font-mono font-bold mt-0.5 transition-colors", nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext))}>
                   {timeUntilNext}s
                 </span>
+                {/* Micro-check progress bar */}
+                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5">
+                  <div
+                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckBarColor(timeUntilNext))}
+                    style={{ width: `${cyclePct}%` }}
+                  />
+                </div>
               </div>
+              {/* Acceleration flash cue */}
+              <AnimatePresence>
+                {accelKey > 0 && (
+                  <motion.div
+                    key={accelKey}
+                    initial={{ opacity: 0.9, scale: 0.5 }}
+                    animate={{ opacity: 0, scale: 2.5 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.7, ease: "easeOut" }}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none z-40"
+                    style={{ background: 'radial-gradient(circle, rgba(52,211,153,0.9) 0%, transparent 70%)' }}
+                  />
+                )}
+              </AnimatePresence>
               {multiBotActive && activeBots.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1 justify-end max-w-[60%]">
                   {activeBots.map((bot, idx) => (
@@ -366,13 +443,34 @@ export function AutoForgeHUD() {
                 </span>
               </div>
 
-              <div className="flex flex-col p-2 bg-white/5 rounded border border-white/5 relative">
+              <div className="flex flex-col p-2 bg-white/5 rounded border border-white/5 relative overflow-hidden">
                 <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
                   <Sparkles className="w-3 h-3 text-purple-400" /> Next Check
                 </span>
-                <span className="text-xs font-mono text-purple-300 font-bold mt-0.5">
+                <span className={cn("text-xs font-mono font-bold mt-0.5 transition-colors", nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext))}>
                   {timeUntilNext}s
                 </span>
+                {/* Micro-check progress bar */}
+                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5">
+                  <div
+                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckBarColor(timeUntilNext))}
+                    style={{ width: `${cyclePct}%` }}
+                  />
+                </div>
+                {/* Acceleration flash cue */}
+                <AnimatePresence>
+                  {accelKey > 0 && (
+                    <motion.div
+                      key={accelKey}
+                      initial={{ opacity: 0.9, scale: 0.5 }}
+                      animate={{ opacity: 0, scale: 2.5 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.7, ease: "easeOut" }}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none z-40"
+                      style={{ background: 'radial-gradient(circle, rgba(52,211,153,0.9) 0%, transparent 70%)' }}
+                    />
+                  )}
+                </AnimatePresence>
                 {multiBotActive && activeBots.length > 0 ? (
                   <div className="flex flex-wrap items-center gap-1 mt-1.5">
                     {activeBots.map((bot, idx) => (
@@ -527,32 +625,49 @@ export function AutoForgeHUD() {
                     <HelpCircle className="w-3 h-3 text-gray-600 hover:text-cyan-400 transition-colors cursor-help" />
                   </ThemedTooltip>
                 </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setAutoForgeDryRun(!autoForgeDryRun); playSfx(autoForgeDryRun ? 'autoforge_off' : 'autoforge_on'); }}
-                  className={cn("text-[8px] px-2 py-0.5 rounded font-mono uppercase transition-colors", autoForgeDryRun ? "bg-cyan-500/30 text-cyan-200" : "bg-white/5 text-gray-500 hover:bg-white/10")}
-                >
-                  {autoForgeDryRun ? "ON" : "OFF"}
-                </button>
-              </div>
-              <div className="flex flex-col gap-1 pt-1 border-t border-white/5">
-                <div className="flex justify-between items-center text-[10px]">
-                  <span className="text-gray-400 uppercase">Confidence Threshold</span>
-                  <span className="text-gray-200 font-mono">{Math.round(autoForgeConfidenceThreshold * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={autoForgeConfidenceThreshold}
-                  onChange={(e) => setAutoForgeConfidenceThreshold(parseFloat(e.target.value))}
-                  className="w-full h-1 accent-cyan-400 cursor-pointer"
-                />
-                <div className="flex justify-between text-[8px] text-gray-600 font-mono">
-                  <span>0%</span>
-                  <span>100%</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setDryRunExpanded(v => !v); playSfx('panel_collapse'); }}
+                    className={cn("p-0.5 rounded transition-colors", dryRunExpanded ? "text-cyan-400 bg-cyan-500/10" : "text-gray-500 hover:text-white hover:bg-white/10")}
+                  >
+                    <ChevronDown className={cn("w-3 h-3 transition-transform", dryRunExpanded && "rotate-180")} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setAutoForgeDryRun(!autoForgeDryRun); playSfx(autoForgeDryRun ? 'autoforge_off' : 'autoforge_on'); }}
+                    className={cn("text-[8px] px-2 py-0.5 rounded font-mono uppercase transition-colors", autoForgeDryRun ? "bg-cyan-500/30 text-cyan-200" : "bg-white/5 text-gray-500 hover:bg-white/10")}
+                  >
+                    {autoForgeDryRun ? "ON" : "OFF"}
+                  </button>
                 </div>
               </div>
+              <AnimatePresence>
+                {dryRunExpanded && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="flex flex-col gap-1 pt-1 border-t border-white/5 overflow-hidden"
+                  >
+                    <div className="flex justify-between items-center text-[10px]">
+                      <span className="text-gray-400 uppercase">Confidence Threshold</span>
+                      <span className="text-gray-200 font-mono">{Math.round(autoForgeConfidenceThreshold * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={autoForgeConfidenceThreshold}
+                      onChange={(e) => setAutoForgeConfidenceThreshold(parseFloat(e.target.value))}
+                      className="w-full h-1 accent-cyan-400 cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[8px] text-gray-600 font-mono">
+                      <span>0%</span>
+                      <span>100%</span>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Last Decision Details */}

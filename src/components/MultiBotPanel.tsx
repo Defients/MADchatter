@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { motion, AnimatePresence, useDragControls } from "framer-motion";
+import { motion, AnimatePresence, useDragControls, useAnimationControls } from "framer-motion";
 import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAppStore, selectMultiBotActive } from "../store";
@@ -12,6 +12,128 @@ import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { ThemedTooltip } from "./ui/tooltip";
+
+/** Bot card with a pulse effect when the bot sends a message. */
+function BotCard({
+  botId, idx, expandedId, setExpandedId, platform, handleAuthBot, handleLogoffBot, removeBot,
+}: {
+  botId: string;
+  idx: number;
+  expandedId: string | null;
+  setExpandedId: (id: string | null) => void;
+  platform: string;
+  handleAuthBot: (botId: string) => void;
+  handleLogoffBot: (botId: string) => void;
+  removeBot: (botId: string) => void;
+}) {
+  const bot = useAppStore((s) => s.bots.find((b) => b.id === botId));
+  const sentCount = useAppStore((s) => s.bots.find((b) => b.id === botId)?.runtime.sentMessages.length ?? 0);
+  const prevSentCount = useRef(sentCount);
+  const controls = useAnimationControls();
+
+  useEffect(() => {
+    if (sentCount > prevSentCount.current) {
+      controls.start({
+        boxShadow: [
+          "0 0 0px 0px rgba(145,70,255,0)",
+          "0 0 16px 3px rgba(145,70,255,0.5)",
+          "0 0 0px 0px rgba(145,70,255,0)",
+        ],
+        borderColor: [
+          "rgba(255,255,255,0.1)",
+          "rgba(145,70,255,0.6)",
+          "rgba(255,255,255,0.1)",
+        ],
+        transition: { duration: 0.8, ease: "easeOut" },
+      });
+    }
+    prevSentCount.current = sentCount;
+  }, [sentCount, controls]);
+
+  if (!bot) return null;
+
+  return (
+    <motion.div
+      animate={controls}
+      className="border border-white/10 rounded-md bg-white/[0.02] overflow-hidden"
+    >
+      <div className="flex items-center gap-2 p-2">
+        <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
+        {idx < 9 && (
+          <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`}>
+            <kbd
+              className="text-[9px] font-mono font-bold bg-white/10 border border-white/15 rounded px-1 py-0.5 text-gray-300 shrink-0"
+            >
+              {idx + 1}
+            </kbd>
+          </ThemedTooltip>
+        )}
+        <div className="flex-1 min-w-0">
+          <div className={cn("text-[11px] font-bold truncate", bot.active ? "text-white" : "text-gray-500 line-through")}>{bot.label}</div>
+          <div className="text-[10px] text-gray-400 truncate">
+            {bot.session ? `@${bot.session.username}` : "Not authenticated"}
+            {idx === 0 ? " · primary" : ""}
+            {!bot.active ? " · paused" : ""}
+          </div>
+        </div>
+        <button
+          onClick={() => setExpandedId(expandedId === bot.id ? null : bot.id)}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+        >
+          {expandedId === bot.id ? "Hide" : "Edit"}
+        </button>
+        {!bot.session && platform !== "joystick" && (
+          <ThemedTooltip content={`Authenticate this bot with ${platform === "kick" ? "Kick" : "Twitch"}`}>
+            <button
+              onClick={() => handleAuthBot(bot.id)}
+              className="text-[10px] px-2 py-0.5 rounded bg-[#9146FF] hover:bg-[#772ce8] text-white font-bold uppercase tracking-wider transition-colors"
+            >
+              Auth
+            </button>
+          </ThemedTooltip>
+        )}
+        {bot.session && (
+          <ThemedTooltip content="Log off (keep the bot slot & memory)">
+            <button
+              onClick={() => handleLogoffBot(bot.id)}
+              className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            >
+              <LogOut className="w-3 h-3" />
+            </button>
+          </ThemedTooltip>
+        )}
+        {idx !== 0 && (
+          <ThemedTooltip content="Remove bot">
+            <button
+              onClick={() => removeBot(bot.id)}
+              className="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
+            >
+              <Trash2 className="w-3 h-3" />
+            </button>
+          </ThemedTooltip>
+        )}
+      </div>
+
+      {expandedId === bot.id && (
+        <div className="p-2 pt-0 flex flex-col gap-2 border-t border-white/5">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-gray-400">Label</span>
+            <input
+              value={bot.label}
+              onChange={(e) => {
+                useAppStore.setState((s) => ({
+                  bots: s.bots.map((b) => (b.id === bot.id ? { ...b, label: e.target.value } : b)),
+                }));
+              }}
+              className="text-[11px] bg-black/40 border border-white/10 rounded px-2 py-1 text-white outline-none focus:border-[#9146FF]/50"
+            />
+          </label>
+          <PersonaControls botId={bot.id} />
+        </div>
+      )}
+    </motion.div>
+  );
+}
 
 /**
  * MultiBotPanel — toggle + bot management UI (multi-bot mode).
@@ -147,85 +269,9 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
                 {/* Bot list */}
                 <div className="flex flex-col gap-2">
                   {bots.map((bot, idx) => (
-                    <div key={bot.id} className="border border-white/10 rounded-md bg-white/[0.02]">
-                      <div className="flex items-center gap-2 p-2">
-                        <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
-                        {idx < 9 && (
-                          <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`}>
-                            <kbd
-                              className="text-[9px] font-mono font-bold bg-white/10 border border-white/15 rounded px-1 py-0.5 text-gray-300 shrink-0"
-                            >
-                              {idx + 1}
-                            </kbd>
-                          </ThemedTooltip>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className={cn("text-[11px] font-bold truncate", bot.active ? "text-white" : "text-gray-500 line-through")}>{bot.label}</div>
-                          <div className="text-[10px] text-gray-400 truncate">
-                            {bot.session ? `@${bot.session.username}` : "Not authenticated"}
-                            {idx === 0 ? " · primary" : ""}
-                            {!bot.active ? " · paused" : ""}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => setExpandedId(expandedId === bot.id ? null : bot.id)}
-                          className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
-                        >
-                          {expandedId === bot.id ? "Hide" : "Edit"}
-                        </button>
-                        {!bot.session && platform !== "joystick" && (
-                          <ThemedTooltip content={`Authenticate this bot with ${platform === "kick" ? "Kick" : "Twitch"}`}>
-                            <button
-                              onClick={() => handleAuthBot(bot.id)}
-                              className="text-[10px] px-2 py-0.5 rounded bg-[#9146FF] hover:bg-[#772ce8] text-white font-bold uppercase tracking-wider transition-colors"
-                            >
-                              Auth
-                            </button>
-                          </ThemedTooltip>
-                        )}
-                        {bot.session && (
-                    <ThemedTooltip content="Log off (keep the bot slot & memory)">
-                      <button
-                        onClick={() => handleLogoffBot(bot.id)}
-                        className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
-                      >
-                        <LogOut className="w-3 h-3" />
-                      </button>
-                    </ThemedTooltip>
-                  )}
-                  {idx !== 0 && (
-                    <ThemedTooltip content="Remove bot">
-                      <button
-                        onClick={() => removeBot(bot.id)}
-                        className="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </ThemedTooltip>
-                  )}
+                    <BotCard key={bot.id} botId={bot.id} idx={idx} expandedId={expandedId} setExpandedId={setExpandedId} platform={platform} handleAuthBot={handleAuthBot} handleLogoffBot={handleLogoffBot} removeBot={removeBot} />
+                  ))}
                 </div>
-
-                {expandedId === bot.id && (
-                  <div className="p-2 pt-0 flex flex-col gap-2 border-t border-white/5">
-                    <label className="flex flex-col gap-1">
-                      <span className="text-[10px] uppercase tracking-wider text-gray-400">Label</span>
-                      <input
-                        value={bot.label}
-                        onChange={(e) => {
-                          // label lives on Bot, not persona — update via a direct store set
-                          useAppStore.setState((s) => ({
-                            bots: s.bots.map((b) => (b.id === bot.id ? { ...b, label: e.target.value } : b)),
-                          }));
-                        }}
-                        className="text-[11px] bg-black/40 border border-white/10 rounded px-2 py-1 text-white outline-none focus:border-[#9146FF]/50"
-                      />
-                    </label>
-                    <PersonaControls botId={bot.id} />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
 
           {/* Add bot */}
           {platform !== "joystick" && (
@@ -644,20 +690,18 @@ function ChatSender() {
 /** Compact launcher button for the header. */
 export function MultiBotButton({ onClick, active }: { onClick: () => void; active: boolean }) {
   return (
-    <ThemedTooltip content="Multi-Bot">
-      <button
-        onClick={onClick}
-        className={cn(
-          "h-7 px-2 flex items-center gap-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors",
-          active
-            ? "bg-[#9146FF]/20 border-[#9146FF]/50 text-[#c79bff]"
-            : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
-        )}
-      >
-        <Zap className="w-3 h-3" />
-        <span>Bots</span>
-      </button>
-    </ThemedTooltip>
+    <button
+      onClick={onClick}
+      className={cn(
+        "h-7 px-2 flex items-center gap-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors",
+        active
+          ? "bg-[#9146FF]/20 border-[#9146FF]/50 text-[#c79bff]"
+          : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
+      )}
+    >
+      <Zap className="w-3 h-3" />
+      <span>Bots</span>
+    </button>
   );
 }
 

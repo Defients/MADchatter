@@ -107,6 +107,9 @@ export interface AutoForgeEvent {
   severity: AutoForgeEventSeverity;
   summary: string;
   details?: Record<string, any>;
+  // Multi-bot mode: which bot account produced this event. Absent in legacy
+  // single-bot mode and for global events.
+  botName?: string;
 }
 
 export interface SentMessage {
@@ -143,6 +146,8 @@ export interface AutoMemory {
   strength: number;
   tags: string[];
   isVerified: boolean;
+  // Channel scope (added in v2 schema). Set by memoryStore on write.
+  channel?: string;
 }
 
 /**
@@ -177,6 +182,8 @@ export interface UserProfile {
   notes: string;
   isVIP: boolean;
   isBlocked: boolean;
+  // Channel scope (added in v2 schema). Set by memoryStore on write.
+  channel?: string;
 }
 
 export interface InsideJoke {
@@ -195,6 +202,8 @@ export interface InsideJoke {
   strength: number;
   status: "active" | "fading" | "retired";
   createdAt: number;
+  // Channel scope (added in v2 schema). Set by memoryStore on write.
+  channel?: string;
 }
 
 export interface PersonalityState {
