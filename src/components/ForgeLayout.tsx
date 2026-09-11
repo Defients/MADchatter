@@ -1185,6 +1185,13 @@ export function ForgeLayout() {
     return () => window.removeEventListener("tutorial-open-widget", onOpenWidget);
   }, []);
 
+  // Listen for tutorial-open-multibot event to auto-open the multi-bot panel during tutorial
+  useEffect(() => {
+    const onOpenMultibot = () => setMultiBotPanelOpen(true);
+    window.addEventListener("tutorial-open-multibot", onOpenMultibot);
+    return () => window.removeEventListener("tutorial-open-multibot", onOpenMultibot);
+  }, []);
+
   const handleVoiceCaptureRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -1740,7 +1747,7 @@ export function ForgeLayout() {
           )}
           {/* Smart Reply Chips */}
           {(smartReplies.length > 0 || smartRepliesLoading) && (
-            <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/5 bg-cyan-500/5 shrink-0 flex-wrap">
+            <div data-tutorial="smart-replies" className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/5 bg-cyan-500/5 shrink-0 flex-wrap">
               {smartRepliesLoading ? (
                 <span className="text-[10px] text-cyan-400 animate-pulse">Generating replies...</span>
               ) : (
@@ -2863,7 +2870,7 @@ export function ForgeLayout() {
                   </div>
 
                   {/* Multi-Bot launcher + panel */}
-                  <div className="relative shrink-0">
+                  <div className="relative shrink-0" data-tutorial="multibot-button">
                     <MultiBotButton active={multiBotPanelOpen} onClick={() => setMultiBotPanelOpen((v) => !v)} />
                     <AnimatePresence>
                       {multiBotPanelOpen && (
@@ -3092,7 +3099,9 @@ export function ForgeLayout() {
                   </div>
                 </div>
                 {/* Action Timeline — animated dot timeline of recent events */}
+                <div data-tutorial="action-timeline">
                 <ActionTimeline />
+                </div>
                 {/* The Forge fills the rest */}
                 <div className="flex-1 overflow-hidden">
                   <TheForge />

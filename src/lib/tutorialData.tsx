@@ -251,7 +251,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "Chat Stream Pulse",
     description: (
       <>
-        Live chat flows in here in real-time. <span className="text-orange-400 font-bold">MADchatter</span> analyzes every message for sentiment, mentions, and context fusion. Right-click any message to copy it, hover to pin it to memory.
+        Live chat flows in here in real-time. <span className="text-orange-400 font-bold">MADchatter</span> analyzes every message for sentiment, mentions, and context fusion. Right-click any message to copy it, hover to pin it to memory. When someone asks a question the bot can answer, <span className="text-cyan-400 font-bold">Smart Reply</span> chips appear below — one click to send.
       </>
     ),
     position: "right",
@@ -283,7 +283,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "Audio Transcription",
     description: (
       <>
-        Turn on audio transcription to capture the streamer's voice live. <span className="text-orange-400 font-bold">MADchatter</span> weaves spoken words into every Forge. Uses in-browser Whisper — no API key required, just a one-time model download (~150MB, cached after).
+        Turn on audio transcription to capture the streamer's voice live. <span className="text-orange-400 font-bold">MADchatter</span> weaves spoken words into every Forge — and bots will even <span className="text-teal-400 font-bold">recognize their own name</span> spoken aloud, triggering a targeted response. Uses in-browser Whisper — no API key required, just a one-time model download (~150MB, cached after).
       </>
     ),
     position: "right",
@@ -292,13 +292,23 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
   },
   {
     selector: '[data-tutorial="memory-widget"]',
-    title: "Long-Term Memory",
+    title: "Pinned Memories",
     description: (
       <>
-        Pin important moments from chat, audio, or visual snapshots. Star a <span className="text-yellow-400 font-bold">Golden Memory</span> for extra impact on forged comments. Export and import memories between sessions. This is your stream's institutional knowledge!
+        Pin important moments from chat, audio, or visual snapshots. Star a <span className="text-yellow-400 font-bold">Golden Memory</span> for extra impact on forged comments. Export and import memories between sessions. This is your stream's institutional knowledge — manually curated.
       </>
     ),
     position: "right",
+  },
+  {
+    selector: '[data-tutorial="auto-memory"]',
+    title: "Auto-Memory System",
+    description: (
+      <>
+        Toggle this to let <span className="text-purple-400 font-bold">AI automatically extract memories</span> from chat — facts, traits, user profiles, inside jokes, and personality evolution. Each bot builds its own independent memory across sessions. Click the brain icon to open the memory management panel and review what your bot has learned.
+      </>
+    ),
+    position: "left",
   },
   {
     selector: '[data-tutorial="forge-buttons"]',
@@ -341,11 +351,25 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     position: "left",
   },
   {
+    selector: '[data-tutorial="r34l"]',
+    title: (
+      <>
+        <span className="text-emerald-400 font-bold">R34L</span> Human Typing
+      </>
+    ),
+    description: (
+      <>
+        Toggle <span className="text-emerald-400 font-bold">R34L</span> to make your bot type like a real person — lowercase, loose spelling, punctuation as emotion, and controlled messiness. R34L also <span className="text-emerald-300">adapts to your channel's chat</span>: it mirrors the casing, slang, and emote rhythm of current chatters. Meaning is preserved; only the typing texture changes.
+      </>
+    ),
+    position: "left",
+  },
+  {
     selector: '[data-tutorial="provider"]',
     title: "Choose Your AI",
     description: (
       <>
-        Pick from Gemini, GPT-5.6 Luna, Claude Haiku 4.5, or OpenRouter. Each model brings different strengths — Gemini is fast, Claude is nuanced, GPT-5.6 Luna is cost-efficient. Note: every provider requires a paid API key.
+        Pick from Gemini, GPT-5.6 Luna, Claude Haiku 4.5, or OpenRouter. Each model brings different strengths — Gemini is fast, Claude is nuanced, GPT-5.6 Luna is cost-efficient. If a provider fails, <span className="text-orange-400 font-bold">MADchatter</span> automatically falls back to the next healthy one. Note: every provider requires a paid API key.
       </>
     ),
     position: "left",
@@ -355,7 +379,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "Deep Settings",
     description: (
       <>
-        Click the gear icon for the full settings panel: TTS voices, sound effects, desktop notifications, rate limiting, keyword trigger rules, and more. Fine-tune every aspect of your bot's behavior here.
+        Click the gear icon for the full settings panel: TTS voices, sound effects, desktop notifications, rate limiting, keyword trigger rules, session goals, and more. Fine-tune every aspect of your bot's behavior here.
       </>
     ),
     position: "left",
@@ -375,7 +399,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "AutoForge HUD",
     description: (
       <>
-        When AutoForge is active, this draggable HUD shows real-time decisions, confidence levels, and timing. Press H to toggle it anytime. The HUD is your window into the AI's thought process — see exactly why it chose to speak (or stay silent).
+        When AutoForge is active, this draggable HUD shows real-time decisions, confidence levels, and timing. Press <span className="text-orange-300 font-bold">H</span> to toggle it anytime. Use <span className="text-cyan-400 font-bold">Dry Run Mode</span> (in the HUD) to preview bot decisions without sending anything to chat — perfect for tuning thresholds and testing personas safely.
       </>
     ),
     position: "left",
@@ -388,6 +412,44 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
         header.style.textShadow = "0 0 8px rgba(250, 204, 21, 0.4)";
       }
     },
+  },
+  {
+    selector: '[data-tutorial="action-timeline"]',
+    title: "Action Timeline",
+    description: (
+      <>
+        This animated dot timeline shows every AutoForge event — messages sent, mentions, activity spikes, deliberate silences, and errors. Each color is a category. Hover any dot for details. In multi-bot mode, all bots' events are aggregated here. Filter by category to see exactly what your bot(s) have been up to.
+      </>
+    ),
+    position: "left",
+  },
+  {
+    selector: '[data-tutorial="multibot-button"]',
+    title: (
+      <>
+        <span className="text-[#9146FF] font-bold">Multi-Bot</span> Mode
+      </>
+    ),
+    description: (
+      <>
+        Click here to open the Multi-Bot panel. Add a second (or third) bot with its own Twitch/Kick account, persona, and memory. Each bot runs its own independent AutoForge loop and takes turns speaking through a <span className="text-[#9146FF] font-bold">speaker coordinator</span> — no two bots talk over each other. Use the per-bot <span className="text-orange-400 font-bold">Force</span> button to trigger a specific bot on demand.
+      </>
+    ),
+    position: "bottom",
+    onActivate: () => {
+      // Open the multi-bot panel so the user can see it during the tour
+      window.dispatchEvent(new CustomEvent("tutorial-open-multibot"));
+    },
+  },
+  {
+    selector: '[data-tutorial="multibot-panel"]',
+    title: "Director Notes",
+    description: (
+      <>
+        Inside the Multi-Bot panel, the <span className="text-purple-400 font-bold">Director Note</span> input lets you send <span className="text-purple-300 font-bold">private directives</span> to one bot or all bots. These notes are <span className="text-purple-300 font-bold">never sent to chat</span> — they're injected into the bot's next AutoForge decision as a high-priority directive. Use them for feedback, status updates, or things you want the bot to remember mid-stream. Below it, the <span className="text-orange-400 font-bold">ChatSender</span> sends real messages to chat as the selected bot.
+      </>
+    ),
+    position: "left",
   },
   {
     selector: '[data-tutorial="statusbar"]',
@@ -418,7 +480,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     title: "You're Ready! 🎉",
     description: (
       <>
-        Press Ctrl+K for the command palette, ? for keyboard shortcuts, and F to Forge. You now know every major feature — go make some chaos! You can replay this tutorial anytime from the command palette.<br /><span className="block text-center text-[15px] font-bold mt-1">Welcome to <span className="text-orange-400">MADchatter</span>!</span>
+        Press <span className="text-orange-300 font-bold">Ctrl+K</span> for the command palette, <span className="text-orange-300 font-bold">?</span> for keyboard shortcuts, and <span className="text-orange-300 font-bold">F</span> to Forge. You now know every major feature — go make some chaos! You can replay this tutorial anytime from the command palette.<br /><span className="block text-center text-[15px] font-bold mt-1">Welcome to <span className="text-orange-400">MADchatter</span>!</span>
       </>
     ),
     position: "bottom",

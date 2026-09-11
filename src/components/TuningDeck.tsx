@@ -589,6 +589,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             <TooltipTrigger render={
               <button
                 type="button"
+                data-tutorial="r34l"
                 onClick={() => {
                   setR34lEnabled(!r34lEnabled);
                   toast.success(`R34L mode is now ${!r34lEnabled ? 'enabled — all Forges will type more human' : 'disabled'}`);
@@ -741,6 +742,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           {/* Memory enable/disable toggle */}
           <button
             type="button"
+            data-tutorial="auto-memory"
             onClick={() => {
               const newVal = !autoMemoryConfig.enabled;
               updateAutoMemoryConfig({ enabled: newVal });

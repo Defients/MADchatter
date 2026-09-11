@@ -101,6 +101,7 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
       dragListener={false}
       dragControls={dragControls}
       dragMomentum={false}
+      data-tutorial="multibot-panel"
       className="w-80 max-h-[70vh] overflow-hidden bg-[#0F0F12]/95 border border-white/10 rounded-lg shadow-2xl backdrop-blur-md flex flex-col"
     >
       {/* Header — drag handle + collapse/close. Always visible. */}
@@ -472,7 +473,7 @@ function DirectorNoteInput() {
   };
 
   return (
-    <div className="shrink-0 border-t border-white/10 bg-gradient-to-b from-purple-950/20 to-black/30 p-2 flex flex-col gap-1.5">
+    <div data-tutorial="director-notes" className="shrink-0 border-t border-white/10 bg-gradient-to-b from-purple-950/20 to-black/30 p-2 flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
         <Megaphone className="w-3 h-3 text-purple-400 shrink-0" />
         <span className="text-[9px] uppercase tracking-wider text-purple-400 font-bold shrink-0">Director Note</span>

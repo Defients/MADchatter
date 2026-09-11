@@ -508,7 +508,7 @@ export function AutoForgeHUD() {
             </div>
 
             {/* Dry Run Toggle & Confidence Threshold */}
-            <div className="flex flex-col gap-1.5 p-2 bg-black/40 rounded border border-white/5">
+            <div data-tutorial="dry-run" className="flex flex-col gap-1.5 p-2 bg-black/40 rounded border border-white/5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                   <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
