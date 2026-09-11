@@ -95,7 +95,8 @@ export type AutoForgeEventType =
   | "error"
   | "enable_disable"
   | "metadata_change"
-  | "director_note";
+  | "director_note"
+  | "rule_fired";
 
 export type AutoForgeEventSeverity = "low" | "medium" | "high";
 

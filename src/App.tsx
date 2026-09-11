@@ -630,14 +630,19 @@ export default function App() {
     const toastId = toast.loading(`Sending top variant to @${channelName}...`);
 
     const currentPlatform = useAppStore.getState().platform;
+    const s = useAppStore.getState();
+    // In multi-bot mode, send as the selected manual-send bot identity.
+    // In legacy mode, manualSendBotId is null → singleton send path.
+    const sendBotId = s.multiBotEnabled ? s.manualSendBotId : undefined;
     try {
-      const sendFn = getPlatformSendFn(currentPlatform);
+      const sendFn = getPlatformSendFn(currentPlatform, sendBotId);
       await sendFn(channelName, topMsg);
       useAppStore.getState().addSentMessage({
         message: topMsg,
         channel: channelName,
         timestamp: Date.now(),
         source: "manual",
+        botId: sendBotId ?? undefined,
       });
       useAppStore.getState().incrementMessagesSent();
       useAppStore.getState().incrementStat("manualActions");

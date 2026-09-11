@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../store";
 import { toast } from "sonner";
-import { autoforgeDecide } from "../lib/ai";
+import { autoforgeDecide, generateChat, rankVariants } from "../lib/ai";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { botCoordinator, type BotCandidate } from "../lib/botCoordinator";
 import { playSfx } from "../lib/sfx";
@@ -9,11 +9,21 @@ import { speakMessage } from "../lib/tts";
 import { getActiveProvider, getApiKey, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
+import { boostMemory, boostJoke } from "../lib/memoryEngine";
+import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/jokeEngine";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
 import { actionRateLimiter } from "../lib/actionRateLimiter";
 import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { getAvailableEmoteNames } from "../lib/emotes";
+import { evaluateAllRules } from "../lib/ruleEngine";
+import type { RuleEngineContext } from "../types";
+import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
+
+// D4: Post-send engagement correlation — delay before evaluating chat response.
+// Mirrors the legacy useAutoForge constant so multi-bot engagement metrics
+// use the same 30-second observation window.
+const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
 
 /**
  * Per-bot AutoForge decision loop (multi-bot mode only).
@@ -27,16 +37,19 @@ import { getAvailableEmoteNames } from "../lib/emotes";
  * The legacy useAutoForge() is untouched and self-disables via its own guard
  * when multiBotEnabled === true.
  *
- * v1 scope: core decide → coordinate → send → record cycle. Advanced features
- * from the legacy loop (rule engine, smart replies, post-send engagement
- * correlation, session goals) are deferred for per-bot mode and can be layered
- * onto this loop later.
+ * v1 scope: core decide → coordinate → send → record cycle. full_forge
+ * decisions now generate + rank variants via generateChat/rankVariants (parity
+ * with the legacy loop). Other advanced features from the legacy loop (rule
+ * engine, smart replies, post-send engagement correlation, session goals) are
+ * deferred for per-bot mode and can be layered onto this loop later.
  */
 export function useAutoForgeBot(botId: string) {
   const isForgingRef = useRef(false);
   const lastChatLengthRef = useRef(0);
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
+  const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   const checkBot = async (force = false) => {
     if (isForgingRef.current) return;
@@ -161,6 +174,25 @@ export function useAutoForgeBot(botId: string) {
           summary: `[${bot.session.username}] Mentioned (${source}): ${allMentionLines.slice(0, 3).join(" | ")}`,
           details: { mentionedLines, audioMentionLines, botUsername, botId },
         });
+
+        // Smart reply generation — when smart replies are enabled, generate
+        // click-to-send suggestions for this bot's mention. Passes botId so
+        // the smart reply prompt uses THIS bot's identity, not the manual
+        // send bot's. Shared global smartReplies state (UI suggestions).
+        if (store.smartRepliesEnabled && canGenerateSmartReplies()) {
+          store.setSmartRepliesLoading(true);
+          generateSmartReplies(allMentionLines, { botId })
+            .then((replies) => {
+              if (replies.length > 0) {
+                useAppStore.getState().setSmartReplies(replies);
+              }
+              useAppStore.getState().setSmartRepliesLoading(false);
+            })
+            .catch((e) => {
+              console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
+              useAppStore.getState().setSmartRepliesLoading(false);
+            });
+        }
       }
       if (activitySpike) {
         store.incrementStat("spikesDetected");
@@ -171,6 +203,47 @@ export function useAutoForgeBot(botId: string) {
           summary: `Activity spike: ${newMessages} new lines in ${Math.round(elapsedMs / 1000)}s (velocity: ${chatVelocity}/min)`,
           details: { newMessages, elapsedMs, chatVelocity, activityLevel },
         });
+      }
+
+      // ── A10: Stream health score ─────────────────────────────────────────
+      // Mirrors the legacy useAutoForge stream health computation so the HUD
+      // health indicator updates in multi-bot mode. Shared global state.
+      const es = store.enhancedStats;
+      const mentionScore = Math.min(100, (isMentioned ? 30 : 0) + (es.mentionsDetected * 5));
+      const visualScore = store.visualContextTags.length > 0 ? 70 : 0;
+      const healthOverall = Math.round(velocityScore * 30 + sentimentScore * 25 + diversityScore * 20 + (mentionScore / 100) * 15 + (visualScore / 100) * 10);
+      const healthLabel: "dead" | "slow" | "active" | "healthy" | "poppin" =
+        healthOverall >= 80 ? "poppin" : healthOverall >= 60 ? "healthy" : healthOverall >= 40 ? "active" : healthOverall >= 20 ? "slow" : "dead";
+      store.setStreamHealth({
+        velocityScore: Math.round(velocityScore * 100),
+        sentimentScore: Math.round(sentimentScore * 100),
+        diversityScore: Math.round(diversityScore * 100),
+        mentionScore,
+        visualScore,
+        overall: healthOverall,
+        label: healthLabel,
+        updatedAt: now,
+      });
+
+      // ── B12: Hype level ──────────────────────────────────────────────────
+      // Set hype level based on activity spike and chat velocity. Shared
+      // global state — drives hype-based rule conditions and the HUD hype
+      // indicator.
+      if (activitySpike || chatVelocity >= 30) store.setHypeLevel(3);
+      else if (chatVelocity >= 15) store.setHypeLevel(2);
+      else if (chatVelocity >= 5) store.setHypeLevel(1);
+      else store.setHypeLevel(0);
+
+      // ── Offline detection ───────────────────────────────────────────────
+      // Detect likely offline stream: 0 viewers + no chat activity for 5+
+      // minutes. When offline, skip this bot's check and retry in 2 minutes.
+      const viewerCount = store.streamMetadata?.viewerCount || 0;
+      const noChatForLongTime = newMessages === 0 && elapsedMs > 300000;
+      const likelyOffline = viewerCount === 0 && noChatForLongTime;
+      store.setStreamLikelyOffline(likelyOffline);
+      if (likelyOffline && !force) {
+        store.setBotAutoForgeNextActionMs(botId, now + 120000);
+        return;
       }
 
       // ── Persona fit (0–1): how well this bot's persona matches the moment ─
@@ -214,7 +287,66 @@ export function useAutoForgeBot(botId: string) {
       const repAnalysis = analyzeRepetition(runtime.sentMessages);
       const antiRepetitionContext = formatRepetitionContext(repAnalysis);
 
-      // ── Rate limit (shared action limiter; v1 simplification) ────────────
+      // ── C1: AutoForge Rule Engine — evaluate user-defined rules ──────────
+      // Mirrors the legacy useAutoForge rule evaluation. Rules are shared
+      // (global), not per-bot — they fire based on shared stream context.
+      // Rule actions (send_message, trigger_full_forge, etc.) use the
+      // singleton send path via the rule engine's own executeAction; this is
+      // a known v1 limitation (rule sends don't go through per-bot identity).
+      const autoForgeRules = store.autoForgeRules;
+      if (autoForgeRules.length > 0) {
+        const recentChatText = store.chatLog
+          .slice(-30)
+          .filter((m) => !m.marker)
+          .map((m) => m.text)
+          .join(" ");
+        const currentSentiment = store.sentimentHistory.length > 0
+          ? store.sentimentHistory[store.sentimentHistory.length - 1].label
+          : null;
+        const timeSinceLastAction = runtime.autoForgeLastActionMs
+          ? now - runtime.autoForgeLastActionMs
+          : Infinity;
+
+        const ruleCtx: RuleEngineContext = {
+          chatVelocity,
+          sentimentLabel: currentSentiment,
+          timeSinceLastActionMs: timeSinceLastAction,
+          recentChatText,
+          isMentioned,
+          activitySpike,
+          streamHealthLabel: store.streamHealth?.label ?? null,
+          hypeLevel: store.hypeLevel,
+          uniqueChatters,
+          viewerCount: store.streamMetadata.viewerCount,
+          audioEnergyRms: store.audioEnergy?.rms ?? 0,
+        };
+
+        const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx);
+        const firedRules = ruleResults.filter((r) => r.fired);
+        if (firedRules.length > 0) {
+          const ruleActions = firedRules.reduce((s, r) => s + r.actionsExecuted, 0);
+          if (ruleActions > 0) {
+            // Update last action time so manual-activity delay applies
+            store.setBotAutoForgeLastActionMs(botId, now);
+            store.addBotAutoForgeEvent(botId, {
+              timestamp: Date.now(),
+              type: "rule_fired",
+              severity: "medium",
+              summary: `[${bot.session.username}] Rule engine: ${firedRules.length} rule(s) fired, ${ruleActions} action(s) executed`,
+              details: { firedRules: firedRules.map((r) => ({ id: r.ruleId, name: r.ruleName, actions: r.actionsExecuted })) },
+            });
+          }
+        }
+      }
+
+      // ── Rate limit (shared action limiter) ────────────────────────────────
+      // Sync config from store so user-configured limits are applied. The
+      // legacy useAutoForge loop does this on every render; the per-bot loop
+      // must do it too so limits stay current when the legacy loop self-
+      // disables in multi-bot mode.
+      actionRateLimiter.updateConfig(store.rateLimitConfig);
+      actionRateLimiter.updatePerActionConfig(store.perActionRateLimits);
+
       if (!force && !actionRateLimiter.canAct()) {
         const rateStats = actionRateLimiter.getStats();
         store.setBotAutoForgeNextActionMs(botId, Date.now() + Math.max(30000, rateStats.msUntilNextAllowed));
@@ -277,12 +409,42 @@ export function useAutoForgeBot(botId: string) {
 
       store.setBotLastAutoForgeDecision(botId, { ...decision, timestamp: now, activityLevel, personaFit, isMentioned });
 
+      // ── Decision log entry (per-bot) ──────────────────────────────────────
+      // Mirrors the legacy useAutoForge decision log so the AnalyticsPanel
+      // decision log table populates in multi-bot mode. The entry is created
+      // before acting; outcome is updated as the send resolves.
+      const sentimentSummary = store.sentimentSummary;
+      const decisionLogId = store.addBotDecisionLogEntry(botId, {
+        timestamp: now,
+        decision: decision.decision === "deliberate_silence" || decision.decision === "meta_observation"
+          ? "silence"
+          : decision.decision === "quick_followup"
+            ? "followup"
+            : "action",
+        action: decision.action_payload,
+        reasoning: decision.reason,
+        sentimentLabel: sentimentSummary?.current || "neutral",
+        sentimentScore: sentimentSummary?.dominantScore || 0,
+        chatVelocity,
+        isMentioned,
+        activitySpike,
+        provider: (decision as any).used_fallback_provider || activeProvider,
+        responseTimeMs,
+      });
+
       // Confidence threshold (unless forced)
       const conf = typeof decision.confidence === "number" && !isNaN(decision.confidence)
         ? decision.confidence
         : Number(decision.confidence) || 0;
       const threshold = store.autoForgeConfidenceThreshold ?? 0.5;
       if (!force && conf < threshold && decision.decision !== "deliberate_silence") {
+        store.addBotAutoForgeEvent(botId, {
+          timestamp: Date.now(),
+          type: "silence",
+          severity: "low",
+          summary: `[${bot.session.username}] Below confidence threshold (${conf.toFixed(2)} < ${threshold}): ${decision.reason}`,
+          details: { decision: decision.decision, confidence: conf, threshold, reason: decision.reason },
+        });
         decision.decision = "deliberate_silence";
         decision.reason = `Confidence ${conf.toFixed(2)} below threshold ${threshold}.`;
       }
@@ -298,6 +460,7 @@ export function useAutoForgeBot(botId: string) {
           description: decision.action_payload || decision.reason,
           icon: "🧪",
         });
+        store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "queued" });
         store.setBotAutoForgeLastActionMs(botId, Date.now());
         let nextMin = decision.estimated_next_action_minutes || 1.5;
         if (!Number.isFinite(nextMin) || nextMin < 0) nextMin = 1.5;
@@ -305,13 +468,375 @@ export function useAutoForgeBot(botId: string) {
         return;
       }
 
-      // ── Act (only non-silence, with a payload) ───────────────────────────
-      const isActing =
-        decision.decision !== "deliberate_silence" &&
-        decision.decision !== "meta_observation" &&
-        !!decision.action_payload;
+      // ── Act ──────────────────────────────────────────────────────────────
+      // Helper: schedule a post-send engagement check (D4 parity with legacy).
+      // After ENGAGEMENT_CHECK_DELAY_MS, counts chat lines, mentions, and
+      // reactions that arrived after the send, then labels the engagement
+      // level and updates the per-bot action history entry + accuracy metric.
+      const scheduleEngagementCheck = (actionType: string, message: string, sentAt: number) => {
+        const engTimer = setTimeout(() => {
+          engagementTimersRef.current.delete(engTimer);
+          const currentState = useAppStore.getState();
+          const currentBot = currentState.bots.find((b) => b.id === botId);
+          if (!currentBot) return;
+          // Find the matching action history entry in per-bot runtime
+          const target = [...currentBot.runtime.actionHistory].reverse().find((e) =>
+            e.actionType === actionType &&
+            e.message === message &&
+            Math.abs(e.timestamp - sentAt) < 5000
+          );
+          if (!target) return;
+          const currentChat = currentState.chatLog;
+          const linesAfter = currentChat.filter((m) => m.timestamp > sentAt && !m.marker).length;
+          const botName = (currentBot.session?.username || "").toLowerCase();
+          const mentionsAfter = botName
+            ? currentChat.filter((m) => m.timestamp > sentAt && !m.marker && m.text.toLowerCase().includes(`@${botName}`)).length
+            : 0;
+          const reactionsAfter = currentChat.filter((m) => m.timestamp > sentAt && !m.marker && m.text.length < 20 && /^[A-Z\s!?]+$/.test(m.text)).length;
+          const totalEngagement = linesAfter + mentionsAfter * 2 + reactionsAfter;
+          let label: "ignored" | "low" | "moderate" | "high";
+          if (totalEngagement === 0) label = "ignored";
+          else if (totalEngagement < 3) label = "low";
+          else if (totalEngagement < 8) label = "moderate";
+          else label = "high";
+          useAppStore.getState().updateBotActionHistoryEntry(botId, target.id, {
+            engagement: { chatLinesAfter: linesAfter, mentionsAfter, reactionsAfter, label, evaluatedAt: Date.now() },
+          });
+          // A9: Record accuracy metric (shared global — no per-bot twin exists)
+          useAppStore.getState().recordActionEngagement(actionType, label);
+        }, ENGAGEMENT_CHECK_DELAY_MS);
+        engagementTimersRef.current.add(engTimer);
+      };
 
-      if (isActing && decision.action_payload) {
+      if (decision.decision === "full_forge") {
+        // C5: Per-action rate limit check for full_forge
+        if (!force && !actionRateLimiter.canAct("full_forge")) {
+          store.addBotAutoForgeEvent(botId, {
+            timestamp: Date.now(),
+            type: "silence",
+            severity: "low",
+            summary: `[${bot.session.username}] full_forge per-action rate limited`,
+          });
+          decision.decision = "deliberate_silence";
+          decision.reason = "full_forge per-action rate limit reached.";
+        } else {
+          // A3: Generate variants, rank, and send the best one — mirroring the
+          // legacy useAutoForge full_forge path. The decision's action_payload
+          // is a draft; we replace it with a fully generated + ranked variant
+          // so multi-bot full_forge matches single-bot quality.
+          try {
+            const chatResult = await generateChat({
+              streamMetadata: store.streamMetadata,
+              visualContext: store.visualContextTags.join(" "),
+              screenshot: store.visualSnapshotUrl || undefined,
+              recentChatLog: formatChatLog(store.chatLog),
+              audioTranscript: store.audioTranscript,
+              longTermContext: runtime.longTermMemory || [
+                ...runtime.pinnedMemories.filter((m) => m.id !== runtime.goldenMemoryId).map((m) => m.label),
+                ...runtime.pinnedMemories.filter((m) => m.id === runtime.goldenMemoryId).map((m) => `[GOLDEN MEMORY — PRIORITIZE THIS]: ${m.label}`),
+              ].join("\n"),
+              config: bot.persona.config,
+              activeProvider,
+              count: 3,
+              r34lEnabled: store.r34lEnabled,
+              botUsername,
+              memoryContext,
+              sentimentContext,
+              availableEmotes: store.emoteAwarenessEnabled
+                ? getAvailableEmoteNames(store.streamMetadata.channelName, 50)
+                : undefined,
+            });
+
+            if (chatResult.tokenUsage) {
+              useAppStore.getState().recordTokenUsage("forge", chatResult.tokenUsage);
+            }
+
+            const variants = chatResult.suggestions || [];
+            if (variants.length === 0) throw new Error("No variants generated");
+
+            const ranked = rankVariants(variants, {
+              config: bot.persona.config,
+              recentSentMessages: runtime.sentMessages.map((m) => m.message).slice(-20),
+            });
+            const bestVariant = ranked.find((v) => v.best) || ranked[0];
+            const messageToSend = bestVariant.message;
+            if (!messageToSend) throw new Error("Best variant had no message");
+
+            // Dedup guard (per-bot sent history)
+            const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
+            const payloadLower = messageToSend.toLowerCase().trim();
+            if (recentSent.includes(payloadLower)) {
+              decision.decision = "deliberate_silence";
+              decision.reason = "Duplicate of recently sent message (full_forge variant).";
+              store.addBotAutoForgeEvent(botId, {
+                timestamp: Date.now(),
+                type: "silence",
+                severity: "low",
+                summary: `[${bot.session.username}] full_forge variant was duplicate — downgraded to silence`,
+                details: { message: messageToSend },
+              });
+            } else {
+              // Request the speaker floor
+              const candidate: BotCandidate = {
+                decision: "full_forge",
+                confidence: conf,
+                payload: messageToSend,
+                personaFit,
+              };
+              const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
+              if (!granted) {
+                store.addBotAutoForgeEvent(botId, {
+                  timestamp: Date.now(),
+                  type: "silence",
+                  severity: "low",
+                  summary: `[${bot.session.username}] Lost speaker floor — deferring full_forge "${messageToSend.slice(0, 40)}"`,
+                  details: { decision: "full_forge", confidence: conf },
+                });
+                store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+                return;
+              }
+
+              // Won the floor — send the best variant
+              const sendFn = getPlatformSendFn(store.platform, botId);
+              const channel = store.streamMetadata.channelName;
+              playSfx("autoforge_action");
+              actionRateLimiter.recordAction("full_forge");
+              store.incrementBotStat(botId, "autoForgeActions");
+              store.incrementStat("autoForgeActions");
+
+              sendFn(channel, messageToSend).then(() => {
+                store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
+              }).catch((e) => {
+                store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
+                console.error(`[AutoForgeBot ${bot.session.username}] full_forge send failed:`, e);
+                store.addBotAutoForgeEvent(botId, {
+                  timestamp: Date.now(),
+                  type: "error",
+                  severity: "high",
+                  summary: `[${bot.session.username}] Full Forge send FAILED: ${e.message || e}`,
+                  details: { decision: "full_forge", message: messageToSend },
+                });
+              });
+
+              speakMessage(messageToSend);
+              store.addBotSentMessage(botId, {
+                message: messageToSend,
+                channel,
+                timestamp: Date.now(),
+                source: "autoforge",
+                botId,
+              });
+              store.incrementBotStat(botId, "messagesSent");
+              store.incrementMessagesSent();
+              store.addBotActionHistoryEntry(botId, {
+                timestamp: Date.now(),
+                actionType: "full_forge",
+                message: messageToSend,
+                provider: (decision as any).used_fallback_provider || activeProvider,
+                success: true,
+              });
+              // D4: Schedule post-send engagement correlation
+              scheduleEngagementCheck("full_forge", messageToSend, Date.now());
+              store.setBotAutoForgeLastActionMs(botId, Date.now());
+              store.addBotAutoForgeEvent(botId, {
+                timestamp: Date.now(),
+                type: "action_sent",
+                severity: "high",
+                summary: `[${bot.session.username}] full_forge: "${messageToSend}"`,
+                details: {
+                  decision: "full_forge",
+                  confidence: conf,
+                  reason: decision.reason,
+                  action_payload: messageToSend,
+                  variantsGenerated: variants.length,
+                  bestVariantId: bestVariant.variant_id,
+                },
+              });
+
+              // Boost referenced memories (per-bot auto-memory).
+              // Mirrors the legacy useAutoForge post-send memory boosting.
+              if (runtime.autoMemoryConfig?.enabled && decision.referenced_memory_ids) {
+                for (const mid of decision.referenced_memory_ids) {
+                  boostMemory(mid).catch(console.error);
+                }
+              }
+            }
+          } catch (e: any) {
+            store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
+            console.error(`[AutoForgeBot ${bot.session.username}] full_forge generation failed:`, e);
+            store.addBotAutoForgeEvent(botId, {
+              timestamp: Date.now(),
+              type: "error",
+              severity: "high",
+              summary: `[${bot.session.username}] Full Forge generation FAILED: ${e.message || e}`,
+              details: { decision: "full_forge", reason: decision.reason },
+            });
+            toast.error(`AutoForge [${bot.session.username}] full_forge failed: ${e.message || e}`);
+          }
+        }
+      } else if (decision.decision === "quick_followup" && decision.action_payload) {
+        // Delayed follow-up: schedule the send with a setTimeout so the bot
+        // doesn't speak immediately after its last message. Mirrors the legacy
+        // useAutoForge quick_followup path (lines 830-880).
+        const delayMs = Math.max(1500, Math.min(12000, decision.followup_delay_ms ||
+          decision.action_payload.length * 65));
+
+        // C5: Per-action rate limit check for quick_followup
+        if (!force && !actionRateLimiter.canAct("quick_followup")) {
+          store.addBotAutoForgeEvent(botId, {
+            timestamp: Date.now(),
+            type: "silence",
+            severity: "low",
+            summary: `[${bot.session.username}] quick_followup per-action rate limited`,
+          });
+          decision.decision = "deliberate_silence";
+          decision.reason = "quick_followup per-action rate limit reached.";
+        } else {
+        // Dedup guard (per-bot sent history)
+        const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
+        const payloadLower = decision.action_payload.toLowerCase().trim();
+        if (recentSent.includes(payloadLower)) {
+          decision.decision = "deliberate_silence";
+          decision.reason = "Duplicate of recently sent message.";
+        } else {
+          // Request the speaker floor at scheduling time so the coordinator's
+          // 15s floor gap protects the delayed send from overlapping with
+          // other bots.
+          const candidate: BotCandidate = {
+            decision: "quick_followup",
+            confidence: conf,
+            payload: decision.action_payload,
+            personaFit,
+          };
+          const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
+          if (!granted) {
+            store.addBotAutoForgeEvent(botId, {
+              timestamp: Date.now(),
+              type: "silence",
+              severity: "low",
+              summary: `[${bot.session.username}] Lost speaker floor — deferring quick_followup "${decision.action_payload.slice(0, 40)}"`,
+              details: { decision: "quick_followup", confidence: conf },
+            });
+            store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+            return;
+          }
+
+          toast.info(`[${bot.session.username}] quick follow-up in ${(delayMs / 1000).toFixed(1)}s`, { description: decision.action_payload });
+          playSfx("autoforge_action");
+          actionRateLimiter.recordAction("quick_followup");
+          store.incrementBotStat(botId, "autoForgeActions");
+          store.incrementStat("followupActions");
+
+          // Clear any pending follow-up before scheduling a new one to avoid timer leaks
+          if (followupTimerRef.current) {
+            clearTimeout(followupTimerRef.current);
+            followupTimerRef.current = null;
+          }
+
+          const channel = store.streamMetadata.channelName;
+          const followupPayload = decision.action_payload;
+          const followupReason = decision.reason;
+          const followupConf = conf;
+
+          followupTimerRef.current = setTimeout(() => {
+            followupTimerRef.current = null;
+            const sendFn = getPlatformSendFn(store.platform, botId);
+            sendFn(channel, followupPayload).then(() => {
+              store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
+            }).catch((e) => {
+              store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
+              console.error(`[AutoForgeBot ${bot.session.username}] quick_followup send failed:`, e);
+              store.addBotAutoForgeEvent(botId, {
+                timestamp: Date.now(),
+                type: "error",
+                severity: "high",
+                summary: `[${bot.session.username}] Quick follow-up send FAILED: ${e.message || e}`,
+                details: { decision: "quick_followup", message: followupPayload },
+              });
+            });
+
+            speakMessage(followupPayload);
+            store.addBotSentMessage(botId, {
+              message: followupPayload,
+              channel,
+              timestamp: Date.now(),
+              source: "followup",
+              botId,
+            });
+            store.incrementBotStat(botId, "messagesSent");
+            store.incrementMessagesSent();
+            store.setBotAutoForgeLastActionMs(botId, Date.now());
+            store.updateBotRuntime(botId, { autoForgeFollowup: { message: followupPayload, deliveredAt: Date.now() } });
+            store.addBotActionHistoryEntry(botId, {
+              timestamp: Date.now(),
+              actionType: "quick_followup",
+              message: followupPayload,
+              provider: (decision as any).used_fallback_provider || activeProvider,
+              success: true,
+            });
+            // D4: Schedule post-send engagement correlation
+            scheduleEngagementCheck("quick_followup", followupPayload, Date.now());
+            store.addBotAutoForgeEvent(botId, {
+              timestamp: Date.now(),
+              type: "action_sent",
+              severity: "medium",
+              summary: `[${bot.session.username}] Quick follow-up: "${followupPayload}"`,
+              details: { decision: "quick_followup", confidence: followupConf, reason: followupReason, action_payload: followupPayload, delay_ms: delayMs },
+            });
+          }, delayMs);
+        }
+        }
+      } else if (decision.decision !== "deliberate_silence" && decision.decision !== "meta_observation" && decision.action_payload) {
+        // Direct-send path for short_reaction, emote_only, joke_callback, meta_observation
+        // C5: Per-action rate limit check
+        if (!force && !actionRateLimiter.canAct(decision.decision)) {
+          store.addBotAutoForgeEvent(botId, {
+            timestamp: Date.now(),
+            type: "silence",
+            severity: "low",
+            summary: `[${bot.session.username}] ${decision.decision} per-action rate limited`,
+          });
+          decision.decision = "deliberate_silence";
+          decision.reason = `${decision.decision} per-action rate limit reached.`;
+        } else {
+        // A2: For joke_callback, consult the joke engine to verify the joke
+        // is real and active. If no matching joke is found, downgrade to
+        // short_reaction so we don't send a fabricated punchline.
+        let effectiveDecision = decision.decision;
+        if (decision.decision === "joke_callback" && runtime.autoMemoryConfig?.enabled) {
+          try {
+            const activeJokes = getActiveJokes(runtime.insideJokes);
+            if (activeJokes.length > 0) {
+              const contextText = `${store.chatLog.slice(-10).map((m) => m.text).join(" ")} ${store.audioTranscript?.slice(-200) || ""} ${store.visualContextTags.join(" ")}`;
+              const scored = activeJokes
+                .map((j) => ({ joke: j, score: scoreJokeRelevance(j, contextText) }))
+                .sort((a, b) => b.score - a.score);
+              const bestMatch = scored[0];
+              const punchlineLower = (bestMatch.joke.punchline || "").toLowerCase();
+              const payloadLower = (decision.action_payload || "").toLowerCase();
+              const matchesJoke = bestMatch.score > 0.1 ||
+                payloadLower.includes(punchlineLower) ||
+                punchlineLower.includes(payloadLower);
+              if (matchesJoke) {
+                recordJokeUsage(bestMatch.joke.id, decision.action_payload).catch(console.error);
+              } else {
+                console.log(`[AutoForgeBot ${bot.session.username}] joke_callback payload doesn't match any active joke — downgrading to short_reaction`);
+                effectiveDecision = "short_reaction";
+                store.updateBotDecisionLogEntry(botId, decisionLogId, {
+                  reasoning: "joke_callback downgraded to short_reaction (no matching active joke)",
+                });
+              }
+            } else {
+              effectiveDecision = "short_reaction";
+              store.updateBotDecisionLogEntry(botId, decisionLogId, {
+                reasoning: "joke_callback downgraded to short_reaction (no active jokes)",
+              });
+            }
+          } catch (e) {
+            console.error(`[AutoForgeBot ${bot.session.username}] joke engine check failed:`, e);
+          }
+        }
+
         // Dedup guard (per-bot sent history)
         const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
         const payloadLower = decision.action_payload.toLowerCase().trim();
@@ -321,7 +846,7 @@ export function useAutoForgeBot(botId: string) {
         } else {
           // Request the speaker floor from the coordinator (unless forced).
           const candidate: BotCandidate = {
-            decision: decision.decision,
+            decision: effectiveDecision,
             confidence: conf,
             payload: decision.action_payload,
             personaFit,
@@ -334,7 +859,7 @@ export function useAutoForgeBot(botId: string) {
               type: "silence",
               severity: "low",
               summary: `Lost speaker floor — deferring "${decision.action_payload.slice(0, 40)}"`,
-              details: { decision: decision.decision, confidence: conf },
+              details: { decision: effectiveDecision, confidence: conf },
             });
             store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
             return;
@@ -344,11 +869,14 @@ export function useAutoForgeBot(botId: string) {
           const sendFn = getPlatformSendFn(store.platform, botId);
           const channel = store.streamMetadata.channelName;
           playSfx("autoforge_action");
-          actionRateLimiter.recordAction(decision.decision);
+          actionRateLimiter.recordAction(effectiveDecision);
           store.incrementBotStat(botId, "autoForgeActions");
           store.incrementStat("autoForgeActions");
 
-          sendFn(channel, decision.action_payload).catch((e) => {
+          sendFn(channel, decision.action_payload).then(() => {
+            store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
+          }).catch((e) => {
+            store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
             console.error(`[AutoForgeBot ${bot.session.username}] send failed:`, e);
             store.addBotAutoForgeEvent(botId, {
               timestamp: Date.now(),
@@ -370,19 +898,38 @@ export function useAutoForgeBot(botId: string) {
           store.incrementMessagesSent();
           store.addBotActionHistoryEntry(botId, {
             timestamp: Date.now(),
-            actionType: decision.decision,
+            actionType: effectiveDecision,
             message: decision.action_payload,
-            provider: activeProvider,
+            provider: (decision as any).used_fallback_provider || activeProvider,
             success: true,
           });
+          // D4: Schedule post-send engagement correlation
+          scheduleEngagementCheck(effectiveDecision, decision.action_payload, Date.now());
           store.setBotAutoForgeLastActionMs(botId, Date.now());
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "action_sent",
             severity: "high",
-            summary: `[${bot.session.username}] ${decision.decision}: "${decision.action_payload}"`,
-            details: { decision: decision.decision, confidence: conf, reason: decision.reason },
+            summary: `[${bot.session.username}] ${effectiveDecision}: "${decision.action_payload}"`,
+            details: { decision: effectiveDecision, confidence: conf, reason: decision.reason },
           });
+
+          // Boost referenced memories and jokes (per-bot auto-memory).
+          // Mirrors the legacy useAutoForge post-send memory boosting.
+          if (runtime.autoMemoryConfig?.enabled) {
+            if (decision.referenced_memory_ids) {
+              for (const mid of decision.referenced_memory_ids) {
+                boostMemory(mid).catch(console.error);
+              }
+            }
+            if (decision.referenced_joke_ids) {
+              for (const jid of decision.referenced_joke_ids) {
+                boostJoke(jid, decision.action_payload).catch(console.error);
+                recordJokeUsage(jid, decision.action_payload).catch(console.error);
+              }
+            }
+          }
+        }
         }
       } else if (decision.decision === "deliberate_silence") {
         store.incrementBotStat(botId, "silenceDecisions");
@@ -396,13 +943,80 @@ export function useAutoForgeBot(botId: string) {
         });
       }
 
+      // ── Evaluate session goals ──────────────────────────────────────────
+      // Mirrors the legacy useAutoForge goal evaluation. Goals are shared
+      // (global), evaluated against shared enhancedStats + sentimentHistory.
+      // Uses per-bot enhancedStats for per-bot accuracy where available, but
+      // falls back to shared stats for metrics that are inherently global
+      // (sentiment ratio, avg response time).
+      if (store.sessionGoals && store.sessionGoals.length > 0) {
+        const enhancedStats = store.enhancedStats;
+        const results = store.sessionGoals.filter((g) => g.enabled).map((goal) => {
+          let current = 0;
+          switch (goal.type) {
+            case "mentionResponseRate":
+              current = enhancedStats.mentionsDetected > 0
+                ? Math.round((enhancedStats.autoForgeActions / enhancedStats.mentionsDetected) * 100)
+                : 0;
+              break;
+            case "minActionsPerHour":
+              current = Math.round(enhancedStats.autoForgeActions / Math.max(1, (Date.now() - enhancedStats.sessionStart) / 3600000));
+              break;
+            case "positiveSentimentRatio": {
+              const sh = store.sentimentHistory;
+              const positive = sh.filter((s) => s.label === "positive" || s.label === "hype" || s.label === "wholesome").length;
+              current = sh.length > 0 ? Math.round((positive / sh.length) * 100) : 0;
+              break;
+            }
+            case "maxSilenceRatio": {
+              const total = enhancedStats.autoForgeActions + enhancedStats.silenceDecisions;
+              current = total > 0 ? Math.round((enhancedStats.silenceDecisions / total) * 100) : 0;
+              break;
+            }
+            case "minMessagesSent":
+              current = enhancedStats.messagesSent;
+              break;
+            case "maxAvgResponseMs":
+              current = enhancedStats.avgResponseTimeMs;
+              break;
+          }
+          const progress = goal.type.startsWith("max") ? 1 - Math.min(1, current / goal.target) : Math.min(1, current / goal.target);
+          const met = goal.type.startsWith("max") ? current <= goal.target : current >= goal.target;
+          return { goalId: goal.id, goalType: goal.type, label: goal.label, current, target: goal.target, progress, met, enabled: goal.enabled };
+        });
+        useAppStore.getState().setGoalEvaluationResults(results);
+      }
+
       // ── Schedule next check ──────────────────────────────────────────────
       let nextMin = decision.estimated_next_action_minutes || 1.5;
       if (!Number.isFinite(nextMin) || nextMin < 0) nextMin = 1.5;
       if (activitySpike && decision.decision === "deliberate_silence") {
         nextMin = Math.min(nextMin, 0.5);
       }
-      store.setBotAutoForgeNextActionMs(botId, Date.now() + nextMin * 60 * 1000);
+
+      // A8: Manual activity awareness — delay next AutoForge action if user
+      // recently acted or is typing. Mirrors the legacy useAutoForge manual
+      // cooldown. Prevents bots from stepping on the user's manual sends.
+      const nowMs = Date.now();
+      const lastManual = useAppStore.getState().lastManualSendMs;
+      const lastTyping = useAppStore.getState().lastUserChatTypingMs;
+      const recentManualActivity = Math.max(lastManual, lastTyping);
+      const msSinceManual = nowMs - recentManualActivity;
+      const MANUAL_COOLDOWN_MS = 30_000;
+      if (msSinceManual < MANUAL_COOLDOWN_MS && decision.decision !== "deliberate_silence") {
+        const delayMs = MANUAL_COOLDOWN_MS - msSinceManual;
+        const delayMin = delayMs / 60000;
+        store.addBotAutoForgeEvent(botId, {
+          timestamp: nowMs,
+          type: "silence",
+          severity: "low",
+          summary: `[${bot.session.username}] Delayed — manual activity detected (${Math.round(msSinceManual / 1000)}s ago)`,
+          details: { delayMs, msSinceManual },
+        });
+        nextMin = Math.max(nextMin, delayMin);
+      }
+
+      store.setBotAutoForgeNextActionMs(botId, nowMs + nextMin * 60 * 1000);
     } catch (e: any) {
       const errMsg = e?.message || "Unknown error";
       if (!errMsg.includes("No API key configured")) {
@@ -425,6 +1039,18 @@ export function useAutoForgeBot(botId: string) {
       }
     }, 15000);
 
+    // Clean up expired smart replies every 10 seconds (mirrors legacy loop).
+    // Multiple bot loops may run this — the work is idempotent and trivial.
+    const replyCleanup = setInterval(() => {
+      const current = useAppStore.getState().smartReplies;
+      if (current.length > 0) {
+        const cleaned = cleanExpiredSmartReplies(current);
+        if (cleaned.length !== current.length) {
+          useAppStore.getState().setSmartReplies(cleaned);
+        }
+      }
+    }, 10000);
+
     const onForce = (e: Event) => {
       const store = useAppStore.getState();
       if (!store.multiBotEnabled) return;
@@ -439,7 +1065,14 @@ export function useAutoForgeBot(botId: string) {
 
     return () => {
       clearInterval(interval);
+      clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForce);
+      if (followupTimerRef.current) {
+        clearTimeout(followupTimerRef.current);
+        followupTimerRef.current = null;
+      }
+      engagementTimersRef.current.forEach((t) => clearTimeout(t));
+      engagementTimersRef.current.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botId]);

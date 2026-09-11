@@ -38,6 +38,7 @@ const EVENT_ICONS: Record<AutoForgeEventType, React.ReactNode> = {
   enable_disable: <Power className="w-3.5 h-3.5" />,
   metadata_change: <Sparkles className="w-3.5 h-3.5" />,
   director_note: <Megaphone className="w-3.5 h-3.5" />,
+  rule_fired: <Filter className="w-3.5 h-3.5" />,
 };
 
 const EVENT_COLORS: Record<AutoForgeEventType, string> = {
@@ -49,6 +50,7 @@ const EVENT_COLORS: Record<AutoForgeEventType, string> = {
   enable_disable: "text-purple-400 bg-purple-500/10 border-purple-500/20",
   metadata_change: "text-orange-400 bg-orange-500/10 border-orange-500/20",
   director_note: "text-purple-300 bg-purple-500/10 border-purple-500/20",
+  rule_fired: "text-cyan-400 bg-cyan-500/10 border-cyan-500/20",
 };
 
 const SEVERITY_DOT: Record<string, string> = {
@@ -65,6 +67,7 @@ const ALL_TYPES: AutoForgeEventType[] = [
   "error",
   "enable_disable",
   "metadata_change",
+  "rule_fired",
 ];
 
 function formatTimeAgo(ts: number, now: number): string {

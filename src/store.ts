@@ -638,6 +638,7 @@ interface AppState {
   setBotIsAutoForgeThinking: (id: string, thinking: boolean) => void;
   incrementBotStat: (id: string, key: keyof EnhancedSessionStats, amount?: number) => void;
   addBotActionHistoryEntry: (id: string, entry: Omit<ActionHistoryEntry, "id">) => void;
+  updateBotActionHistoryEntry: (id: string, entryId: string, updates: Partial<ActionHistoryEntry>) => void;
   updateBotEnhancedStats: (id: string, updates: Partial<EnhancedSessionStats>) => void;
   addBotDirectorNote: (id: string, text: string) => void;
   clearBotDirectorNotes: (id: string) => void;
@@ -1789,6 +1790,14 @@ export const useAppStore = create<AppState>()(
             if (history.length > 200) history.splice(0, history.length - 200);
             return { ...b, runtime: { ...b.runtime, actionHistory: history } };
           }),
+        })),
+      updateBotActionHistoryEntry: (id, entryId, updates) =>
+        set((state) => ({
+          bots: state.bots.map((b) =>
+            b.id === id
+              ? { ...b, runtime: { ...b.runtime, actionHistory: b.runtime.actionHistory.map((e) => (e.id === entryId ? { ...e, ...updates } : e)) } }
+              : b
+          ),
         })),
       updateBotEnhancedStats: (id, updates) =>
         set((state) => ({

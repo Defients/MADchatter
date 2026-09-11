@@ -161,11 +161,15 @@ async function handleStreamSettings(request) {
     // Try with Bearer token first
     let res = await fetch(JOYSTICK_API_BASE + "/users/stream-settings", { headers });
     
-    // If 401, try with basic auth using client_id from query param or default
+    // If 401, try with basic auth using client_id/client_secret from query params.
+    // Credentials MUST be provided by the caller — no hardcoded fallbacks.
     if (res.status === 401) {
       const url = new URL(request.url);
-      const clientId = url.searchParams.get("client_id") || "77147cc4-499a-469c-b8ac-b0bfed2336f2";
-      const clientSecret = url.searchParams.get("client_secret") || "hT4eRDiAs5jhyOJbgup-JQ";
+      const clientId = url.searchParams.get("client_id");
+      const clientSecret = url.searchParams.get("client_secret");
+      if (!clientId || !clientSecret) {
+        return corsResponse(JSON.stringify({ error: "Bearer token returned 401 and no client_id/client_secret query params provided for basic auth fallback" }), 401);
+      }
       const basicAuthKey = btoa(`${clientId}:${clientSecret}`);
       
       const basicHeaders = {

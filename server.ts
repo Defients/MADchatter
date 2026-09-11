@@ -604,19 +604,17 @@ app.get('/api/get-keys', (req, res) => {
     twitchSessions.set(sid, session);
   }
   
+  // Return only boolean flags — never raw key values — to prevent key leakage.
+  // The client manages its own keys in localStorage; the server only needs to
+  // know whether keys exist (custom or env-provided) for provider availability UI.
   res.json({
-    geminiKey: session?.geminiKey || '',
-    chatGptKey: session?.chatGptKey || '',
-    claudeKey: session?.claudeKey || '',
-    deepgramKey: session?.deepgramKey || process.env.DEEPGRAM_API_KEY || process.env.VITE_DEEPGRAM_API_KEY || '',
-    openRouterKey: session?.openRouterKey || '',
-    customBaseUrl: session?.customBaseUrl || '',
-    customModel: session?.customModel || '',
     isGeminiCustom: !!session?.geminiKey,
     isChatGptCustom: !!session?.chatGptKey,
     isClaudeCustom: !!session?.claudeKey,
     isDeepgramCustom: !!session?.deepgramKey,
     isOpenRouterCustom: !!session?.openRouterKey,
+    hasCustomBaseUrl: !!session?.customBaseUrl,
+    hasCustomModel: !!session?.customModel,
     hasGeminiEnvKey: !!process.env.GEMINI_API_KEY,
     hasChatGptEnvKey: !!process.env.OPENAI_API_KEY,
     hasClaudeEnvKey: !!process.env.ANTHROPIC_API_KEY,

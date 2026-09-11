@@ -19,7 +19,7 @@ export function cleanExpiredSmartReplies(replies: SmartReply[]): SmartReply[] {
   return replies.filter((r) => now - r.timestamp < SMART_REPLY_EXPIRY_MS);
 }
 
-export async function generateSmartReplies(mentionedLines: string[]): Promise<SmartReply[]> {
+export async function generateSmartReplies(mentionedLines: string[], options?: { botId?: string }): Promise<SmartReply[]> {
   if (!canGenerateSmartReplies()) return [];
   if (!hasAnyApiKey()) return [];
 
@@ -30,6 +30,27 @@ export async function generateSmartReplies(mentionedLines: string[]): Promise<Sm
 
   if (!getApiKey(activeProvider)) return [];
 
+  // Resolve the actual bot username from the platform session — NOT the
+  // streamer's channel name. In multi-bot mode, prefer the explicitly
+  // provided botId (from the per-bot loop), then the manual send bot's
+  // identity; otherwise fall back to the legacy singleton session.
+  const resolveBotUsername = (): string | undefined => {
+    const platform = state.platform;
+    // Per-bot loop passes the mentioned bot's ID explicitly
+    if (options?.botId) {
+      const bot = state.bots.find((b) => b.id === options.botId);
+      if (bot?.session?.username) return bot.session.username;
+    }
+    if (state.multiBotEnabled && state.manualSendBotId) {
+      const bot = state.bots.find((b) => b.id === state.manualSendBotId);
+      if (bot?.session?.username) return bot.session.username;
+    }
+    if (platform === 'kick') return window.__kickSession?.username;
+    if (platform === 'joystick') return window.__joystickSession?.username;
+    return window.__twitchSession?.username;
+  };
+  const botUsername = resolveBotUsername();
+
   const sentimentHistory = state.sentimentHistory;
   let sentimentContext = "";
   if (sentimentHistory.length > 0) {
@@ -39,7 +60,7 @@ export async function generateSmartReplies(mentionedLines: string[]): Promise<Sm
 
   const recentChat = formatChatLog(state.chatLog.slice(-20));
 
-  const prompt = `You are a chat co-pilot for a streamer. The streamer was just mentioned in chat. Generate 3 short, natural-sounding reply suggestions that the streamer can click to send instantly.
+  const prompt = `You are a chat co-pilot for a streamer. The bot (${botUsername || "the bot"}) was just mentioned in chat. Generate 3 short, natural-sounding reply suggestions that the bot can click to send instantly.
 
 Mentioned lines:
 ${mentionedLines.join("\n")}
@@ -55,7 +76,7 @@ Rules:
 - Each reply must be under 200 characters
 - Make them casual, natural, and varied in tone (one funny, one chill, one engaging)
 - Don't use @ mentions back
-- Respond as the streamer/bot, not as a viewer
+- Respond as the bot (${botUsername || "the bot"}), not as a viewer or the streamer
 - Return EXACTLY 3 replies, one per line, no numbering or prefixes`;
 
   try {
@@ -66,7 +87,7 @@ Rules:
       activeProvider,
       count: 3,
       r34lEnabled: state.r34lEnabled,
-      botUsername: state.streamMetadata.channelName,
+      botUsername,
       sentimentContext,
     });
 
