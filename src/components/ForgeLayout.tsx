@@ -180,7 +180,7 @@ function CollapseButtonPortal({ targetRef, onClick }: { targetRef: React.RefObje
 // Single source of truth for the right-panel localStorage key, default size,
 // and stale keys to clean up. Bump RIGHT_SIZE_KEY_VERSION when changing the
 // default so returning users get the new value instead of their old saved one.
-const RIGHT_SIZE_KEY_VERSION = 6;
+const RIGHT_SIZE_KEY_VERSION = 7;
 const RIGHT_SIZE_KEY = `forge-panel-right-size-v${RIGHT_SIZE_KEY_VERSION}`;
 const RIGHT_SIZE_STALE_KEYS = [
   "forge-panel-right-size",
@@ -188,12 +188,13 @@ const RIGHT_SIZE_STALE_KEYS = [
   "forge-panel-right-size-v3",
   "forge-panel-right-size-v4",
   "forge-panel-right-size-v5",
+  "forge-panel-right-size-v6",
 ].filter((k) => k !== RIGHT_SIZE_KEY);
 
 const isFHDViewport = () =>
   typeof window !== "undefined" && Math.round(window.innerWidth) === 1920;
 
-const getRightSizeDefault = () => (isFHDViewport() ? 43.125 : 21.6);
+const getRightSizeDefault = () => (isFHDViewport() ? 28 : 21.6);
 
 export function ForgeLayout() {
   const isMobile = useIsMobile();
@@ -288,7 +289,9 @@ export function ForgeLayout() {
     const saved = localStorage.getItem(RIGHT_SIZE_KEY);
     const defaultSize = getRightSizeDefault();
     const parsed = saved ? parseFloat(saved) : defaultSize;
-    return isNaN(parsed) || parsed <= 0 || parsed >= 100 ? defaultSize : parsed;
+    // Clamp to the current maxSize (30%) so stale oversized values from
+    // older versions don't leak through if the version key wasn't bumped.
+    return isNaN(parsed) || parsed <= 0 || parsed > 30 ? defaultSize : parsed;
   });
 
   useEffect(() => {
@@ -3129,7 +3132,7 @@ export function ForgeLayout() {
               id="right-rail"
               order={3}
               minSize="12%"
-              maxSize="45%"
+              maxSize="30%"
               defaultSize={`${rightSize}%`}
               onResize={(size) => {
                 // Only persist to localStorage — do NOT update React state here.
