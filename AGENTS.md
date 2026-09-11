@@ -20,7 +20,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 12 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 15 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
@@ -93,6 +93,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/lib/keys.ts` | Provider keys, `openAiCompatEndpoint()` |
 | `src/lib/chatStyle.ts` | Chat style analysis for R34L adaptation |
 | `src/lib/botCoordinator.ts` | Multi-bot speaker floor |
+| `src/lib/autoForgeCore.ts` | Shared AutoForge computation (activity, engagement, health, goals, etc.) |
 | `src/lib/platformSend.ts` | Platform send functions (Twitch/Kick/Joystick) |
 | `src/lib/providerFallback.ts` | Provider health + failover |
 | `src/hooks/useAutoForge.ts` | Legacy AutoForge loop |
