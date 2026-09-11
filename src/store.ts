@@ -38,7 +38,9 @@ function readLegacySession(platform: BotPlatform): BotSessionPayload | null {
         refreshToken: parsed.refreshToken,
       };
     }
-  } catch {}
+  } catch (e) {
+    console.warn(`[store] readLegacySession(${platform}) parse error:`, e);
+  }
   return null;
 }
 
@@ -1648,7 +1650,9 @@ export const useAppStore = create<AppState>()(
                 expiresAt: primary.session.expiresAt,
                 refreshToken: primary.session.refreshToken,
               }));
-            } catch {}
+            } catch (e) {
+              console.warn(`[store] failed to persist legacy ${primary.platform} session:`, e);
+            }
           }
         }
         set({ multiBotEnabled: false, bots: [], activeBotId: null, manualSendBotId: null });
@@ -1927,7 +1931,8 @@ export const useAppStore = create<AppState>()(
           if (data.activeBotId !== undefined) set({ activeBotId: data.activeBotId });
           if (data.bots) set({ bots: data.bots });
           return true;
-        } catch {
+        } catch (e) {
+          console.warn("[store] importSettings failed:", e);
           return false;
         }
       },

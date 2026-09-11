@@ -576,7 +576,9 @@ export function getKickSession(): KickSession | null {
         return parsed as KickSession;
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[kick] getKickSession parse error:", e);
+  }
   return null;
 }
 

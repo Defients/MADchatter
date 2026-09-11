@@ -9,7 +9,7 @@ import {
   type ExtractionParams,
 } from "../lib/memoryEngine";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
-import { startNewSession, saveSessionEnd, detectMoodWithLock } from "../lib/personalityEngine";
+import { startNewSession, saveSessionEnd, detectMoodWithLock, evolveTraits, updateComfortLevel, addRelationshipMilestone } from "../lib/personalityEngine";
 import * as memoryStore from "../lib/memoryStore";
 import type { PersonalityState } from "../types";
 
@@ -34,6 +34,8 @@ export function useAutoMemory() {
   const initializedRef = useRef(false);
   // Re-entrance guard: prevents overlapping extraction/decay cycles
   const busyRef = useRef(false);
+  // Tracks action history length for comfort-level delta calculation
+  const lastComfortActionCountRef = useRef<number>(0);
   const chatLogRef = useRef(chatLog);
   chatLogRef.current = chatLog;
 
@@ -193,15 +195,73 @@ export function useAutoMemory() {
         }
       }
 
-      // Update mood based on current context
+      // Update mood + evolve personality based on current context
       if (state.personalityState && state.autoMemoryConfig.personalityEvolutionEnabled) {
+        let updated: PersonalityState = { ...state.personalityState };
+
+        // Mood detection
         const detectedMood = detectMoodWithLock(chatLogRef.current, state.audioTranscript, state.streamMetadata.viewerCount, useAppStore.getState().moodLock);
-        if (detectedMood !== state.personalityState.mood) {
-          const updated: PersonalityState = {
-            ...state.personalityState,
-            mood: detectedMood,
-          };
+        if (detectedMood !== updated.mood) {
+          updated = { ...updated, mood: detectedMood };
+        }
+
+        // Trait evolution from recent action history
+        const recentActions = state.actionHistory
+          .slice(-50)
+          .map((a) => ({ type: a.actionType, success: a.success }));
+        if (recentActions.length >= 5) {
+          const newTraits = evolveTraits(updated.dominantTraits, recentActions);
+          if (newTraits.length > 0 && newTraits.join(",") !== updated.dominantTraits.join(",")) {
+            updated = { ...updated, dominantTraits: newTraits };
+          }
+        }
+
+        // Comfort level growth from recent messages + positive interactions
+        const actionDelta = Math.max(0, state.actionHistory.length - lastComfortActionCountRef.current);
+        lastComfortActionCountRef.current = state.actionHistory.length;
+        const positiveCount = state.sentimentHistory
+          .slice(-30)
+          .filter((s) => s.label === "positive" || s.label === "wholesome" || s.label === "hype")
+          .length;
+        if (actionDelta > 0 || positiveCount > 0) {
+          const newComfort = updateComfortLevel(updated.comfortLevel, actionDelta, positiveCount);
+          if (newComfort !== updated.comfortLevel) {
+            updated = { ...updated, comfortLevel: newComfort };
+          }
+        }
+
+        // Relationship milestones — fire once per threshold
+        const milestones: { threshold: number; stage: string; note: string }[] = [
+          { threshold: 50, stage: "acquainted", note: "Comfort level reached 50 — bot feels settled in" },
+          { threshold: 75, stage: "comfortable", note: "Comfort level reached 75 — bot is relaxed with chat" },
+          { threshold: 100, stage: "bonded", note: "Comfort level maxed — bot feels deeply connected" },
+        ];
+        for (const m of milestones) {
+          if (updated.comfortLevel >= m.threshold && !updated.relationshipProgression.some((r) => r.stage === m.stage)) {
+            updated = addRelationshipMilestone(updated, m.stage, m.note);
+          }
+        }
+        const sessionMilestones: { threshold: number; stage: string; note: string }[] = [
+          { threshold: 5, stage: "regular_viewer", note: "5th session — bot recognizes you as a regular" },
+          { threshold: 10, stage: "veteran", note: "10th session — bot considers you a veteran chatter" },
+          { threshold: 25, stage: "old_friend", note: "25th session — bot considers you an old friend" },
+        ];
+        for (const m of sessionMilestones) {
+          if (updated.sessionCount >= m.threshold && !updated.relationshipProgression.some((r) => r.stage === m.stage)) {
+            updated = addRelationshipMilestone(updated, m.stage, m.note);
+          }
+        }
+
+        // Track total messages sent
+        const totalSent = state.sentMessages.length;
+        if (totalSent !== updated.totalMessagesSent) {
+          updated = { ...updated, totalMessagesSent: totalSent };
+        }
+
+        // Persist if anything changed
+        if (updated !== state.personalityState) {
           setPersonalityState(updated);
+          memoryStore.savePersonality(updated).catch(() => {});
         }
       }
       } finally {

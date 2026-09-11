@@ -60,7 +60,8 @@ async function fetch7TVGlobal(): Promise<Emote[]> {
         height: file?.height,
       };
     });
-  } catch {
+  } catch (e) {
+    console.warn("[emotes] fetch7TVGlobal failed:", e);
     return [];
   }
 }
@@ -90,12 +91,13 @@ async function fetch7TVChannel(channelName: string): Promise<Emote[]> {
             height: file?.height,
           });
         }
-      } catch {
-        // skip failed set
+      } catch (e) {
+        console.warn(`[emotes] fetch7TVChannel set ${setId} failed:`, e);
       }
     }
     return emotes;
-  } catch {
+  } catch (e) {
+    console.warn(`[emotes] fetch7TVChannel(${channelName}) failed:`, e);
     return [];
   }
 }
@@ -145,7 +147,8 @@ async function fetchFFZGlobal(): Promise<Emote[]> {
     const res = await fetch("https://api.frankerfacez.com/v1/set/global");
     if (!res.ok) return [];
     return parseFFZEmotes(await res.json());
-  } catch {
+  } catch (e) {
+    console.warn("[emotes] fetchFFZGlobal failed:", e);
     return [];
   }
 }
@@ -155,7 +158,8 @@ async function fetchFFZChannel(channelName: string): Promise<Emote[]> {
     const res = await fetch(`https://api.frankerfacez.com/v1/room/${encodeURIComponent(channelName)}`);
     if (!res.ok) return [];
     return parseFFZEmotes(await res.json());
-  } catch {
+  } catch (e) {
+    console.warn(`[emotes] fetchFFZChannel(${channelName}) failed:`, e);
     return [];
   }
 }
@@ -184,7 +188,8 @@ async function fetchBTTVGlobal(): Promise<Emote[]> {
       url: `https://cdn.betterttv.net/emote/${e.id}/1x.${e.imageType || "webp"}`,
       provider: "bttv" as const,
     }));
-  } catch {
+  } catch (e) {
+    console.warn("[emotes] fetchBTTVGlobal failed:", e);
     return [];
   }
 }
@@ -200,7 +205,8 @@ async function fetchBTTVChannel(twitchUserId: string): Promise<Emote[]> {
       url: `https://cdn.betterttv.net/emote/${e.id}/1x.${e.imageType || "webp"}`,
       provider: "bttv" as const,
     }));
-  } catch {
+  } catch (e) {
+    console.warn(`[emotes] fetchBTTVChannel(${twitchUserId}) failed:`, e);
     return [];
   }
 }

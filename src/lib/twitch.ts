@@ -164,8 +164,9 @@ class TmiSendManager {
     if (this.client) {
       try {
         await this.client.disconnect();
-      } catch {}
-      this.client = null;
+      } catch (e) {
+        console.warn("[twitch] disconnect error (non-fatal):", e);
+      }
     }
     this.connectingPromise = null;
     this.currentChannel = null;
@@ -274,7 +275,9 @@ export function getTwitchSession(): TwitchSession | null {
         return parsed as TwitchSession;
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[twitch] getTwitchSession parse error:", e);
+  }
   return null;
 }
 
