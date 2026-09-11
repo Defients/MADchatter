@@ -16,6 +16,8 @@ An AI chat co-pilot for Twitch, Kick, and Joystick streams.</p>
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
+[![MADchatter live session showing bot response suggestions, AutoForge activity, multi-bot accounts, and personality controls](https://madchatter.fun/ss1.png)](https://madchatter.fun/ss1.png)
+
 MADchatter brings live chat, audio transcripts, screen snapshots, and remembered context into one workspace for writing stream chat messages. Generate a batch, tune the voice, refine a reply, and choose what to send—or enable **AutoForge** to let the app decide when to speak and when to stay quiet.
 
 Built for streamers and bot operators who want control over their bot's personality, context, and participation. Bring your own AI provider key or connect a local model through Ollama.
