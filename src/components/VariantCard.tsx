@@ -259,19 +259,19 @@ export const VariantCard: React.FC<VariantCardProps> = ({
 
         {/* Refine Dialog Trigger */}
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger
-            render={
-              <ThemedTooltip content="Refine Suggestion">
+          <ThemedTooltip content="Refine Suggestion">
+            <DialogTrigger
+              render={
                 <Button
                   variant="outline"
                   size="icon"
                   className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
                 />
-              </ThemedTooltip>
-            }
-          >
-            <Sparkles className="w-4 h-4 text-orange-400 animate-pulse" />
-          </DialogTrigger>
+              }
+            >
+              <Sparkles className="w-4 h-4 text-orange-400 animate-pulse" />
+            </DialogTrigger>
+          </ThemedTooltip>
           <DialogContent className="sm:max-w-[425px] bg-[#0a0a0f] border-white/10 text-white shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-white font-black uppercase tracking-wider text-sm font-mono border-b border-white/5 pb-2">

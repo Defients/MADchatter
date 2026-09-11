@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -65,7 +66,22 @@ export function StatusBar() {
     audioEnergy,
     streamHealth,
     bots,
-  } = useAppStore();
+  } = useAppStore(useShallow((s) => ({
+    sessionStats: s.sessionStats,
+    tmiReadState: s.tmiReadState,
+    tmiSendState: s.tmiSendState,
+    sentMessages: s.sentMessages,
+    clearSentMessages: s.clearSentMessages,
+    streamMetadata: s.streamMetadata,
+    enhancedStats: s.enhancedStats,
+    analyticsPanelOpen: s.analyticsPanelOpen,
+    setAnalyticsPanelOpen: s.setAnalyticsPanelOpen,
+    sentimentSummary: s.sentimentSummary,
+    messageQueueDepth: s.messageQueueDepth,
+    audioEnergy: s.audioEnergy,
+    streamHealth: s.streamHealth,
+    bots: s.bots,
+  })));
 
   const platform = useAppStore((s) => s.platform);
 
@@ -73,7 +89,11 @@ export function StatusBar() {
   const [expanded, setExpanded] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [rateUsed, setRateUsed] = useState(0);
-  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const [dragHeight, setDragHeight] = useState<number | null>(() => {
+    const saved = localStorage.getItem('forge-statusbar-log-height');
+    const parsed = saved ? parseFloat(saved) : NaN;
+    return Number.isFinite(parsed) && parsed >= 108 ? parsed : null;
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [dockX, setDockX] = useState(() => {
     const saved = localStorage.getItem('forge-statusbar-x');
@@ -116,13 +136,17 @@ export function StatusBar() {
     const onMove = (ev: MouseEvent) => {
       if (!resizeRef.current) return;
       const dy = resizeRef.current.startY - ev.clientY;
-      const newHeight = Math.max(DEFAULT_LOG_HEIGHT, Math.min(window.innerHeight * 0.8, resizeRef.current.startHeight + dy));
+      const newHeight = Math.max(108, Math.min(window.innerHeight - 48, resizeRef.current.startHeight + dy));
       setDragHeight(newHeight);
     };
     const onUp = () => {
       resizeRef.current = null;
       setIsDragging(false);
-      setDragHeight(null); // snap back to default like a rolled parchment
+      // Persist the dragged height so the log stays where the user left it.
+      setDragHeight((h) => {
+        if (h != null) localStorage.setItem('forge-statusbar-log-height', h.toString());
+        return h;
+      });
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -228,7 +252,7 @@ export function StatusBar() {
                 className="w-80 h-full max-h-[calc(100vh-48px)] bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col"
               >
                 {/* Drag-to-resize handle */}
-                <ThemedTooltip content="Drag up to expand — release to snap back">
+                <ThemedTooltip content="Drag up to expand — height persists">
                   <div
                     onMouseDown={startResize}
                     className={cn(

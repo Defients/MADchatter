@@ -172,7 +172,7 @@ export function AnalyticsPanel() {
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+        className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/60 backdrop-blur-sm"
         onClick={() => { setAnalyticsPanelOpen(false); playSfx('hud_close'); }}
       >
         <motion.div

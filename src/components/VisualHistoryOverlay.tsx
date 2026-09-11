@@ -25,6 +25,7 @@ export function VisualHistoryOverlay() {
   const setOpen = useAppStore((s) => s.setVisualHistoryOpen);
   const history = useAppStore((s) => s.visualSnapshotHistory);
   const clearHistory = useAppStore((s) => s.clearVisualSnapshotHistory);
+  const removeSnapshot = useAppStore((s) => s.removeVisualSnapshot);
   const addPinnedMemory = useAppStore((s) => s.addPinnedMemory);
 
   if (!open) return null;
@@ -207,6 +208,18 @@ export function VisualHistoryOverlay() {
                                     className="text-[9px] text-gray-400 hover:text-white flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors"
                                   >
                                     <Download className="w-2.5 h-2.5" /> Save
+                                  </button>
+                                </ThemedTooltip>
+                                <ThemedTooltip content="Delete snapshot">
+                                  <button
+                                    onClick={() => {
+                                      removeSnapshot(entry.id);
+                                      playSfx("memory_remove");
+                                      toast.success("Snapshot deleted");
+                                    }}
+                                    className="text-[9px] text-red-400 hover:text-red-300 flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-red-500/10 transition-colors"
+                                  >
+                                    <Trash2 className="w-2.5 h-2.5" /> Delete
                                   </button>
                                 </ThemedTooltip>
                               </div>

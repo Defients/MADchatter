@@ -88,6 +88,10 @@ export interface AutoForgeDecision {
   // model). Used by the AutoForge HUD to explain why a given bot was chosen.
   personaFit?: number; // 0–1
   isMentioned?: boolean;
+  // Stamped by autoforgeDecide() after a successful provider fallback.
+  used_fallback_provider?: string;
+  // Stamped by autoforgeDecide() when token usage is available.
+  tokenUsage?: TokenUsage;
 }
 
 export interface TokenUsage {

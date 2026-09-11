@@ -351,8 +351,8 @@ export function useAutoForgeBot(botId: string) {
       });
 
       // Record token usage from the decision call
-      if ((decision as any).tokenUsage) {
-        useAppStore.getState().recordTokenUsage("autoforge_decide", (decision as any).tokenUsage);
+      if (decision.tokenUsage) {
+        useAppStore.getState().recordTokenUsage("autoforge_decide", decision.tokenUsage);
       }
 
       // Mirror response time + provider fallback into global enhancedStats so
@@ -365,7 +365,7 @@ export function useAutoForgeBot(botId: string) {
         actionDistribution: actionDist,
         avgResponseTimeMs: Math.round(store.enhancedStats.avgResponseTimeMs * 0.7 + responseTimeMs * 0.3),
       });
-      if ((decision as any).used_fallback_provider) {
+      if (decision.used_fallback_provider) {
         store.incrementStat("providerFallbacks");
       }
 
@@ -390,7 +390,7 @@ export function useAutoForgeBot(botId: string) {
         chatVelocity,
         isMentioned,
         activitySpike,
-        provider: (decision as any).used_fallback_provider || activeProvider,
+        provider: decision.used_fallback_provider || activeProvider,
         responseTimeMs,
       });
 
@@ -533,6 +533,7 @@ export function useAutoForgeBot(botId: string) {
               };
               const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
               if (!granted) {
+                store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: "Lost speaker floor — another bot won the bid.", timestamp: now, activityLevel, personaFit, isMentioned });
                 store.addBotAutoForgeEvent(botId, {
                   timestamp: Date.now(),
                   type: "silence",
@@ -552,9 +553,10 @@ export function useAutoForgeBot(botId: string) {
               store.incrementBotStat(botId, "autoForgeActions");
               store.incrementStat("autoForgeActions");
 
-              sendFn(channel, messageToSend).then(() => {
+              try {
+                await sendFn(channel, messageToSend);
                 store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
-              }).catch((e) => {
+              } catch (e: any) {
                 store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
                 console.error(`[AutoForgeBot ${bot.session.username}] full_forge send failed:`, e);
                 store.addBotAutoForgeEvent(botId, {
@@ -564,7 +566,9 @@ export function useAutoForgeBot(botId: string) {
                   summary: `[${bot.session.username}] Full Forge send FAILED: ${e.message || e}`,
                   details: { decision: "full_forge", message: messageToSend },
                 });
-              });
+                store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+                return;
+              }
 
               speakMessage(messageToSend);
               store.addBotSentMessage(botId, {
@@ -580,7 +584,7 @@ export function useAutoForgeBot(botId: string) {
                 timestamp: Date.now(),
                 actionType: "full_forge",
                 message: messageToSend,
-                provider: (decision as any).used_fallback_provider || activeProvider,
+                provider: decision.used_fallback_provider || activeProvider,
                 success: true,
               });
               // D4: Schedule post-send engagement correlation
@@ -658,6 +662,7 @@ export function useAutoForgeBot(botId: string) {
           };
           const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
           if (!granted) {
+            store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: "Lost speaker floor — another bot won the bid.", timestamp: now, activityLevel, personaFit, isMentioned });
             store.addBotAutoForgeEvent(botId, {
               timestamp: Date.now(),
               type: "silence",
@@ -691,6 +696,34 @@ export function useAutoForgeBot(botId: string) {
             const sendFn = getPlatformSendFn(store.platform, botId);
             sendFn(channel, followupPayload).then(() => {
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
+              speakMessage(followupPayload);
+              store.addBotSentMessage(botId, {
+                message: followupPayload,
+                channel,
+                timestamp: Date.now(),
+                source: "followup",
+                botId,
+              });
+              store.incrementBotStat(botId, "messagesSent");
+              store.incrementMessagesSent();
+              store.setBotAutoForgeLastActionMs(botId, Date.now());
+              store.updateBotRuntime(botId, { autoForgeFollowup: { message: followupPayload, deliveredAt: Date.now() } });
+              store.addBotActionHistoryEntry(botId, {
+                timestamp: Date.now(),
+                actionType: "quick_followup",
+                message: followupPayload,
+                provider: decision.used_fallback_provider || activeProvider,
+                success: true,
+              });
+              // D4: Schedule post-send engagement correlation
+              scheduleEngagementCheck("quick_followup", followupPayload, Date.now());
+              store.addBotAutoForgeEvent(botId, {
+                timestamp: Date.now(),
+                type: "action_sent",
+                severity: "medium",
+                summary: `[${bot.session.username}] Quick follow-up: "${followupPayload}"`,
+                details: { decision: "quick_followup", confidence: followupConf, reason: followupReason, action_payload: followupPayload, delay_ms: delayMs },
+              });
             }).catch((e) => {
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
               console.error(`[AutoForgeBot ${bot.session.username}] quick_followup send failed:`, e);
@@ -701,35 +734,6 @@ export function useAutoForgeBot(botId: string) {
                 summary: `[${bot.session.username}] Quick follow-up send FAILED: ${e.message || e}`,
                 details: { decision: "quick_followup", message: followupPayload },
               });
-            });
-
-            speakMessage(followupPayload);
-            store.addBotSentMessage(botId, {
-              message: followupPayload,
-              channel,
-              timestamp: Date.now(),
-              source: "followup",
-              botId,
-            });
-            store.incrementBotStat(botId, "messagesSent");
-            store.incrementMessagesSent();
-            store.setBotAutoForgeLastActionMs(botId, Date.now());
-            store.updateBotRuntime(botId, { autoForgeFollowup: { message: followupPayload, deliveredAt: Date.now() } });
-            store.addBotActionHistoryEntry(botId, {
-              timestamp: Date.now(),
-              actionType: "quick_followup",
-              message: followupPayload,
-              provider: (decision as any).used_fallback_provider || activeProvider,
-              success: true,
-            });
-            // D4: Schedule post-send engagement correlation
-            scheduleEngagementCheck("quick_followup", followupPayload, Date.now());
-            store.addBotAutoForgeEvent(botId, {
-              timestamp: Date.now(),
-              type: "action_sent",
-              severity: "medium",
-              summary: `[${bot.session.username}] Quick follow-up: "${followupPayload}"`,
-              details: { decision: "quick_followup", confidence: followupConf, reason: followupReason, action_payload: followupPayload, delay_ms: delayMs },
             });
           }, delayMs);
         }
@@ -802,6 +806,7 @@ export function useAutoForgeBot(botId: string) {
           const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
           if (!granted) {
             // Lost the floor — stand down this cycle, retry soon.
+            store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: "Lost speaker floor — another bot won the bid.", timestamp: now, activityLevel, personaFit, isMentioned });
             store.addBotAutoForgeEvent(botId, {
               timestamp: Date.now(),
               type: "silence",
@@ -821,9 +826,10 @@ export function useAutoForgeBot(botId: string) {
           store.incrementBotStat(botId, "autoForgeActions");
           store.incrementStat("autoForgeActions");
 
-          sendFn(channel, decision.action_payload).then(() => {
+          try {
+            await sendFn(channel, decision.action_payload);
             store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
-          }).catch((e) => {
+          } catch (e: any) {
             store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
             console.error(`[AutoForgeBot ${bot.session.username}] send failed:`, e);
             store.addBotAutoForgeEvent(botId, {
@@ -832,7 +838,9 @@ export function useAutoForgeBot(botId: string) {
               severity: "high",
               summary: `Send failed: ${e.message || e}`,
             });
-          });
+            store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+            return;
+          }
 
           speakMessage(decision.action_payload);
           store.addBotSentMessage(botId, {
@@ -848,7 +856,7 @@ export function useAutoForgeBot(botId: string) {
             timestamp: Date.now(),
             actionType: effectiveDecision,
             message: decision.action_payload,
-            provider: (decision as any).used_fallback_provider || activeProvider,
+            provider: decision.used_fallback_provider || activeProvider,
             success: true,
           });
           // D4: Schedule post-send engagement correlation

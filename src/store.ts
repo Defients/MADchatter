@@ -250,6 +250,7 @@ interface AppState {
   visualHistoryOpen: boolean;
   setVisualHistoryOpen: (open: boolean) => void;
   clearVisualSnapshotHistory: () => void;
+  removeVisualSnapshot: (id: string) => void;
   
   config: ForgeConfig;
   updateConfig: (updates: Partial<ForgeConfig>) => void;
@@ -675,6 +676,10 @@ export const useAppStore = create<AppState>()(
       visualHistoryOpen: false,
       setVisualHistoryOpen: (open) => set({ visualHistoryOpen: open }),
       clearVisualSnapshotHistory: () => set({ visualSnapshotHistory: [] }),
+      removeVisualSnapshot: (id) =>
+        set((state) => ({
+          visualSnapshotHistory: state.visualSnapshotHistory.filter((e) => e.id !== id),
+        })),
       setVisualSnapshot: (url, tags, source = "auto", delta, skipHistory = false) => {
         if (!url) {
           set({ visualSnapshotUrl: null, visualContextTags: tags });
@@ -819,8 +824,9 @@ export const useAppStore = create<AppState>()(
       setGoldenMemory: (id) => set({ goldenMemoryId: id }),
 
       clearAllContext: () =>
-        set({
+        set((state) => ({
           chatLog: [],
+          sentMessages: [],
           audioTranscript: "",
           visualSnapshotUrl: null,
           visualContextTags: [],
@@ -829,7 +835,13 @@ export const useAppStore = create<AppState>()(
           pinnedMemories: [],
           goldenMemoryId: null,
           lastTokenUsage: null,
-        }),
+          // Keep per-bot sent history in sync with the global sent log so
+          // marker-tracking refs don't re-insert stale markers after a clear.
+          bots: state.bots.map((b) => ({
+            ...b,
+            runtime: { ...b.runtime, sentMessages: [] },
+          })),
+        })),
 
       lastTokenUsage: null,
       tokenUsageByFeature: {

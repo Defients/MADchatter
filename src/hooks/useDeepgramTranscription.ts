@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { transcribeChunk, tryLoadWhisper, preloadWhisper } from '../lib/whisper';
+import { transcribeChunk, tryLoadWhisper, preloadWhisper, looksLikeLyrics } from '../lib/whisper';
 
 export function useDeepgramTranscription() {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -61,7 +61,13 @@ export function useDeepgramTranscription() {
     try {
       let stream: MediaStream;
       if (source === 'microphone') {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
       } else {
         stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
         stream.getVideoTracks().forEach(track => track.stop());
@@ -101,7 +107,7 @@ export function useDeepgramTranscription() {
   }, [stopDeepgram]);
 
   const connectDeepgram = (apiKey: string, stream: MediaStream) => {
-    const wsUrl = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en&smart_format=true&punctuate=true&interim_results=true&endpointing=500';
+    const wsUrl = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en&smart_format=true&punctuate=true&interim_results=true&endpointing=300';
     const ws = new WebSocket(wsUrl, ['token', apiKey]);
     deepgramConnectionRef.current = ws;
 
@@ -139,6 +145,9 @@ export function useDeepgramTranscription() {
         if (data.is_final || data.speech_final) {
           const transcript = data.channel.alternatives[0].transcript;
           if (transcript.trim().length > 0) {
+            // Filter out hallucinated lyric fragments (Deepgram can also
+            // produce these when music is playing through system audio).
+            if (looksLikeLyrics(transcript)) return;
             const elapsedSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
             const m = Math.floor(elapsedSeconds / 60).toString().padStart(2, '0');
             const s = (elapsedSeconds % 60).toString().padStart(2, '0');
@@ -240,7 +249,13 @@ export function useDeepgramTranscription() {
     try {
       let stream: MediaStream;
       if (source === 'microphone') {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
       } else {
         stream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
         stream.getVideoTracks().forEach(track => track.stop());
@@ -265,7 +280,7 @@ export function useDeepgramTranscription() {
         if (mediaRecorderRef.current?.state === 'recording') {
           mediaRecorderRef.current.stop();
         }
-      }, 15000);
+      }, 6000);
     } catch (err: any) {
       if (err.name === 'NotAllowedError') {
         setError('Permission denied to capture audio.');
@@ -311,7 +326,7 @@ export function useDeepgramTranscription() {
       if (mediaRecorderRef.current?.state === 'recording') {
         mediaRecorderRef.current.stop();
       }
-    }, 15000);
+    }, 6000);
   }, [startWhisperCycle]);
 
   const confirmWhisperDownload = useCallback(async () => {

@@ -564,22 +564,22 @@ export function useAutoForge() {
 
           // Send the best variant directly
           const sendFn = getPlatformSendFn(state.platform);
-          const sendPromise = sendFn(state.streamMetadata.channelName, messageToSend);
-          sendPromise
-            .then(() => {
-              updateDecisionRef.current(decisionLogId, { outcome: "sent" });
-            })
-            .catch((e) => {
-              updateDecisionRef.current(decisionLogId, { outcome: "failed" });
-              console.error("[AutoForge] full_forge send failed:", e);
-              addEventRef.current({
-                timestamp: Date.now(),
-                type: "error",
-                severity: "high",
-                summary: `Full Forge send FAILED: ${e.message || e}`,
-                details: { decision: "full_forge", message: messageToSend },
-              });
+          try {
+            await sendFn(state.streamMetadata.channelName, messageToSend);
+            updateDecisionRef.current(decisionLogId, { outcome: "sent" });
+          } catch (e: any) {
+            updateDecisionRef.current(decisionLogId, { outcome: "failed" });
+            console.error("[AutoForge] full_forge send failed:", e);
+            addEventRef.current({
+              timestamp: Date.now(),
+              type: "error",
+              severity: "high",
+              summary: `Full Forge send FAILED: ${e.message || e}`,
+              details: { decision: "full_forge", message: messageToSend },
             });
+            setAutoForgeNextActionMs(Date.now() + 20_000);
+            return;
+          }
 
           if (state.messageSoundEnabled && state.platform === 'joystick') playMessageSound();
           speakMessage(messageToSend);
@@ -723,12 +723,21 @@ export function useAutoForge() {
           markActionBucketRef.current();
           
           const sendFn = getPlatformSendFn(state.platform);
-          sendFn(state.streamMetadata.channelName, decision.action_payload)
-            .then(() => updateDecisionRef.current(decisionLogId, { outcome: "sent" }))
-            .catch((e) => {
-              updateDecisionRef.current(decisionLogId, { outcome: "failed" });
-              console.error(e);
+          try {
+            await sendFn(state.streamMetadata.channelName, decision.action_payload);
+            updateDecisionRef.current(decisionLogId, { outcome: "sent" });
+          } catch (e: any) {
+            updateDecisionRef.current(decisionLogId, { outcome: "failed" });
+            console.error("[AutoForge] send failed:", e);
+            addEventRef.current({
+              timestamp: Date.now(),
+              type: "error",
+              severity: "high",
+              summary: `Send failed: ${e.message || e}`,
             });
+            setAutoForgeNextActionMs(Date.now() + 20_000);
+            return;
+          }
           if (state.messageSoundEnabled && state.platform === 'joystick') playMessageSound();
           speakMessage(decision.action_payload);
           addSentMsgRef.current({
@@ -792,36 +801,45 @@ export function useAutoForge() {
           followupTimerRef.current = setTimeout(() => {
             const sendFn2 = getPlatformSendFn(state.platform);
             sendFn2(state.streamMetadata.channelName, decision.action_payload)
-              .then(() => updateDecisionRef.current(decisionLogId, { outcome: "sent" }))
+              .then(() => {
+                updateDecisionRef.current(decisionLogId, { outcome: "sent" });
+                if (state.messageSoundEnabled && state.platform === 'joystick') playMessageSound();
+                speakMessage(decision.action_payload);
+                addSentMsgRef.current({
+                  message: decision.action_payload,
+                  channel: state.streamMetadata.channelName,
+                  timestamp: Date.now(),
+                  source: "followup",
+                });
+                incrSentRef.current();
+                setAutoForgeLastActionMs(Date.now());
+                setAutoForgeFollowup({ message: decision.action_payload, deliveredAt: Date.now() });
+                addActionHistoryEntry({
+                  timestamp: Date.now(),
+                  actionType: "quick_followup",
+                  message: decision.action_payload,
+                  provider: activeProvider,
+                  success: true,
+                });
+                addEventRef.current({
+                  timestamp: Date.now(),
+                  type: "action_sent",
+                  severity: "medium",
+                  summary: `Quick follow-up: "${decision.action_payload}"`,
+                  details: { decision: decision.decision, confidence: decision.confidence, reason: decision.reason, action_payload: decision.action_payload, delay_ms: delayMs },
+                });
+              })
               .catch((e) => {
                 updateDecisionRef.current(decisionLogId, { outcome: "failed" });
-                console.error(e);
+                console.error("[AutoForge] quick_followup send failed:", e);
+                addEventRef.current({
+                  timestamp: Date.now(),
+                  type: "error",
+                  severity: "high",
+                  summary: `Quick follow-up send FAILED: ${e.message || e}`,
+                  details: { decision: "quick_followup", message: decision.action_payload },
+                });
               });
-            if (state.messageSoundEnabled && state.platform === 'joystick') playMessageSound();
-            speakMessage(decision.action_payload);
-            addSentMsgRef.current({
-              message: decision.action_payload,
-              channel: state.streamMetadata.channelName,
-              timestamp: Date.now(),
-              source: "followup",
-            });
-            incrSentRef.current();
-            setAutoForgeLastActionMs(Date.now());
-            setAutoForgeFollowup({ message: decision.action_payload, deliveredAt: Date.now() });
-            addActionHistoryEntry({
-              timestamp: Date.now(),
-              actionType: "quick_followup",
-              message: decision.action_payload,
-              provider: activeProvider,
-              success: true,
-            });
-            addEventRef.current({
-              timestamp: Date.now(),
-              type: "action_sent",
-              severity: "medium",
-              summary: `Quick follow-up: "${decision.action_payload}"`,
-              details: { decision: decision.decision, confidence: decision.confidence, reason: decision.reason, action_payload: decision.action_payload, delay_ms: delayMs },
-            });
             followupTimerRef.current = null;
           }, delayMs);
         }

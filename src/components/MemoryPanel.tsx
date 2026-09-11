@@ -229,7 +229,7 @@ export function MemoryPanel() {
   if (!memoryPanelOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setMemoryPanelOpen(false)}>
+    <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setMemoryPanelOpen(false)}>
       <div
         className="relative w-full max-w-3xl max-h-[85vh] bg-[#0F0F1A] border border-purple-500/30 rounded-2xl shadow-2xl flex flex-col"
         onClick={(e) => e.stopPropagation()}

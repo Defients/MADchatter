@@ -468,5 +468,8 @@ export async function runDecayCycle(config: AutoMemoryConfig): Promise<void> {
     await memoryStore.deleteProfile(p.username);
   }
 
-  console.log(`[MemoryEngine] Decay cycle complete. Memories: ${keptMemories.length}/${memories.length}, Jokes: ${keptJokes.length}/${jokes.length}, Profiles: ${keptProfiles.length}/${profiles.length}`);
+  const decayed = keptMemories.length < memories.length || keptJokes.length < jokes.length || keptProfiles.length < profiles.length;
+  if (decayed) {
+    console.log(`[MemoryEngine] Decay cycle complete. Memories: ${keptMemories.length}/${memories.length}, Jokes: ${keptJokes.length}/${jokes.length}, Profiles: ${keptProfiles.length}/${profiles.length}`);
+  }
 }

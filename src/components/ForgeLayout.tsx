@@ -336,6 +336,14 @@ export function ForgeLayout() {
   });
   const chatResizeRef = useRef<{ startY: number; startH: number } | null>(null);
 
+  // Memory panel height (resizable in collapsed flyout mode)
+  const [memoryPanelHeight, setMemoryPanelHeight] = useState(() => {
+    const saved = localStorage.getItem("forge-memory-panel-height");
+    const parsed = saved ? parseFloat(saved) : 320;
+    return isNaN(parsed) || parsed < 120 ? 320 : parsed;
+  });
+  const memoryResizeRef = useRef<{ startY: number; startH: number } | null>(null);
+
   // Visual snapshot auto-capture
   const [visualAutoCapture, setVisualAutoCapture] = useState(() => {
     return localStorage.getItem("forge-visual-auto") !== "false";
@@ -453,6 +461,10 @@ export function ForgeLayout() {
   useEffect(() => {
     localStorage.setItem("forge-chat-panel-height", chatPanelHeight.toString());
   }, [chatPanelHeight]);
+
+  useEffect(() => {
+    localStorage.setItem("forge-memory-panel-height", memoryPanelHeight.toString());
+  }, [memoryPanelHeight]);
 
   useEffect(() => {
     if (!audioAnchored) return;
@@ -578,8 +590,14 @@ export function ForgeLayout() {
   }, [chatLog, openWidgets]);
 
   // Insert colored marker into chat log when a message is sent from Forge or AutoForge
-  const prevSentCountRef = useRef(0);
+  const prevSentCountRef = useRef<number | null>(null);
   useEffect(() => {
+    if (prevSentCountRef.current === null) {
+      // First run after mount: sentMessages may be rehydrated from persisted
+      // storage. Those sends already happened — don't insert phantom markers.
+      prevSentCountRef.current = sentMessages.length;
+      return;
+    }
     if (sentMessages.length > prevSentCountRef.current) {
       const lastSent = sentMessages[sentMessages.length - 1];
       if (lastSent.source === "manual") {
@@ -596,11 +614,21 @@ export function ForgeLayout() {
   // AutoForge sends). Per-bot sends are recorded against bots[i].runtime, not
   // the global sentMessages, so without this the Chat Pulse line never appears
   // for multi-bot activity.
-  const prevBotSentCountsRef = useRef<Record<string, number>>({});
+  const prevBotSentCountsRef = useRef<Record<string, number> | null>(null);
   useEffect(() => {
+    const prevCounts = prevBotSentCountsRef.current;
+    if (prevCounts === null) {
+      // First run after mount: per-bot sentMessages may be rehydrated from
+      // persisted storage. Seed the counts so we don't insert phantom markers
+      // for sends that already happened in a previous session.
+      const seed: Record<string, number> = {};
+      for (const bot of bots) seed[bot.id] = bot.runtime.sentMessages.length;
+      prevBotSentCountsRef.current = seed;
+      return;
+    }
     let appended = false;
     for (const bot of bots) {
-      const prev = prevBotSentCountsRef.current[bot.id] ?? 0;
+      const prev = prevCounts[bot.id] ?? 0;
       const cur = bot.runtime.sentMessages.length;
       if (cur > prev) {
         const lastSent = bot.runtime.sentMessages[cur - 1];
@@ -612,13 +640,24 @@ export function ForgeLayout() {
           appended = true;
         }
       }
-      prevBotSentCountsRef.current[bot.id] = cur;
+      prevCounts[bot.id] = cur;
     }
     // Bumping chat activity so the pulse ring fires for our own sends too.
     if (appended) {
       chatMsgTimesRef.current.push(Date.now());
     }
   }, [bots, appendChatLog]);
+
+  // When chatLog is cleared (e.g. via "Clear All Context"), reset the marker
+  // tracking refs so stale sent-message counts don't re-insert old markers.
+  const prevChatLogLenRef = useRef(0);
+  useEffect(() => {
+    if (chatLog.length === 0 && prevChatLogLenRef.current > 0) {
+      prevSentCountRef.current = 0;
+      prevBotSentCountsRef.current = {};
+    }
+    prevChatLogLenRef.current = chatLog.length;
+  }, [chatLog]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -645,6 +684,10 @@ export function ForgeLayout() {
   const [editingChannel, setEditingChannel] = useState(false);
   const [channelInput, setChannelInput] = useState("");
   const channelInputRef = useRef<HTMLInputElement>(null);
+
+  // Viewer count visibility toggle (click to hide the number with an em-dash)
+  const [viewerCountHidden, setViewerCountHidden] = useState(() => localStorage.getItem("forge-viewer-count-hidden") === "true");
+  useEffect(() => { localStorage.setItem("forge-viewer-count-hidden", viewerCountHidden.toString()); }, [viewerCountHidden]);
 
   // Channel-change warning overlay state
   const [pendingChannel, setPendingChannel] = useState<string | null>(null);
@@ -1061,12 +1104,36 @@ export function ForgeLayout() {
     const onMove = (ev: MouseEvent) => {
       if (!chatResizeRef.current) return;
       const delta = ev.clientY - chatResizeRef.current.startY;
-      const maxH = Math.round(window.innerHeight * 0.7);
+      // Allow the panel to grow to the bottom of the screen (minus padding)
+      // based on its current top position, instead of an arbitrary 70vh cap.
+      const top = widgetPositions["chat"]?.top ?? 100;
+      const maxH = Math.max(120, window.innerHeight - top - 12);
       const newH = Math.max(80, Math.min(maxH, chatResizeRef.current.startH + delta));
       setChatPanelHeight(newH);
     };
     const onUp = () => {
       chatResizeRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startMemoryResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    memoryResizeRef.current = { startY: e.clientY, startH: memoryPanelHeight };
+    const onMove = (ev: MouseEvent) => {
+      if (!memoryResizeRef.current) return;
+      const delta = ev.clientY - memoryResizeRef.current.startY;
+      const top = widgetPositions["memory"]?.top ?? 100;
+      const maxH = Math.max(160, window.innerHeight - top - 12);
+      const newH = Math.max(120, Math.min(maxH, memoryResizeRef.current.startH + delta));
+      setMemoryPanelHeight(newH);
+    };
+    const onUp = () => {
+      memoryResizeRef.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
@@ -1101,6 +1168,7 @@ export function ForgeLayout() {
       "forge-audio-anchored",
       "forge-audio-panel-height",
       "forge-chat-panel-height",
+      "forge-memory-panel-height",
       "forge-icon-order",
       "forge-visual-auto",
       "forge-visual-interval",
@@ -2855,12 +2923,19 @@ export function ForgeLayout() {
 
                     <span className="forge-stream-detail text-gray-600 shrink-0" aria-hidden="true">•</span>
 
-                    {/* Viewer count */}
-                    <div className="forge-stream-detail flex items-center gap-1.5 text-gray-300 shrink-0">
-                      <Users className="w-4 h-4 text-orange-500" />
-                      <span className="font-bold text-sm">{(streamMetadata?.channelName ? (streamMetadata?.viewerCount || 0) : 0).toLocaleString()}</span>
-                      <span className="text-gray-500 text-xs font-medium">viewers</span>
-                    </div>
+                    {/* Viewer count — click to toggle hiding the number */}
+                    <ThemedTooltip content={viewerCountHidden ? "Click to show viewer count" : "Click to hide viewer count"}>
+                      <button
+                        type="button"
+                        onClick={() => setViewerCountHidden((v) => !v)}
+                        className="forge-stream-detail flex items-center gap-1.5 text-gray-300 shrink-0 hover:text-orange-300 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-orange-500/40 rounded"
+                        aria-label={viewerCountHidden ? "Show viewer count" : "Hide viewer count"}
+                      >
+                        <Users className="w-4 h-4 text-orange-500" />
+                        <span className="font-bold text-sm select-none">{viewerCountHidden ? "—" : (streamMetadata?.channelName ? (streamMetadata?.viewerCount || 0) : 0).toLocaleString()}</span>
+                        <span className="text-gray-500 text-xs font-medium">viewers</span>
+                      </button>
+                    </ThemedTooltip>
                   </div>
 
                   {/* Multi-Bot launcher + panel */}
@@ -3179,8 +3254,8 @@ export function ForgeLayout() {
 
         const def = widgetDefaultSizes[widget];
         const streamChatBoost = widget === "stream" && streamChatActive ? (platform === 'kick' || platform === 'joystick' ? 44 : 138) : 0;
-        const widgetHeight = widget === "chat" || widget === "audio" ? "" : widget === "stream" ? "" : "max-h-[70vh]";
-        const widgetStyle = widget === "chat" || widget === "audio" ? { height: `${widget === "chat" ? chatPanelHeight : audioPanelHeight}px`, width: `${def.w}px` } : widget === "stream" ? { width: `${streamOverlaySize.w}px`, height: `${streamOverlaySize.h + 40 + streamChatBoost}px` } : widget === "visual" ? { width: `${def.w}px` } : widget === "memory" ? { width: `${def.w}px` } : undefined;
+        const widgetHeight = widget === "chat" || widget === "audio" || widget === "memory" ? "" : widget === "stream" ? "" : "max-h-[70vh]";
+        const widgetStyle = widget === "chat" || widget === "audio" ? { height: `${widget === "chat" ? chatPanelHeight : audioPanelHeight}px`, width: `${def.w}px` } : widget === "memory" ? { height: `${memoryPanelHeight}px`, width: `${def.w}px` } : widget === "stream" ? { width: `${streamOverlaySize.w}px`, height: `${streamOverlaySize.h + 40 + streamChatBoost}px` } : widget === "visual" ? { width: `${def.w}px` } : undefined;
         const widgetWidth = widget === "stream" ? "" : "";
 
         return createPortal(
@@ -3361,9 +3436,17 @@ export function ForgeLayout() {
                 </div>
               </>
             ) : widget === "memory" ? (
-              <div className="overflow-y-auto p-3 min-h-0 forge-scroll" style={{ height: '180px' }}>
-                {renderWidgetContent(widget)}
-              </div>
+              <>
+                <div className="flex-1 overflow-y-auto p-3 min-h-0 forge-scroll">
+                  {renderWidgetContent(widget)}
+                </div>
+                <div
+                  onMouseDown={startMemoryResize}
+                  className="shrink-0 h-3 cursor-ns-resize bg-white/[0.04] hover:bg-blue-500/50 transition-colors flex items-center justify-center group border-t border-blue-500/10 hover:border-blue-500/40 rounded-b-xl"
+                >
+                  <div className="h-1.5 w-10 rounded-full bg-white/15 group-hover:bg-blue-400/60 transition-colors" />
+                </div>
+              </>
             ) : widget === "stream" ? (
               <div className="flex-1 min-h-0">
                 {renderWidgetContent(widget)}

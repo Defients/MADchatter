@@ -82,11 +82,13 @@ export function useAutoMemory() {
         // Run initial decay
         await runDecayCycle(autoMemoryConfig);
 
-        console.log("[AutoMemory] Initialized from IndexedDB:", {
-          memories: memories.length,
-          profiles: profiles.length,
-          jokes: jokes.length,
-        });
+        if (memories.length || profiles.length || jokes.length) {
+          console.log("[AutoMemory] Initialized from IndexedDB:", {
+            memories: memories.length,
+            profiles: profiles.length,
+            jokes: jokes.length,
+          });
+        }
       } catch (e) {
         console.error("[AutoMemory] Failed to initialize:", e);
       }

@@ -23,8 +23,8 @@ export function useJoystickAuth() {
 
   const fetchMe = useCallback(async () => {
     const session = await ensureValidJoystickSession();
-    console.log('[Joystick Auth] fetchMe — session:', session ? `username=${session.username} channelId=${session.channelId}` : 'null');
     if (session) {
+      console.log('[Joystick Auth] fetchMe — session:', `username=${session.username} channelId=${session.channelId}`);
       setUser({
         id: session.channelId || session.username,
         login: session.username,

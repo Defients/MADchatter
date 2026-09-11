@@ -11,6 +11,11 @@ export interface Emote {
   height?: number;
 }
 
+// Network/CORS failures are already surfaced by the browser console; only warn
+// on genuinely unexpected errors so the console isn't flooded with duplicates.
+const isNetworkError = (e: unknown) =>
+  e instanceof TypeError && /fetch/i.test(e.message);
+
 type EmoteMap = Map<string, Emote>;
 
 interface ChannelCache {
@@ -61,7 +66,7 @@ async function fetch7TVGlobal(): Promise<Emote[]> {
       };
     });
   } catch (e) {
-    console.warn("[emotes] fetch7TVGlobal failed:", e);
+    if (!isNetworkError(e)) console.warn("[emotes] fetch7TVGlobal failed:", e);
     return [];
   }
 }
@@ -92,12 +97,12 @@ async function fetch7TVChannel(channelName: string): Promise<Emote[]> {
           });
         }
       } catch (e) {
-        console.warn(`[emotes] fetch7TVChannel set ${setId} failed:`, e);
+        if (!isNetworkError(e)) console.warn(`[emotes] fetch7TVChannel set ${setId} failed:`, e);
       }
     }
     return emotes;
   } catch (e) {
-    console.warn(`[emotes] fetch7TVChannel(${channelName}) failed:`, e);
+    if (!isNetworkError(e)) console.warn(`[emotes] fetch7TVChannel(${channelName}) failed:`, e);
     return [];
   }
 }
@@ -148,7 +153,7 @@ async function fetchFFZGlobal(): Promise<Emote[]> {
     if (!res.ok) return [];
     return parseFFZEmotes(await res.json());
   } catch (e) {
-    console.warn("[emotes] fetchFFZGlobal failed:", e);
+    if (!isNetworkError(e)) console.warn("[emotes] fetchFFZGlobal failed:", e);
     return [];
   }
 }
@@ -159,7 +164,7 @@ async function fetchFFZChannel(channelName: string): Promise<Emote[]> {
     if (!res.ok) return [];
     return parseFFZEmotes(await res.json());
   } catch (e) {
-    console.warn(`[emotes] fetchFFZChannel(${channelName}) failed:`, e);
+    if (!isNetworkError(e)) console.warn(`[emotes] fetchFFZChannel(${channelName}) failed:`, e);
     return [];
   }
 }
@@ -189,7 +194,7 @@ async function fetchBTTVGlobal(): Promise<Emote[]> {
       provider: "bttv" as const,
     }));
   } catch (e) {
-    console.warn("[emotes] fetchBTTVGlobal failed:", e);
+    if (!isNetworkError(e)) console.warn("[emotes] fetchBTTVGlobal failed:", e);
     return [];
   }
 }
@@ -206,7 +211,7 @@ async function fetchBTTVChannel(twitchUserId: string): Promise<Emote[]> {
       provider: "bttv" as const,
     }));
   } catch (e) {
-    console.warn(`[emotes] fetchBTTVChannel(${twitchUserId}) failed:`, e);
+    if (!isNetworkError(e)) console.warn(`[emotes] fetchBTTVChannel(${twitchUserId}) failed:`, e);
     return [];
   }
 }
