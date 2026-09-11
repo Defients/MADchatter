@@ -94,7 +94,8 @@ export type AutoForgeEventType =
   | "silence"
   | "error"
   | "enable_disable"
-  | "metadata_change";
+  | "metadata_change"
+  | "director_note";
 
 export type AutoForgeEventSeverity = "low" | "medium" | "high";
 
@@ -133,7 +134,7 @@ export interface AutoMemory {
   subjectUsername?: string;
   content: string;
   context: string;
-  source: "chat" | "audio" | "visual" | "inferred";
+  source: "chat" | "audio" | "visual" | "inferred" | "director";
   confidence: number;
   createdAt: number;
   lastReferencedAt: number;
@@ -141,6 +142,18 @@ export interface AutoMemory {
   strength: number;
   tags: string[];
   isVerified: boolean;
+}
+
+/**
+ * DirectorNote — a private message from the streamer to a bot (or all bots).
+ * Unlike ChatSender messages, director notes are never sent to the chat
+ * channel. They are injected into the bot's AutoForge context as a
+ * high-priority directive so the bot can adapt its behavior mid-stream.
+ */
+export interface DirectorNote {
+  id: string;
+  text: string;
+  createdAt: number;
 }
 
 export interface UserProfile {
@@ -625,6 +638,8 @@ export interface BotRuntime {
   insideJokes: InsideJoke[];
   personalityState: PersonalityState | null;
   autoMemoryConfig: AutoMemoryConfig;
+  // Director notes — private streamer-to-bot directives (never sent to chat)
+  directorNotes: DirectorNote[];
   // History & analytics
   sentMessages: SentMessage[];
   actionHistory: ActionHistoryEntry[];

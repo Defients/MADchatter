@@ -200,7 +200,7 @@ export function useAutoForgeBot(botId: string) {
         memoryContext = formatMemoryContext(retrieved, {
           memoriesFormed: runtime.personalityState?.sessionMemoriesFormed ?? 0,
           jokesCreated: runtime.personalityState?.sessionJokesCreated ?? 0,
-        });
+        }, runtime.directorNotes);
       }
 
       // ── Sentiment context (per-bot) ──────────────────────────────────────

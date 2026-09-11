@@ -20,7 +20,7 @@ interface TimelineItem {
   category: EventCategory;
 }
 
-type EventCategory = "actions" | "mentions" | "spikes" | "silence" | "errors" | "system";
+type EventCategory = "actions" | "mentions" | "spikes" | "silence" | "errors" | "system" | "director";
 
 const TYPE_CONFIG: Record<string, { color: string; label: string; category: EventCategory }> = {
   action_sent: { color: "bg-orange-400", label: "Message Sent", category: "actions" },
@@ -34,6 +34,7 @@ const TYPE_CONFIG: Record<string, { color: string; label: string; category: Even
   quick_followup: { color: "bg-cyan-400", label: "Quick Follow-up", category: "actions" },
   send_message: { color: "bg-orange-400", label: "Message Sent", category: "actions" },
   deliberate_silence: { color: "bg-gray-500", label: "Deliberate Silence", category: "silence" },
+  director_note: { color: "bg-purple-500", label: "Director Note", category: "director" },
 };
 
 const CATEGORY_CONFIG: Record<EventCategory, { label: string; color: string; description: string }> = {
@@ -43,6 +44,7 @@ const CATEGORY_CONFIG: Record<EventCategory, { label: string; color: string; des
   silence: { label: "Silence", color: "bg-gray-500", description: "Deliberate silence decisions" },
   errors: { label: "Errors", color: "bg-red-500", description: "Failures and error events" },
   system: { label: "System", color: "bg-blue-400", description: "AutoForge toggles, metadata changes" },
+  director: { label: "Director Notes", color: "bg-purple-500", description: "Private streamer-to-bot directives" },
 };
 
 const ALL_CATEGORIES = Object.keys(CATEGORY_CONFIG) as EventCategory[];

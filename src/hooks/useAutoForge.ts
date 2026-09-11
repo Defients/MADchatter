@@ -71,6 +71,7 @@ export function useAutoForge() {
     autoForgeConfidenceThreshold,
     sessionGoals,
     perActionRateLimits,
+    directorNotes,
     setIsAutoForgeThinking,
     recordActionEngagement,
     setStreamHealth,
@@ -85,9 +86,9 @@ export function useAutoForge() {
   const isAutoForgingRef = useRef(false);
   // Track engagement-check timers for cleanup on unmount
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits });
+  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes });
 
-  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits };
+  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes };
 
   // Sync rate limiter config
   actionRateLimiter.updateConfig(rateLimitConfig);
@@ -386,7 +387,7 @@ export function useAutoForge() {
         memoryContext = formatMemoryContext(retrieved, {
           memoriesFormed: state.personalityState?.sessionMemoriesFormed ?? 0,
           jokesCreated: state.personalityState?.sessionJokesCreated ?? 0,
-        });
+        }, state.directorNotes);
       }
 
       // Build sentiment context

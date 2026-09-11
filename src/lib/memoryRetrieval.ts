@@ -4,6 +4,7 @@ import type {
   InsideJoke,
   PersonalityState,
   ChatMessage,
+  DirectorNote,
 } from "../types";
 
 export interface RetrievalContext {
@@ -163,8 +164,17 @@ export function retrieveRelevantMemories(
 export function formatMemoryContext(
   retrieved: { memories: RetrievedMemory[]; profiles: UserProfile[]; jokes: InsideJoke[]; personality: PersonalityState | null },
   sessionInfo?: { memoriesFormed: number; jokesCreated: number },
+  directorNotes?: DirectorNote[],
 ): string {
   const parts: string[] = [];
+
+  // Director notes — highest priority, always injected first
+  if (directorNotes && directorNotes.length > 0) {
+    parts.push(`[DIRECTOR NOTES — from the streamer, follow these directives]`);
+    for (const note of directorNotes.slice(-10)) {
+      parts.push(`- ${note.text}`);
+    }
+  }
 
   // Personality
   if (retrieved.personality) {

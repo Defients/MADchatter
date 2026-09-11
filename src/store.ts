@@ -1,13 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey } from "./types";
+import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
 import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 13;
+const SETTINGS_VERSION = 14;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -174,6 +174,7 @@ function createDefaultBotRuntime(): BotRuntime {
     userProfiles: [],
     insideJokes: [],
     personalityState: null,
+    directorNotes: [],
     autoMemoryConfig: {
       enabled: false,
       extractionIntervalMinutes: 10,
@@ -433,6 +434,11 @@ interface AppState {
   removeAutoMemory: (id: string) => void;
   clearAutoMemories: () => void;
 
+  // ─── Director Notes (single-bot mode) ────────────────────
+  directorNotes: DirectorNote[];
+  addDirectorNote: (text: string) => void;
+  clearDirectorNotes: () => void;
+
   userProfiles: UserProfile[];
   setUserProfiles: (profiles: UserProfile[]) => void;
   upsertUserProfile: (profile: UserProfile) => void;
@@ -633,6 +639,8 @@ interface AppState {
   incrementBotStat: (id: string, key: keyof EnhancedSessionStats, amount?: number) => void;
   addBotActionHistoryEntry: (id: string, entry: Omit<ActionHistoryEntry, "id">) => void;
   updateBotEnhancedStats: (id: string, updates: Partial<EnhancedSessionStats>) => void;
+  addBotDirectorNote: (id: string, text: string) => void;
+  clearBotDirectorNotes: (id: string) => void;
 
   exportSettings: () => string;
   importSettings: (json: string) => boolean;
@@ -999,6 +1007,13 @@ export const useAppStore = create<AppState>()(
         autoMemories: state.autoMemories.filter((m) => m.id !== id),
       })),
       clearAutoMemories: () => set({ autoMemories: [] }),
+
+      // ─── Director Notes (single-bot mode) ────────────────────
+      directorNotes: [],
+      addDirectorNote: (text) => set((state) => ({
+        directorNotes: [...state.directorNotes, { id: generateId(), text, createdAt: Date.now() }].slice(-50),
+      })),
+      clearDirectorNotes: () => set({ directorNotes: [] }),
 
       userProfiles: [],
       setUserProfiles: (profiles) => set({ userProfiles: profiles }),
@@ -1540,6 +1555,7 @@ export const useAppStore = create<AppState>()(
           insideJokes: [...state.insideJokes],
           personalityState: state.personalityState,
           autoMemoryConfig: { ...state.autoMemoryConfig },
+          directorNotes: [...state.directorNotes],
           sentMessages: [...state.sentMessages],
           actionHistory: [...state.actionHistory],
           decisionLog: [...state.decisionLog],
@@ -1592,6 +1608,7 @@ export const useAppStore = create<AppState>()(
             userProfiles: [...primary.runtime.userProfiles],
             insideJokes: [...primary.runtime.insideJokes],
             personalityState: primary.runtime.personalityState,
+            directorNotes: [...primary.runtime.directorNotes],
             autoMemoryConfig: { ...primary.runtime.autoMemoryConfig },
             sentMessages: [...primary.runtime.sentMessages],
             actionHistory: [...primary.runtime.actionHistory],
@@ -1777,6 +1794,20 @@ export const useAppStore = create<AppState>()(
         set((state) => ({
           bots: state.bots.map((b) =>
             b.id === id ? { ...b, runtime: { ...b.runtime, enhancedStats: { ...b.runtime.enhancedStats, ...updates } } } : b
+          ),
+        })),
+      addBotDirectorNote: (id, text) =>
+        set((state) => ({
+          bots: state.bots.map((b) => {
+            if (b.id !== id) return b;
+            const notes = [...b.runtime.directorNotes, { id: generateId(), text, createdAt: Date.now() }].slice(-50);
+            return { ...b, runtime: { ...b.runtime, directorNotes: notes } };
+          }),
+        })),
+      clearBotDirectorNotes: (id) =>
+        set((state) => ({
+          bots: state.bots.map((b) =>
+            b.id === id ? { ...b, runtime: { ...b.runtime, directorNotes: [] } } : b
           ),
         })),
 
@@ -2036,6 +2067,15 @@ export const useAppStore = create<AppState>()(
         // v13: Cursor trail toggle (default true to preserve existing behavior)
         if (version < 13 && persistedState) {
           if (persistedState.cursorTrailEnabled === undefined) persistedState.cursorTrailEnabled = true;
+        }
+        // v14: Director notes (private streamer-to-bot directives)
+        if (version < 14 && persistedState) {
+          if (persistedState.directorNotes === undefined) persistedState.directorNotes = [];
+          if (Array.isArray(persistedState.bots)) {
+            persistedState.bots.forEach((b: any) => {
+              if (b?.runtime && b.runtime.directorNotes === undefined) b.runtime.directorNotes = [];
+            });
+          }
         }
         return persistedState;
       },

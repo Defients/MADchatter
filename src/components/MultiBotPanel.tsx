@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { motion, AnimatePresence, useDragControls } from "framer-motion";
-import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp } from "lucide-react";
+import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
@@ -245,6 +245,9 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
         </>
       )}
 
+      {/* Director note input — private streamer-to-bot directives (never sent to chat) */}
+      {multiBotEnabled && <DirectorNoteInput />}
+
       {/* Pinned direct-message sender — always visible, even when collapsed */}
       {multiBotEnabled && <ChatSender />}
     </motion.div>
@@ -423,6 +426,113 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
         )}
       />
     </button>
+  );
+}
+
+/**
+ * DirectorNoteInput — lets the streamer send private directives to one bot or
+ * all bots. Unlike ChatSender, these notes are NEVER sent to the chat channel.
+ * They are injected into the bot's AutoForge context as a high-priority
+ * [DIRECTOR NOTES] section so the bot adapts its behavior mid-stream.
+ * Rendered above ChatSender when multi-bot mode is enabled.
+ */
+function DirectorNoteInput() {
+  const bots = useAppStore((s) => s.bots);
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+  const addBotDirectorNote = useAppStore((s) => s.addBotDirectorNote);
+  const addBotAutoForgeEvent = useAppStore((s) => s.addBotAutoForgeEvent);
+  const [text, setText] = useState("");
+  const [target, setTarget] = useState<string>("all"); // "all" | botId
+
+  const activeBots = bots.filter((b) => b.active);
+
+  const handleSend = () => {
+    const message = text.trim();
+    if (!message || activeBots.length === 0) return;
+
+    const targets = target === "all" ? activeBots : activeBots.filter((b) => b.id === target);
+    if (targets.length === 0) return;
+
+    for (const bot of targets) {
+      addBotDirectorNote(bot.id, message);
+      addBotAutoForgeEvent(bot.id, {
+        timestamp: Date.now(),
+        type: "director_note",
+        severity: "high",
+        summary: `Director note: "${message.substring(0, 80)}${message.length > 80 ? "..." : ""}"`,
+        details: { source: "director", message, botId: bot.id },
+      });
+    }
+
+    const names = targets.map((b) => `@${b.session?.username ?? "?"}`).join(", ");
+    toast.success(`Director note sent to ${names}`, {
+      description: "The bot(s) will factor this into their next AutoForge decision.",
+    });
+    setText("");
+  };
+
+  return (
+    <div className="shrink-0 border-t border-white/10 bg-gradient-to-b from-purple-950/20 to-black/30 p-2 flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5">
+        <Megaphone className="w-3 h-3 text-purple-400 shrink-0" />
+        <span className="text-[9px] uppercase tracking-wider text-purple-400 font-bold shrink-0">Director Note</span>
+        <ThemedTooltip
+          side="bottom"
+          content={
+            <div className="max-w-[220px] space-y-1">
+              <div className="font-bold text-purple-300">Director Notes</div>
+              <div>Private directives to your bot(s). <span className="text-purple-300 font-semibold">Never sent to chat</span> — injected into the bot's next AutoForge decision as a high-priority directive.</div>
+              <div className="text-gray-400">Use for feedback, status updates, or things you want the bot to remember mid-stream.</div>
+            </div>
+          }
+        >
+          <span className="text-gray-600 hover:text-purple-400 transition-colors cursor-help text-[10px]">?</span>
+        </ThemedTooltip>
+        <select
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          disabled={activeBots.length === 0}
+          className="flex-1 min-w-0 text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-white outline-none focus:border-purple-500/50 disabled:opacity-50"
+        >
+          <option value="all" className="bg-[#0F0F12] text-white">All bots ({activeBots.length})</option>
+          {activeBots.map((b, i) => (
+            <option key={b.id} value={b.id} className="bg-[#0F0F12] text-white">
+              #{i + 1} @{b.session?.username ?? "?"}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-stretch gap-1.5">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          placeholder="Direct your bot(s) — e.g. 'tone it down', 'the raid is starting soon', 'remember this user likes X'…"
+          disabled={activeBots.length === 0}
+          rows={2}
+          className="flex-1 min-w-0 resize-none text-[11px] leading-snug bg-black/40 border border-white/10 rounded px-2 py-1.5 text-white outline-none focus:border-purple-500/50 placeholder:text-gray-600 disabled:opacity-50 forge-scroll"
+        />
+        <ThemedTooltip content="Send director note (Enter)">
+          <button
+            onClick={handleSend}
+            disabled={text.trim().length === 0 || activeBots.length === 0}
+            className={cn(
+              "shrink-0 w-8 flex items-center justify-center rounded-md border transition-colors",
+              text.trim().length === 0 || activeBots.length === 0
+                ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
+                : "bg-purple-600 border-purple-500/60 text-white hover:bg-purple-500",
+            )}
+          >
+            <Send className="w-3.5 h-3.5" />
+          </button>
+        </ThemedTooltip>
+      </div>
+    </div>
   );
 }
 
