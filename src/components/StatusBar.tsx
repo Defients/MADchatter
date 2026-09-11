@@ -80,6 +80,15 @@ export function StatusBar() {
     return saved ? parseInt(saved) : 0;
   });
   const dragRef = useRef<{ startX: number; startDockX: number } | null>(null);
+
+  // Conditional status segments — only the separator before each is shown if the segment is active
+  const showAutoForge = enhancedStats.autoForgeActions > 0;
+  const showAudio = !!audioEnergy;
+  const showHealth = !!streamHealth;
+  const showSentiment = !!sentimentSummary && sentimentSummary.readings.length > 0;
+  const showQueue = messageQueueDepth > 0;
+  const showAudioHealth = showAudio || showHealth;
+  const showSentimentQueue = showSentiment || showQueue;
   const dockRef = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -344,7 +353,7 @@ export function StatusBar() {
           <div className="w-px h-3 bg-white/10" />
 
           {/* AutoForge Action Count */}
-          {enhancedStats.autoForgeActions > 0 && (
+          {showAutoForge && (
             <ThemedTooltip content="AutoForge actions this session">
               <div className="flex items-center gap-1">
                 <span className="text-[9px] font-mono text-indigo-400 font-bold">AF:{enhancedStats.autoForgeActions}</span>
@@ -352,10 +361,10 @@ export function StatusBar() {
             </ThemedTooltip>
           )}
 
-          <div className="w-px h-3 bg-white/10" />
+          {showAudioHealth && (showAutoForge ? <div className="w-px h-3 bg-white/10" /> : null)}
 
           {/* B9: Mini Audio Visualizer */}
-          {audioEnergy && (
+          {showAudio && (
             <ThemedTooltip content={`Audio: ${audioEnergy.label} (RMS ${audioEnergy.rms.toFixed(2)})`}>
               <div className="flex items-center gap-1.5">
                 <div className="flex items-end gap-0.5 h-3">
@@ -383,8 +392,7 @@ export function StatusBar() {
             </ThemedTooltip>
           )}
 
-          {/* A10: Stream Health Score */}
-          {streamHealth && (
+          {showHealth && (
             <ThemedTooltip content={`Stream health: ${streamHealth.label} (${streamHealth.overall}/100)`}>
               <div className="flex items-center gap-1">
                 <span className={cn(
@@ -400,10 +408,10 @@ export function StatusBar() {
             </ThemedTooltip>
           )}
 
-          <div className="w-px h-3 bg-white/10" />
+          {showSentimentQueue && (showAutoForge || showAudioHealth) && <div className="w-px h-3 bg-white/10" />}
 
           {/* Sentiment Indicator */}
-          {sentimentSummary && sentimentSummary.readings.length > 0 && (
+          {showSentiment && (
             <ThemedTooltip content={`Chat sentiment: ${sentimentSummary.current} (${sentimentSummary.trend})`}>
               <div className="flex items-center gap-1">
                 <span className={cn('w-2 h-2 rounded-full', SENTIMENT_DOT_COLORS[sentimentSummary.current as SentimentLabel])} />
@@ -414,8 +422,7 @@ export function StatusBar() {
             </ThemedTooltip>
           )}
 
-          {/* Message Queue Indicator */}
-          {messageQueueDepth > 0 && (
+          {showQueue && (
             <ThemedTooltip content={`${messageQueueDepth} queued messages awaiting retry`}>
               <div className="flex items-center gap-1">
                 <span className="text-[9px] font-mono text-yellow-400 font-bold">Q:{messageQueueDepth}</span>
@@ -423,7 +430,7 @@ export function StatusBar() {
             </ThemedTooltip>
           )}
 
-          <div className="w-px h-3 bg-white/10" />
+          {(showAutoForge || showAudioHealth || showSentimentQueue) && <div className="w-px h-3 bg-white/10" />}
 
           {/* Rate Limit Indicator */}
           <ThemedTooltip content="Send rate limit (messages per 30s)">
