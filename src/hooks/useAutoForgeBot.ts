@@ -17,7 +17,22 @@ import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { evaluateAllRules } from "../lib/ruleEngine";
-import type { RuleEngineContext } from "../types";
+import {
+  computeChatActivity,
+  computeEngagementScores,
+  computeStreamHealth,
+  computeHypeLevel,
+  detectOfflineStream,
+  buildLongTermMemoryContext,
+  buildRuleEngineContext,
+  evaluateSessionGoals,
+  computeManualCooldown,
+  computeNextActionMinutes,
+  normalizeConfidence,
+  isDuplicateMessage,
+  labelEngagement,
+  countPostSendEngagement,
+} from "../lib/autoForgeCore";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response.
@@ -80,17 +95,8 @@ export function useAutoForgeBot(botId: string) {
 
       // ── Activity metrics (from shared chat) ──────────────────────────────
       const currentMessagesReceived = store.sessionStats.messagesReceived;
-      const now = Date.now();
-      const elapsedMs = now - lastCheckTimeRef.current;
-      const elapsedMin = elapsedMs / 60000;
-      const newMessages = Math.max(0, currentMessagesReceived - lastMessagesReceivedRef.current);
-      const chatVelocity = elapsedMin > 0 ? Math.round(newMessages / elapsedMin) : 0;
-      let activityLevel = 0;
-      if (chatVelocity >= 30) activityLevel = 4;
-      else if (chatVelocity >= 15) activityLevel = 3;
-      else if (chatVelocity >= 5) activityLevel = 2;
-      else if (chatVelocity >= 1) activityLevel = 1;
-      const activitySpike = newMessages >= 10 && elapsedMs < 120000;
+      const { chatVelocity, activityLevel, activitySpike, newMessages, elapsedMs, now } =
+        computeChatActivity(currentMessagesReceived, lastCheckTimeRef.current, lastMessagesReceivedRef.current);
       lastMessagesReceivedRef.current = currentMessagesReceived;
       lastCheckTimeRef.current = now;
 
@@ -112,23 +118,15 @@ export function useAutoForgeBot(botId: string) {
         peakChatVelocity: Math.max(store.enhancedStats.peakChatVelocity, chatVelocity),
       });
       const sentimentHistoryForEngagement = store.sentimentHistory;
-      const recentSentiment = sentimentHistoryForEngagement.slice(-20);
-      const positiveRatio = recentSentiment.length > 0
-        ? recentSentiment.filter((s) => s.label === "positive" || s.label === "hype" || s.label === "wholesome").length / recentSentiment.length
-        : 0.5;
-      const velocityScore = Math.min(1, chatVelocity / 30);
-      const sentimentScore = positiveRatio;
-      const diversityScore = Math.min(1, uniqueChatters / 20);
-      const recencyScore = runtime.autoForgeLastActionMs
-        ? Math.max(0, 1 - (now - runtime.autoForgeLastActionMs) / 600000)
-        : 0;
-      const engagementOverall = Math.round((velocityScore * 0.35 + sentimentScore * 0.25 + diversityScore * 0.25 + recencyScore * 0.15) * 100);
+      const engagement = computeEngagementScores(
+        chatVelocity, sentimentHistoryForEngagement, uniqueChatters, runtime.autoForgeLastActionMs, now,
+      );
       store.setEngagementScore({
-        velocityScore: Math.round(velocityScore * 100),
-        sentimentScore: Math.round(sentimentScore * 100),
-        diversityScore: Math.round(diversityScore * 100),
-        recencyScore: Math.round(recencyScore * 100),
-        overall: engagementOverall,
+        velocityScore: Math.round(engagement.velocityScore * 100),
+        sentimentScore: Math.round(engagement.sentimentScore * 100),
+        diversityScore: Math.round(engagement.diversityScore * 100),
+        recencyScore: Math.round(engagement.recencyScore * 100),
+        overall: engagement.overall,
       });
 
       // ── Mention detection for THIS bot's username ────────────────────────
@@ -206,40 +204,19 @@ export function useAutoForgeBot(botId: string) {
       }
 
       // ── A10: Stream health score ─────────────────────────────────────────
-      // Mirrors the legacy useAutoForge stream health computation so the HUD
-      // health indicator updates in multi-bot mode. Shared global state.
       const es = store.enhancedStats;
-      const mentionScore = Math.min(100, (isMentioned ? 30 : 0) + (es.mentionsDetected * 5));
-      const visualScore = store.visualContextTags.length > 0 ? 70 : 0;
-      const healthOverall = Math.round(velocityScore * 30 + sentimentScore * 25 + diversityScore * 20 + (mentionScore / 100) * 15 + (visualScore / 100) * 10);
-      const healthLabel: "dead" | "slow" | "active" | "healthy" | "poppin" =
-        healthOverall >= 80 ? "poppin" : healthOverall >= 60 ? "healthy" : healthOverall >= 40 ? "active" : healthOverall >= 20 ? "slow" : "dead";
-      store.setStreamHealth({
-        velocityScore: Math.round(velocityScore * 100),
-        sentimentScore: Math.round(sentimentScore * 100),
-        diversityScore: Math.round(diversityScore * 100),
-        mentionScore,
-        visualScore,
-        overall: healthOverall,
-        label: healthLabel,
-        updatedAt: now,
-      });
+      const health = computeStreamHealth(
+        engagement.velocityScore, engagement.sentimentScore, engagement.diversityScore,
+        isMentioned, es.mentionsDetected, store.visualContextTags, now,
+      );
+      store.setStreamHealth(health);
 
       // ── B12: Hype level ──────────────────────────────────────────────────
-      // Set hype level based on activity spike and chat velocity. Shared
-      // global state — drives hype-based rule conditions and the HUD hype
-      // indicator.
-      if (activitySpike || chatVelocity >= 30) store.setHypeLevel(3);
-      else if (chatVelocity >= 15) store.setHypeLevel(2);
-      else if (chatVelocity >= 5) store.setHypeLevel(1);
-      else store.setHypeLevel(0);
+      store.setHypeLevel(computeHypeLevel(activitySpike, chatVelocity));
 
       // ── Offline detection ───────────────────────────────────────────────
-      // Detect likely offline stream: 0 viewers + no chat activity for 5+
-      // minutes. When offline, skip this bot's check and retry in 2 minutes.
       const viewerCount = store.streamMetadata?.viewerCount || 0;
-      const noChatForLongTime = newMessages === 0 && elapsedMs > 300000;
-      const likelyOffline = viewerCount === 0 && noChatForLongTime;
+      const likelyOffline = detectOfflineStream(viewerCount, newMessages, elapsedMs);
       store.setStreamLikelyOffline(likelyOffline);
       if (likelyOffline && !force) {
         store.setBotAutoForgeNextActionMs(botId, now + 120000);
@@ -294,31 +271,20 @@ export function useAutoForgeBot(botId: string) {
       // send_message/send_emote rules send as the bot whose tick fired them.
       const autoForgeRules = store.autoForgeRules;
       if (autoForgeRules.length > 0) {
-        const recentChatText = store.chatLog
-          .slice(-30)
-          .filter((m) => !m.marker)
-          .map((m) => m.text)
-          .join(" ");
-        const currentSentiment = store.sentimentHistory.length > 0
-          ? store.sentimentHistory[store.sentimentHistory.length - 1].label
-          : null;
-        const timeSinceLastAction = runtime.autoForgeLastActionMs
-          ? now - runtime.autoForgeLastActionMs
-          : Infinity;
-
-        const ruleCtx: RuleEngineContext = {
+        const ruleCtx = buildRuleEngineContext(
           chatVelocity,
-          sentimentLabel: currentSentiment,
-          timeSinceLastActionMs: timeSinceLastAction,
-          recentChatText,
+          store.sentimentHistory,
+          runtime.autoForgeLastActionMs,
+          store.chatLog,
           isMentioned,
           activitySpike,
-          streamHealthLabel: store.streamHealth?.label ?? null,
-          hypeLevel: store.hypeLevel,
+          store.streamHealth?.label ?? null,
+          store.hypeLevel,
           uniqueChatters,
-          viewerCount: store.streamMetadata.viewerCount,
-          audioEnergyRms: store.audioEnergy?.rms ?? 0,
-        };
+          store.streamMetadata.viewerCount,
+          store.audioEnergy?.rms ?? 0,
+          now,
+        );
 
         const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx, botId);
         const firedRules = ruleResults.filter((r) => r.fired);
@@ -359,10 +325,7 @@ export function useAutoForgeBot(botId: string) {
         visualContext: store.visualContextTags.join(" "),
         recentChatLog: formatChatLog(store.chatLog),
         audioTranscript: store.audioTranscript,
-        longTermContext: runtime.longTermMemory || [
-          ...runtime.pinnedMemories.filter((m) => m.id !== runtime.goldenMemoryId).map((m) => m.label),
-          ...runtime.pinnedMemories.filter((m) => m.id === runtime.goldenMemoryId).map((m) => `[GOLDEN MEMORY — PRIORITIZE THIS]: ${m.label}`),
-        ].join("\n"),
+        longTermContext: buildLongTermMemoryContext(runtime.longTermMemory, runtime.pinnedMemories, runtime.goldenMemoryId),
         config: bot.persona.config,
         activeProvider,
         lastActionMs: runtime.autoForgeLastActionMs,
@@ -432,9 +395,7 @@ export function useAutoForgeBot(botId: string) {
       });
 
       // Confidence threshold (unless forced)
-      const conf = typeof decision.confidence === "number" && !isNaN(decision.confidence)
-        ? decision.confidence
-        : Number(decision.confidence) || 0;
+      const conf = normalizeConfidence(decision.confidence);
       const threshold = store.autoForgeConfidenceThreshold ?? 0.5;
       if (!force && conf < threshold && decision.decision !== "deliberate_silence") {
         store.addBotAutoForgeEvent(botId, {
@@ -486,20 +447,11 @@ export function useAutoForgeBot(botId: string) {
           );
           if (!target) return;
           const currentChat = currentState.chatLog;
-          const linesAfter = currentChat.filter((m) => m.timestamp > sentAt && !m.marker).length;
           const botName = (currentBot.session?.username || "").toLowerCase();
-          const mentionsAfter = botName
-            ? currentChat.filter((m) => m.timestamp > sentAt && !m.marker && m.text.toLowerCase().includes(`@${botName}`)).length
-            : 0;
-          const reactionsAfter = currentChat.filter((m) => m.timestamp > sentAt && !m.marker && m.text.length < 20 && /^[A-Z\s!?]+$/.test(m.text)).length;
-          const totalEngagement = linesAfter + mentionsAfter * 2 + reactionsAfter;
-          let label: "ignored" | "low" | "moderate" | "high";
-          if (totalEngagement === 0) label = "ignored";
-          else if (totalEngagement < 3) label = "low";
-          else if (totalEngagement < 8) label = "moderate";
-          else label = "high";
+          const eng = countPostSendEngagement(currentChat, sentAt, botName);
+          const label = labelEngagement(eng.total);
           useAppStore.getState().updateBotActionHistoryEntry(botId, target.id, {
-            engagement: { chatLinesAfter: linesAfter, mentionsAfter, reactionsAfter, label, evaluatedAt: Date.now() },
+            engagement: { chatLinesAfter: eng.linesAfter, mentionsAfter: eng.mentionsAfter, reactionsAfter: eng.reactionsAfter, label, evaluatedAt: Date.now() },
           });
           // A9: Record accuracy metric (shared global — no per-bot twin exists)
           useAppStore.getState().recordActionEngagement(actionType, label);
@@ -530,10 +482,7 @@ export function useAutoForgeBot(botId: string) {
               screenshot: store.visualSnapshotUrl || undefined,
               recentChatLog: formatChatLog(store.chatLog),
               audioTranscript: store.audioTranscript,
-              longTermContext: runtime.longTermMemory || [
-                ...runtime.pinnedMemories.filter((m) => m.id !== runtime.goldenMemoryId).map((m) => m.label),
-                ...runtime.pinnedMemories.filter((m) => m.id === runtime.goldenMemoryId).map((m) => `[GOLDEN MEMORY — PRIORITIZE THIS]: ${m.label}`),
-              ].join("\n"),
+              longTermContext: buildLongTermMemoryContext(runtime.longTermMemory, runtime.pinnedMemories, runtime.goldenMemoryId),
               config: bot.persona.config,
               activeProvider,
               count: 3,
@@ -943,74 +892,35 @@ export function useAutoForgeBot(botId: string) {
       }
 
       // ── Evaluate session goals ──────────────────────────────────────────
-      // Mirrors the legacy useAutoForge goal evaluation. Goals are shared
-      // (global), evaluated against shared enhancedStats + sentimentHistory.
-      // Uses per-bot enhancedStats for per-bot accuracy where available, but
-      // falls back to shared stats for metrics that are inherently global
-      // (sentiment ratio, avg response time).
       if (store.sessionGoals && store.sessionGoals.length > 0) {
-        const enhancedStats = store.enhancedStats;
-        const results = store.sessionGoals.filter((g) => g.enabled).map((goal) => {
-          let current = 0;
-          switch (goal.type) {
-            case "mentionResponseRate":
-              current = enhancedStats.mentionsDetected > 0
-                ? Math.round((enhancedStats.autoForgeActions / enhancedStats.mentionsDetected) * 100)
-                : 0;
-              break;
-            case "minActionsPerHour":
-              current = Math.round(enhancedStats.autoForgeActions / Math.max(1, (Date.now() - enhancedStats.sessionStart) / 3600000));
-              break;
-            case "positiveSentimentRatio": {
-              const sh = store.sentimentHistory;
-              const positive = sh.filter((s) => s.label === "positive" || s.label === "hype" || s.label === "wholesome").length;
-              current = sh.length > 0 ? Math.round((positive / sh.length) * 100) : 0;
-              break;
-            }
-            case "maxSilenceRatio": {
-              const total = enhancedStats.autoForgeActions + enhancedStats.silenceDecisions;
-              current = total > 0 ? Math.round((enhancedStats.silenceDecisions / total) * 100) : 0;
-              break;
-            }
-            case "minMessagesSent":
-              current = enhancedStats.messagesSent;
-              break;
-            case "maxAvgResponseMs":
-              current = enhancedStats.avgResponseTimeMs;
-              break;
-          }
-          const progress = goal.type.startsWith("max") ? 1 - Math.min(1, current / goal.target) : Math.min(1, current / goal.target);
-          const met = goal.type.startsWith("max") ? current <= goal.target : current >= goal.target;
-          return { goalId: goal.id, goalType: goal.type, label: goal.label, current, target: goal.target, progress, met, enabled: goal.enabled };
-        });
+        const results = evaluateSessionGoals(
+          store.sessionGoals,
+          store.enhancedStats,
+          store.sentimentHistory,
+        );
         useAppStore.getState().setGoalEvaluationResults(results);
       }
 
       // ── Schedule next check ──────────────────────────────────────────────
-      let nextMin = decision.estimated_next_action_minutes || 1.5;
-      if (!Number.isFinite(nextMin) || nextMin < 0) nextMin = 1.5;
-      if (activitySpike && decision.decision === "deliberate_silence") {
-        nextMin = Math.min(nextMin, 0.5);
-      }
+      let nextMin = computeNextActionMinutes(decision.estimated_next_action_minutes, activitySpike, decision.decision);
 
       // A8: Manual activity awareness — delay next AutoForge action if user
       // recently acted or is typing. Mirrors the legacy useAutoForge manual
       // cooldown. Prevents bots from stepping on the user's manual sends.
       const nowMs = Date.now();
-      const lastManual = useAppStore.getState().lastManualSendMs;
-      const lastTyping = useAppStore.getState().lastUserChatTypingMs;
-      const recentManualActivity = Math.max(lastManual, lastTyping);
-      const msSinceManual = nowMs - recentManualActivity;
-      const MANUAL_COOLDOWN_MS = 30_000;
-      if (msSinceManual < MANUAL_COOLDOWN_MS && decision.decision !== "deliberate_silence") {
-        const delayMs = MANUAL_COOLDOWN_MS - msSinceManual;
-        const delayMin = delayMs / 60000;
+      const manualCooldown = computeManualCooldown(
+        useAppStore.getState().lastManualSendMs,
+        useAppStore.getState().lastUserChatTypingMs,
+        nowMs,
+      );
+      if (manualCooldown.shouldDelay && decision.decision !== "deliberate_silence") {
+        const delayMin = manualCooldown.delayMs / 60000;
         store.addBotAutoForgeEvent(botId, {
           timestamp: nowMs,
           type: "silence",
           severity: "low",
-          summary: `[${bot.session.username}] Delayed — manual activity detected (${Math.round(msSinceManual / 1000)}s ago)`,
-          details: { delayMs, msSinceManual },
+          summary: `[${bot.session.username}] Delayed — manual activity detected (${Math.round(manualCooldown.msSinceManual / 1000)}s ago)`,
+          details: { delayMs: manualCooldown.delayMs, msSinceManual: manualCooldown.msSinceManual },
         });
         nextMin = Math.max(nextMin, delayMin);
       }
