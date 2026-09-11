@@ -62,9 +62,14 @@ export function updateComfortLevel(
   current: number,
   messagesSent: number,
   positiveInteractions: number,
+  chatMessagesReceived: number = 0,
 ): number {
-  // Comfort grows slowly, caps at 100
-  const growth = (messagesSent * 0.5) + (positiveInteractions * 2);
+  // Comfort grows from multiple sources, caps at 100:
+  // - Bot actions (AutoForge sends): +0.5 each
+  // - Positive chat sentiment: +2 each
+  // - General chat activity (any message): +0.1 each (keeps comfort drifting up
+  //   during active chat even when sentiment is neutral)
+  const growth = (messagesSent * 0.5) + (positiveInteractions * 2) + (chatMessagesReceived * 0.1);
   return Math.min(100, current + growth);
 }
 

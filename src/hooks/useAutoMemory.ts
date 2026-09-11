@@ -36,6 +36,10 @@ export function useAutoMemory() {
   const busyRef = useRef(false);
   // Tracks action history length for comfort-level delta calculation
   const lastComfortActionCountRef = useRef<number>(0);
+  // Tracks sentiment history length for comfort-level delta calculation
+  const lastComfortSentimentCountRef = useRef<number>(0);
+  // Tracks messages received for comfort-level chat activity delta
+  const lastComfortMessagesReceivedRef = useRef<number>(0);
   const chatLogRef = useRef(chatLog);
   chatLogRef.current = chatLog;
 
@@ -216,15 +220,22 @@ export function useAutoMemory() {
           }
         }
 
-        // Comfort level growth from recent messages + positive interactions
+        // Comfort level growth from recent bot actions + positive sentiment + chat activity
         const actionDelta = Math.max(0, state.actionHistory.length - lastComfortActionCountRef.current);
         lastComfortActionCountRef.current = state.actionHistory.length;
-        const positiveCount = state.sentimentHistory
-          .slice(-30)
+        // Use delta of positive sentiment readings (not cumulative count) so
+        // comfort grows from NEW positive readings, not the same ones every tick
+        const positiveTotal = state.sentimentHistory
           .filter((s) => s.label === "positive" || s.label === "wholesome" || s.label === "hype")
           .length;
-        if (actionDelta > 0 || positiveCount > 0) {
-          const newComfort = updateComfortLevel(updated.comfortLevel, actionDelta, positiveCount);
+        const positiveDelta = Math.max(0, positiveTotal - lastComfortSentimentCountRef.current);
+        lastComfortSentimentCountRef.current = positiveTotal;
+        // Chat activity delta — any new messages keep comfort drifting up
+        const messagesReceived = state.sessionStats.messagesReceived;
+        const messagesDelta = Math.max(0, messagesReceived - lastComfortMessagesReceivedRef.current);
+        lastComfortMessagesReceivedRef.current = messagesReceived;
+        if (actionDelta > 0 || positiveDelta > 0 || messagesDelta > 0) {
+          const newComfort = updateComfortLevel(updated.comfortLevel, actionDelta, positiveDelta, messagesDelta);
           if (newComfort !== updated.comfortLevel) {
             updated = { ...updated, comfortLevel: newComfort };
           }
