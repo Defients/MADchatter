@@ -66,6 +66,7 @@ export function TutorialWalkthrough() {
   const rafRef = useRef<number | null>(null);
   const messageTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const tutorialChannelRef = useRef<string | null>(null);
+  const multibotWasEnabledRef = useRef<boolean | null>(null);
 
   const totalSteps = TUTORIAL_STEPS.length;
   const currentStep = TUTORIAL_STEPS[tutorialStep];
@@ -248,6 +249,11 @@ export function TutorialWalkthrough() {
       });
       tutorialChannelRef.current = null;
     }
+    // Restore multi-bot state to what it was before the tutorial
+    if (multibotWasEnabledRef.current === false) {
+      useAppStore.getState().disableMultiBot();
+    }
+    multibotWasEnabledRef.current = null;
   }, []);
 
   const finishTutorial = useCallback(() => {
@@ -291,6 +297,17 @@ export function TutorialWalkthrough() {
     const widget = STEP_WIDGET_MAP[tutorialStep];
     if (widget) {
       window.dispatchEvent(new CustomEvent("tutorial-open-widget", { detail: { widget } }));
+    }
+    // Director Notes step: enable multi-bot so the DirectorNoteInput renders
+    if (currentStep?.selector === '[data-tutorial="multibot-panel"]') {
+      const state = useAppStore.getState();
+      if (multibotWasEnabledRef.current === null) {
+        multibotWasEnabledRef.current = state.multiBotEnabled;
+      }
+      if (!state.multiBotEnabled) {
+        state.enableMultiBot();
+      }
+      window.dispatchEvent(new CustomEvent("tutorial-open-multibot"));
     }
     // Call onActivate for the current step
     if (currentStep?.onActivate) {
