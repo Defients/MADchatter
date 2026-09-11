@@ -73,6 +73,12 @@ import { getTwitchSession } from "../lib/twitch";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
+import { ChannelChangeWarningOverlay } from "./ChannelChangeWarningOverlay";
+import {
+  computeChannelExportWorthwhile,
+  exportChannelData,
+  type ChannelExportWorthwhile,
+} from "../lib/exportChannelData";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
@@ -646,6 +652,15 @@ export function ForgeLayout() {
   const channelInputRef = useRef<HTMLInputElement>(null);
   const [offlineTitle, setOfflineTitle] = useState("BRB... touching grass 🌱");
 
+  // Channel-change warning overlay state
+  const [pendingChannel, setPendingChannel] = useState<string | null>(null);
+  const [channelWarningOpen, setChannelWarningOpen] = useState(false);
+  const [channelExportWorthwhile, setChannelExportWorthwhile] = useState<ChannelExportWorthwhile>({
+    autoForgeReport: false,
+    autoMemory: false,
+    longTermMemory: false,
+  });
+
   useEffect(() => {
     if (!streamMetadata?.channelName) {
       const titles = [
@@ -770,15 +785,72 @@ export function ForgeLayout() {
 
   const commitChannel = () => {
     const trimmed = channelInput.trim().replace(/^@/, "");
-    if (trimmed) {
-      const currentName = streamMetadata?.channelName || "";
-      if (trimmed.toLowerCase() !== currentName.toLowerCase()) {
-        clearAllContext();
-        setVariants([]);
-      }
-      updateStreamMetadata({ channelName: trimmed });
+    if (!trimmed) {
+      setEditingChannel(false);
+      return;
     }
-    setEditingChannel(false);
+    const currentName = streamMetadata?.channelName || "";
+    if (trimmed.toLowerCase() === currentName.toLowerCase()) {
+      // Same channel (case-insensitive) — no clear, no warning
+      setEditingChannel(false);
+      return;
+    }
+    // Channel is changing — check if there's worthwhile data to export first
+    const worthwhile = computeChannelExportWorthwhile();
+    const anyWorthwhile =
+      worthwhile.autoForgeReport || worthwhile.autoMemory || worthwhile.longTermMemory;
+    if (anyWorthwhile) {
+      // Defer the channel switch until the user picks an export option
+      setChannelExportWorthwhile(worthwhile);
+      setPendingChannel(trimmed);
+      setChannelWarningOpen(true);
+      setEditingChannel(false);
+    } else {
+      // Nothing worthwhile — proceed immediately (original behavior)
+      clearAllContext();
+      setVariants([]);
+      updateStreamMetadata({ channelName: trimmed });
+      setEditingChannel(false);
+    }
+  };
+
+  const applyChannelChange = (newChannel: string) => {
+    clearAllContext();
+    setVariants([]);
+    updateStreamMetadata({ channelName: newChannel });
+    setPendingChannel(null);
+    setChannelWarningOpen(false);
+  };
+
+  const handleExportAndContinue = async () => {
+    if (!pendingChannel) return { autoForgeReport: false, autoMemory: false, longTermMemory: false };
+    const oldChannel = streamMetadata?.channelName || "";
+    const result = await exportChannelData({
+      includeAutoForgeReport: channelExportWorthwhile.autoForgeReport,
+      includeAutoMemory: channelExportWorthwhile.autoMemory,
+      includeLongTermMemory: channelExportWorthwhile.longTermMemory,
+      channelName: oldChannel,
+    });
+    const exportedCount = [result.autoForgeReport, result.autoMemory, result.longTermMemory].filter(
+      Boolean,
+    ).length;
+    if (exportedCount > 0) {
+      toast.success(`Exported ${exportedCount} file${exportedCount > 1 ? "s" : ""} & switched to @${pendingChannel}`);
+    } else {
+      toast.success(`Switched to @${pendingChannel}`);
+    }
+    applyChannelChange(pendingChannel);
+    return result;
+  };
+
+  const handleContinueWithoutExport = () => {
+    if (!pendingChannel) return;
+    applyChannelChange(pendingChannel);
+  };
+
+  const handleCancelChannelChange = () => {
+    setPendingChannel(null);
+    setChannelWarningOpen(false);
   };
 
   // Collapsed panel width tracking for icon scaling
@@ -3384,6 +3456,15 @@ export function ForgeLayout() {
       })}
       </>
       )}
+      <ChannelChangeWarningOverlay
+        open={channelWarningOpen}
+        newChannel={pendingChannel || ""}
+        oldChannel={streamMetadata?.channelName || ""}
+        worthwhile={channelExportWorthwhile}
+        onExportAndContinue={handleExportAndContinue}
+        onContinueWithoutExport={handleContinueWithoutExport}
+        onCancel={handleCancelChannelChange}
+      />
     </TooltipProvider>
   );
 }
