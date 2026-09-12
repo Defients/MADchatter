@@ -49,19 +49,22 @@ export default function App() {
   const isMobile = useIsMobile();
   const lightMode = useAppStore((s) => s.lightThemeActive);
   const colorTheme = useAppStore((s) => s.theme);
+  const superchargeActive = useAppStore((s) => s.superchargeActive);
   // Portals (tooltips, welcome, toasts) live outside the app wrapper.
   useEffect(() => {
     const root = document.documentElement;
-    root.classList.toggle('dark', !lightMode);
-    root.classList.toggle('light-theme', lightMode);
-    root.classList.toggle('cosmotech', colorTheme === 'cosmotech');
-    root.classList.toggle('corrupture', colorTheme === 'corrupture');
-    root.style.colorScheme = lightMode ? 'light' : 'dark';
+    // Supercharge theme takes precedence over everything (it's an Easter egg).
+    root.classList.toggle('dark', !lightMode && !superchargeActive);
+    root.classList.toggle('light-theme', lightMode && !superchargeActive);
+    root.classList.toggle('cosmotech', colorTheme === 'cosmotech' && !superchargeActive);
+    root.classList.toggle('corrupture', colorTheme === 'corrupture' && !superchargeActive);
+    root.classList.toggle('supercharge-theme', superchargeActive);
+    root.style.colorScheme = superchargeActive ? 'dark' : (lightMode ? 'light' : 'dark');
     return () => {
-      root.classList.remove('dark', 'light-theme', 'cosmotech', 'corrupture');
+      root.classList.remove('dark', 'light-theme', 'cosmotech', 'corrupture', 'supercharge-theme');
       root.style.removeProperty('color-scheme');
     };
-  }, [lightMode, colorTheme]);
+  }, [lightMode, colorTheme, superchargeActive]);
   const { 
     clearAllContext, 
     setVariants, 
@@ -501,6 +504,16 @@ export default function App() {
         e.preventDefault();
         setOpenCommand((open) => !open);
         playSfx('palette_open');
+        return;
+      }
+
+      // Toggle Supercharge Mode (Ctrl+Shift+S) — Easter egg hotkey. Can't use
+      // the typed-word trigger because "supercharge" contains letters (s, p,
+      // c, h, a, r) that collide with single-key hotkeys. Dispatches an event
+      // that EasterEggs.tsx handles for the toggle + visual feedback.
+      if (e.key.toLowerCase() === 's' && e.shiftKey && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('easter-egg-supercharge-toggle'));
         return;
       }
 

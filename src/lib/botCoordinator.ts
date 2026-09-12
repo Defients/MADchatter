@@ -33,7 +33,7 @@ interface PendingRequest {
 
 type SpeakerChosenListener = (info: { botId: string; candidate: BotCandidate } | null) => void;
 
-const DEFAULT_FLOOR_GAP_MS = 15_000; // min gap between any two bot sends
+export const DEFAULT_FLOOR_GAP_MS = 15_000; // min gap between any two bot sends
 const DEFAULT_BID_WINDOW_MS = 2_500; // how long to collect competing candidates
 
 class BotCoordinator {

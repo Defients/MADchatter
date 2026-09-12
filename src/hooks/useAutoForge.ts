@@ -11,7 +11,7 @@ import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
 import { getActiveProvider, getApiKey } from "../lib/keys";
 import { formatChatLog } from "../lib/chatUtils";
-import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
+import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
 import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/jokeEngine";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
@@ -153,6 +153,7 @@ export function useAutoForge() {
     }
     const state = storeRef.current;
     const live = useAppStore.getState();
+    const supercharged = live.superchargeActive;
     // Self-heal a wedged manual-forge flag — a hung forge request would
     // otherwise gate every AutoForge check + force forever.
     if (live.isForging && (live.forgeStartedAtMs === null || Date.now() - live.forgeStartedAtMs > FORGE_WATCHDOG_MS)) {
@@ -391,6 +392,10 @@ export function useAutoForge() {
           memoriesFormed: state.personalityState?.sessionMemoriesFormed ?? 0,
           jokesCreated: state.personalityState?.sessionJokesCreated ?? 0,
         }, state.directorNotes);
+      } else {
+        // Director notes are user-authored directives, not auto-extracted
+        // memories — inject them even when AutoMemory is disabled.
+        memoryContext = formatDirectorNotesContext(state.directorNotes);
       }
 
       // Build sentiment context
@@ -402,8 +407,8 @@ export function useAutoForge() {
         useAppStore.getState().updateSentimentSummary(sentimentSummary);
       }
 
-      // Check rate limits (unless forced)
-      if (!force && !actionRateLimiter.canAct()) {
+      // Check rate limits (unless forced or supercharged)
+      if (!force && !supercharged && !actionRateLimiter.canAct()) {
         const rateStats = actionRateLimiter.getStats();
         console.log(`[AutoForge] Rate limited: ${rateStats.actionsLastHour}/${rateStats.maxPerHour} per hour, ${rateStats.actionsLastTenMin}/${rateStats.maxPerTenMin} per 10min`);
         setAutoForgeNextActionMs(Date.now() + Math.max(30000, rateStats.msUntilNextAllowed));
@@ -411,8 +416,9 @@ export function useAutoForge() {
       }
 
       // Vibe check: skip the AI call entirely when the moment is dead.
-      // Cheap local heuristic — never skips mentions or spikes.
-      if (!force) {
+      // Cheap local heuristic — never skips mentions or spikes. Supercharge
+      // mode bypasses it entirely — the user asked for maximum engagement.
+      if (!force && !supercharged) {
         const vibe = vibeCheck({
           isMentioned,
           activitySpike,
@@ -466,6 +472,7 @@ export function useAutoForge() {
         botIdentityStory: useAppStore.getState().botIdentityStory,
         audioEnergyLabel: useAppStore.getState().audioEnergy?.label,
         streamEvents: useAppStore.getState().streamEvents.slice(-5),
+        superchargeMode: supercharged,
       });
       const responseTimeMs = Date.now() - decisionStartTime;
       console.log("[AutoForge] Decision:", decision);
@@ -567,7 +574,7 @@ export function useAutoForge() {
 
       if (decision.decision === "full_forge") {
         // C5: Per-action rate limit check
-        if (!force && !actionRateLimiter.canAct("full_forge")) {
+        if (!force && !supercharged && !actionRateLimiter.canAct("full_forge")) {
           console.log("[AutoForge] full_forge rate limited — downgrading to silence");
           addEventRef.current({
             timestamp: Date.now(),
@@ -961,6 +968,13 @@ export function useAutoForge() {
       // Adaptive backoff: lengthen the check interval during consecutive
       // silences to reduce unnecessary AI calls during dead periods.
       nextMinutes = computeAdaptiveBackoff(consecutiveSilenceRef.current, nextMinutes, isMentioned, activitySpike);
+
+      // Supercharge mode: clamp the next-check interval short so the bot
+      // re-engages quickly. The adaptive backoff is skipped (silence shouldn't
+      // lengthen the gap when the user asked for maximum engagement).
+      if (supercharged) {
+        nextMinutes = Math.min(nextMinutes, 1.5);
+      }
 
       // A8: Manual activity awareness — delay next AutoForge action if user recently acted or is typing
       const nowMs = Date.now();

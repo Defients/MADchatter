@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { motion, AnimatePresence, useDragControls, useAnimationControls } from "framer-motion";
-import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone } from "lucide-react";
+import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone, Clock, XCircle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
@@ -601,16 +601,83 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
  * They are injected into the bot's AutoForge context as a high-priority
  * [DIRECTOR NOTES] section so the bot adapts its behavior mid-stream.
  * Rendered above ChatSender when multi-bot mode is enabled.
+ *
+ * Notes can be timed (auto-expire after a set duration) or last until manually
+ * canceled. Active notes are shown as dismissible chips below the input.
  */
+const DIRECTOR_NOTE_DURATIONS: { label: string; ms: number | null }[] = [
+  { label: "Until canceled", ms: null },
+  { label: "5 min", ms: 5 * 60_000 },
+  { label: "15 min", ms: 15 * 60_000 },
+  { label: "30 min", ms: 30 * 60_000 },
+  { label: "1 hour", ms: 60 * 60_000 },
+];
+
+function formatExpiry(expiresAt: number | null | undefined): string {
+  if (expiresAt == null) return "until canceled";
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return "expired";
+  const mins = Math.ceil(remaining / 60_000);
+  if (mins < 60) return `${mins}m left`;
+  const hrs = Math.floor(mins / 60);
+  const remMin = mins % 60;
+  return `${hrs}h ${remMin}m left`;
+}
+
 function DirectorNoteInput() {
   const bots = useAppStore((s) => s.bots);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
   const addBotDirectorNote = useAppStore((s) => s.addBotDirectorNote);
+  const removeBotDirectorNote = useAppStore((s) => s.removeBotDirectorNote);
   const addBotAutoForgeEvent = useAppStore((s) => s.addBotAutoForgeEvent);
   const [text, setText] = useState("");
   const [target, setTarget] = useState<string>("all"); // "all" | botId
+  const [durationMs, setDurationMs] = useState<number | null>(null);
+  const [showActive, setShowActive] = useState(false);
 
   const activeBots = bots.filter((b) => b.active);
+
+  // Collect active notes for the selected target so the user can see and
+  // dismiss them. When target is "all", notes with identical text across
+  // every active bot are grouped into a single chip (one dismiss cancels
+  // all copies). Notes that only appear on some bots are shown individually
+  // with the bot name(s) labeled.
+  const targetBots = target === "all" ? activeBots : activeBots.filter((b) => b.id === target);
+  const now = Date.now();
+  const rawNotes = targetBots.flatMap((b) =>
+    (b.runtime.directorNotes || [])
+      .filter((n) => n.expiresAt == null || n.expiresAt > now)
+      .map((n) => ({ id: n.id, text: n.text, expiresAt: n.expiresAt, botId: b.id, botName: b.session?.username ?? "?" }))
+  );
+
+  // Group by text. Each group tracks all the (botId, noteId) copies so a
+  // single dismiss can cancel every copy at once.
+  interface NoteGroup {
+    text: string;
+    expiresAt: number | null;
+    copies: { botId: string; noteId: string; botName: string }[];
+    isAllBots: boolean;
+  }
+  const groupsMap = new Map<string, NoteGroup>();
+  for (const n of rawNotes) {
+    const key = n.text;
+    let g = groupsMap.get(key);
+    if (!g) {
+      g = { text: n.text, expiresAt: n.expiresAt ?? null, copies: [], isAllBots: false };
+      groupsMap.set(key, g);
+    }
+    // Keep the latest expiry (the one that lasts longest) for display.
+    if ((n.expiresAt ?? null) != null && (g.expiresAt == null || (n.expiresAt ?? 0) > g.expiresAt)) {
+      g.expiresAt = n.expiresAt ?? null;
+    } else if (n.expiresAt == null) {
+      g.expiresAt = null; // "until canceled" wins
+    }
+    g.copies.push({ botId: n.botId, noteId: n.id, botName: n.botName });
+  }
+  const activeNotes: NoteGroup[] = Array.from(groupsMap.values()).map((g) => ({
+    ...g,
+    isAllBots: target === "all" && g.copies.length >= targetBots.length,
+  })).slice(-8);
 
   const handleSend = () => {
     const message = text.trim();
@@ -620,21 +687,25 @@ function DirectorNoteInput() {
     if (targets.length === 0) return;
 
     for (const bot of targets) {
-      addBotDirectorNote(bot.id, message);
+      addBotDirectorNote(bot.id, message, durationMs);
       addBotAutoForgeEvent(bot.id, {
         timestamp: Date.now(),
         type: "director_note",
         severity: "high",
-        summary: `Director note: "${message.substring(0, 80)}${message.length > 80 ? "..." : ""}"`,
-        details: { source: "director", message, botId: bot.id },
+        summary: `Director note: "${message.substring(0, 80)}${message.length > 80 ? "..." : ""}"${durationMs ? ` (${formatExpiry(Date.now() + durationMs)})` : ""}`,
+        details: { source: "director", message, botId: bot.id, durationMs },
       });
     }
 
     const names = targets.map((b) => `@${b.session?.username ?? "?"}`).join(", ");
     toast.success(`Director note sent to ${names}`, {
-      description: "The bot(s) will factor this into their next AutoForge decision.",
+      description: durationMs ? `Active for ${DIRECTOR_NOTE_DURATIONS.find((d) => d.ms === durationMs)?.label}.` : "Active until manually canceled.",
     });
     setText("");
+  };
+
+  const handleRemoveNote = (copies: { botId: string; noteId: string }[]) => {
+    for (const c of copies) removeBotDirectorNote(c.botId, c.noteId);
   };
 
   return (
@@ -648,7 +719,7 @@ function DirectorNoteInput() {
             <div className="max-w-[220px] space-y-1">
               <div className="font-bold text-purple-300">Director Notes</div>
               <div>Private directives to your bot(s). <span className="text-purple-300 font-semibold">Never sent to chat</span> — injected into the bot's next AutoForge decision as a high-priority directive.</div>
-              <div className="text-gray-400">Use for feedback, status updates, or things you want the bot to remember mid-stream.</div>
+              <div className="text-gray-400">Use for feedback, status updates, or things you want the bot to remember mid-stream. Timed notes auto-expire; "Until canceled" notes persist until you dismiss them.</div>
             </div>
           }
         >
@@ -667,6 +738,13 @@ function DirectorNoteInput() {
             </option>
           ))}
         </select>
+        <button
+          onClick={() => setShowActive((v) => !v)}
+          className="shrink-0 text-[9px] px-1.5 py-1 rounded border border-white/10 text-purple-300 hover:bg-purple-500/10 hover:border-purple-500/40 transition-colors"
+          title={showActive ? "Hide active notes" : "Show active notes"}
+        >
+          {activeNotes.length > 0 ? `${activeNotes.length} active` : "none active"}
+        </button>
       </div>
       <div className="flex items-stretch gap-1.5">
         <textarea
@@ -683,21 +761,68 @@ function DirectorNoteInput() {
           rows={2}
           className="flex-1 min-w-0 resize-none text-[11px] leading-snug bg-black/40 border border-white/10 rounded px-2 py-1.5 text-white outline-none focus:border-purple-500/50 placeholder:text-gray-600 disabled:opacity-50 forge-scroll"
         />
-        <ThemedTooltip content="Send director note (Enter)">
-          <button
-            onClick={handleSend}
-            disabled={text.trim().length === 0 || activeBots.length === 0}
-            className={cn(
-              "shrink-0 w-8 flex items-center justify-center rounded-md border transition-colors",
-              text.trim().length === 0 || activeBots.length === 0
-                ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
-                : "bg-purple-600 border-purple-500/60 text-white hover:bg-purple-500",
-            )}
+        <div className="flex flex-col gap-1 shrink-0">
+          <select
+            value={durationMs ?? "null"}
+            onChange={(e) => setDurationMs(e.target.value === "null" ? null : Number(e.target.value))}
+            disabled={activeBots.length === 0}
+            className="text-[9px] bg-black/40 border border-white/10 rounded px-1 py-1 text-purple-300 outline-none focus:border-purple-500/50 disabled:opacity-50 w-[72px]"
+            title="How long the note stays active"
           >
-            <Send className="w-3.5 h-3.5" />
-          </button>
-        </ThemedTooltip>
+            {DIRECTOR_NOTE_DURATIONS.map((d) => (
+              <option key={d.label} value={d.ms ?? "null"} className="bg-[#0F0F12] text-white">{d.label}</option>
+            ))}
+          </select>
+          <ThemedTooltip content="Send director note (Enter)">
+            <button
+              onClick={handleSend}
+              disabled={text.trim().length === 0 || activeBots.length === 0}
+              className={cn(
+                "flex-1 flex items-center justify-center rounded-md border transition-colors",
+                text.trim().length === 0 || activeBots.length === 0
+                  ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
+                  : "bg-purple-600 border-purple-500/60 text-white hover:bg-purple-500",
+              )}
+            >
+              <Send className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+        </div>
       </div>
+      {/* Active notes — dismissible chips (grouped by text across bots) */}
+      {showActive && (
+        <div className="flex flex-col gap-1 max-h-32 overflow-y-auto forge-scroll">
+          {activeNotes.length === 0 ? (
+            <div className="text-[10px] text-gray-600 italic px-1 py-0.5">No active notes for this target.</div>
+          ) : (
+            activeNotes.map((g, i) => {
+              const scopeLabel = g.isAllBots
+                ? "All bots"
+                : g.copies.length === 1
+                  ? `@${g.copies[0].botName}`
+                  : g.copies.map((c) => `@${c.botName}`).join(", ");
+              return (
+                <div key={`${g.text}-${i}`} className="flex items-start gap-1.5 bg-purple-950/30 border border-purple-500/20 rounded px-1.5 py-1">
+                  <Clock className="w-2.5 h-2.5 text-purple-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] text-gray-300 leading-snug truncate">{g.text}</div>
+                    <div className="text-[8px] text-gray-500 mt-0.5">
+                      {scopeLabel} · {formatExpiry(g.expiresAt)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveNote(g.copies)}
+                    className="shrink-0 text-gray-500 hover:text-red-400 transition-colors p-0.5"
+                    title={g.copies.length > 1 ? `Cancel this note for all ${g.copies.length} bots` : "Cancel this note"}
+                  >
+                    <XCircle className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -942,9 +1067,10 @@ function FirstMessageInlineToggle() {
 }
 
 /**
- * MultiBotModeBadge — a visual indicator shown in the header when the app has
- * actually switched to the multi-bot pipeline (toggle on AND ≥2 bots authed).
- * Fires a toast the first time the mode engages so the change is obvious.
+ * MultiBotModeBadge — fires a toast the first time multi-bot mode engages or
+ * disengages so the change is obvious. The visual header badge was removed
+ * (served no purpose beyond the toast); this component now renders nothing
+ * and exists only to host the engage/disengage toast effect.
  */
 export function MultiBotModeBadge() {
   const multiBotActive = useAppStore(selectMultiBotActive);
@@ -965,29 +1091,7 @@ export function MultiBotModeBadge() {
     prevActiveRef.current = multiBotActive;
   }, [multiBotActive]);
 
-  return (
-    <AnimatePresence>
-      {multiBotActive && (
-        <ThemedTooltip content="Multi-Bot pipeline is active: per-bot AutoForge + coordinator running">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.8, width: 0 }}
-          animate={{ opacity: 1, scale: 1, width: "auto" }}
-          exit={{ opacity: 0, scale: 0.8, width: 0 }}
-          transition={{ type: "spring", stiffness: 400, damping: 30 }}
-          className="shrink-0 h-7 flex items-center gap-1.5 px-2 rounded-md border border-[#9146FF]/50 bg-[#9146FF]/15 overflow-hidden"
-        >
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#9146FF] opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#c79bff]" />
-          </span>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#c79bff] whitespace-nowrap">
-            Multi-Bot
-          </span>
-        </motion.div>
-        </ThemedTooltip>
-      )}
-    </AnimatePresence>
-  );
+  return null;
 }
 
 /**

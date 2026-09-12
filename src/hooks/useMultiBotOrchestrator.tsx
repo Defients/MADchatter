@@ -1,7 +1,10 @@
 import { useEffect, useRef, type FC } from "react";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useAutoForgeBot } from "./useAutoForgeBot";
-import { botCoordinator } from "../lib/botCoordinator";
+import { botCoordinator, DEFAULT_FLOOR_GAP_MS } from "../lib/botCoordinator";
+
+/** Supercharge mode shrinks the floor gap so bots can talk closer together. */
+const SUPERCHARGE_FLOOR_GAP_MS = 2_000;
 
 /**
  * useMultiBotOrchestrator — mounts one useAutoForgeBot loop per active bot and
@@ -20,6 +23,7 @@ import { botCoordinator } from "../lib/botCoordinator";
 export function useMultiBotOrchestrator() {
   const multiBotActive = useAppStore(selectMultiBotActive);
   const bots = useAppStore((s) => s.bots);
+  const superchargeActive = useAppStore((s) => s.superchargeActive);
   // Track which bot ids we've mounted loops for so we can (re)mount on changes.
   const mountedRef = useRef<Set<string>>(new Set());
 
@@ -30,6 +34,13 @@ export function useMultiBotOrchestrator() {
       mountedRef.current.clear();
     }
   }, [multiBotActive]);
+
+  // Supercharge mode: shrink the coordinator floor gap so bots can talk
+  // closer together. Restore the default when it's off. (The bid window is
+  // left at its default — we still want competing bots to resolve fairly.)
+  useEffect(() => {
+    botCoordinator.configure({ floorGapMs: superchargeActive ? SUPERCHARGE_FLOOR_GAP_MS : DEFAULT_FLOOR_GAP_MS });
+  }, [superchargeActive]);
 
   // Mount a loop for every active, authenticated bot. We render a hidden
   // component per bot that calls useAutoForgeBot (hooks must be called in a

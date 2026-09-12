@@ -424,6 +424,13 @@ interface AppState {
   lightThemeActive: boolean;
   setLightThemeActive: (active: boolean) => void;
 
+  /** Runtime-only (not persisted) — toggled by typing "supercharge". Removes AutoForge
+   *  rate restrictions, shortens the coordinator floor gap so bots talk closer together,
+   *  bypasses the vibe check, and injects a cross-bot conversational directive so bots
+   *  reference each other. Easter egg — ephemeral, resets on reload. */
+  superchargeActive: boolean;
+  setSuperchargeActive: (active: boolean) => void;
+
   streamCaptureActive: boolean;
   setStreamCaptureActive: (active: boolean) => void;
 
@@ -501,7 +508,8 @@ interface AppState {
 
   // ─── Director Notes (single-bot mode) ────────────────────
   directorNotes: DirectorNote[];
-  addDirectorNote: (text: string) => void;
+  addDirectorNote: (text: string, durationMs?: number | null) => void;
+  removeDirectorNote: (noteId: string) => void;
   clearDirectorNotes: () => void;
 
   userProfiles: UserProfile[];
@@ -705,7 +713,8 @@ interface AppState {
   addBotActionHistoryEntry: (id: string, entry: Omit<ActionHistoryEntry, "id">) => void;
   updateBotActionHistoryEntry: (id: string, entryId: string, updates: Partial<ActionHistoryEntry>) => void;
   updateBotEnhancedStats: (id: string, updates: Partial<EnhancedSessionStats>) => void;
-  addBotDirectorNote: (id: string, text: string) => void;
+  addBotDirectorNote: (id: string, text: string, durationMs?: number | null) => void;
+  removeBotDirectorNote: (id: string, noteId: string) => void;
   clearBotDirectorNotes: (id: string) => void;
 
   // ─── First Message Mode (multi-bot) ────────────────────────────
@@ -1275,6 +1284,8 @@ export const useAppStore = create<AppState>()(
 
       lightThemeActive: false,
       setLightThemeActive: (active) => set({ lightThemeActive: active }),
+      superchargeActive: false,
+      setSuperchargeActive: (active) => set({ superchargeActive: active }),
 
       streamCaptureActive: false,
       setStreamCaptureActive: (active) => set({ streamCaptureActive: active }),
@@ -1340,8 +1351,16 @@ export const useAppStore = create<AppState>()(
 
       // ─── Director Notes (single-bot mode) ────────────────────
       directorNotes: [],
-      addDirectorNote: (text) => set((state) => ({
-        directorNotes: [...state.directorNotes, { id: generateId(), text, createdAt: Date.now() }].slice(-50),
+      addDirectorNote: (text, durationMs) => set((state) => ({
+        directorNotes: [...state.directorNotes, {
+          id: generateId(),
+          text,
+          createdAt: Date.now(),
+          expiresAt: durationMs ? Date.now() + durationMs : null,
+        }].slice(-50),
+      })),
+      removeDirectorNote: (noteId) => set((state) => ({
+        directorNotes: state.directorNotes.filter((n) => n.id !== noteId),
       })),
       clearDirectorNotes: () => set({ directorNotes: [] }),
 
@@ -2317,13 +2336,26 @@ export const useAppStore = create<AppState>()(
             b.id === id ? { ...b, runtime: { ...b.runtime, enhancedStats: { ...b.runtime.enhancedStats, ...updates } } } : b
           ),
         })),
-      addBotDirectorNote: (id, text) =>
+      addBotDirectorNote: (id, text, durationMs) =>
         set((state) => ({
           bots: state.bots.map((b) => {
             if (b.id !== id) return b;
-            const notes = [...b.runtime.directorNotes, { id: generateId(), text, createdAt: Date.now() }].slice(-50);
+            const notes = [...b.runtime.directorNotes, {
+              id: generateId(),
+              text,
+              createdAt: Date.now(),
+              expiresAt: durationMs ? Date.now() + durationMs : null,
+            }].slice(-50);
             return { ...b, runtime: { ...b.runtime, directorNotes: notes } };
           }),
+        })),
+      removeBotDirectorNote: (id, noteId) =>
+        set((state) => ({
+          bots: state.bots.map((b) =>
+            b.id === id
+              ? { ...b, runtime: { ...b.runtime, directorNotes: b.runtime.directorNotes.filter((n) => n.id !== noteId) } }
+              : b
+          ),
         })),
       clearBotDirectorNotes: (id) =>
         set((state) => ({

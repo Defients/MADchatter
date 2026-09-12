@@ -97,6 +97,7 @@ const HOTKEYS = [
   { keys: "C", label: "Capture Stream" },
   { keys: "A", label: "Toggle AutoForge" },
   { keys: "T", label: "Cycle Theme" },
+  { keys: "Ctrl+Shift+S", label: "⚡ Supercharge (Easter egg)" },
   { keys: "Ctrl+B", label: "Collapse Context Rail" },
   { keys: "1-9", label: "Toggle Bots (multi-bot)" },
   { keys: "?", label: "All Keyboard Shortcuts" },

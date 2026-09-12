@@ -161,6 +161,23 @@ export function retrieveRelevantMemories(
   };
 }
 
+/**
+ * Build the [DIRECTOR NOTES] context block from a list of notes. Filters out
+ * expired notes (expiresAt < now) so the AI never sees stale directives.
+ * Returns an empty string when there are no active notes.
+ */
+export function formatDirectorNotesContext(directorNotes?: DirectorNote[] | null): string {
+  if (!directorNotes || directorNotes.length === 0) return "";
+  const now = Date.now();
+  const active = directorNotes.filter((n) => n.expiresAt == null || n.expiresAt > now);
+  if (active.length === 0) return "";
+  const parts: string[] = [`[DIRECTOR NOTES — from the streamer, follow these directives]`];
+  for (const note of active.slice(-10)) {
+    parts.push(`- ${note.text}`);
+  }
+  return parts.join("\n");
+}
+
 export function formatMemoryContext(
   retrieved: { memories: RetrievedMemory[]; profiles: UserProfile[]; jokes: InsideJoke[]; personality: PersonalityState | null },
   sessionInfo?: { memoriesFormed: number; jokesCreated: number },
@@ -169,12 +186,8 @@ export function formatMemoryContext(
   const parts: string[] = [];
 
   // Director notes — highest priority, always injected first
-  if (directorNotes && directorNotes.length > 0) {
-    parts.push(`[DIRECTOR NOTES — from the streamer, follow these directives]`);
-    for (const note of directorNotes.slice(-10)) {
-      parts.push(`- ${note.text}`);
-    }
-  }
+  const directorCtx = formatDirectorNotesContext(directorNotes);
+  if (directorCtx) parts.push(directorCtx);
 
   // Personality
   if (retrieved.personality) {

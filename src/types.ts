@@ -155,11 +155,18 @@ export interface AutoMemory {
  * Unlike ChatSender messages, director notes are never sent to the chat
  * channel. They are injected into the bot's AutoForge context as a
  * high-priority directive so the bot can adapt its behavior mid-stream.
+ *
+ * Timed notes: `expiresAt` is a Unix-ms timestamp. When set, the note is
+ * filtered out of the AI context after it expires (it remains in storage
+ * until cleared so the user can see what was sent). `null` / `undefined`
+ * means the note lasts until manually canceled.
  */
 export interface DirectorNote {
   id: string;
   text: string;
   createdAt: number;
+  /** Optional Unix-ms expiry timestamp. null = until manually canceled. */
+  expiresAt?: number | null;
 }
 
 export interface UserProfile {

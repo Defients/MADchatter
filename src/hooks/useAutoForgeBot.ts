@@ -8,7 +8,7 @@ import { playSfx } from "../lib/sfx";
 import { speakMessage } from "../lib/tts";
 import { getActiveProvider, getApiKey } from "../lib/keys";
 import { formatChatLog } from "../lib/chatUtils";
-import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
+import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
 import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/jokeEngine";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
@@ -78,6 +78,7 @@ export function useAutoForgeBot(botId: string) {
 
   const checkBot = async (force = false) => {
     const store = useAppStore.getState();
+    const supercharged = store.superchargeActive;
     if (isForgingRef.current) {
       // Watchdog: if a previous check's await never settled (hung SDK call,
       // dead-socket send, etc.) the flag would wedge this bot forever — the
@@ -292,6 +293,10 @@ export function useAutoForgeBot(botId: string) {
           memoriesFormed: runtime.personalityState?.sessionMemoriesFormed ?? 0,
           jokesCreated: runtime.personalityState?.sessionJokesCreated ?? 0,
         }, runtime.directorNotes);
+      } else {
+        // Director notes are user-authored directives, not auto-extracted
+        // memories — inject them even when AutoMemory is disabled.
+        memoryContext = formatDirectorNotesContext(runtime.directorNotes);
       }
 
       // ── Sentiment context (per-bot) ──────────────────────────────────────
@@ -357,7 +362,7 @@ export function useAutoForgeBot(botId: string) {
       const botLimiter = getBotRateLimiter(botId);
       syncBotRateLimiterConfig(botId, store.rateLimitConfig, store.perActionRateLimits);
 
-      if (!force && !botLimiter.canAct()) {
+      if (!force && !supercharged && !botLimiter.canAct()) {
         const rateStats = botLimiter.getStats();
         store.setBotAutoForgeNextActionMs(botId, Date.now() + Math.max(30000, rateStats.msUntilNextAllowed));
         return;
@@ -365,8 +370,9 @@ export function useAutoForgeBot(botId: string) {
 
       // ── Vibe check: skip the AI call entirely when the moment is dead ────
       // Cheap local heuristic — never skips mentions or spikes. Saves tokens
-      // and GPU cycles during dead/offline periods.
-      if (!force) {
+      // and GPU cycles during dead/offline periods. Supercharge mode bypasses
+      // it entirely — the user asked for maximum engagement.
+      if (!force && !supercharged) {
         const vibe = vibeCheck({
           isMentioned,
           activitySpike,
@@ -429,6 +435,13 @@ export function useAutoForgeBot(botId: string) {
         audioEnergyLabel: store.audioEnergy?.label,
         streamEvents: store.streamEvents.slice(-5),
         firstMessageMode: isFirstMessage,
+        superchargeMode: supercharged,
+        fellowBotUsernames: supercharged
+          ? store.bots
+              .filter((b) => b.id !== botId && b.active && b.session)
+              .map((b) => b.session!.username)
+              .filter(Boolean)
+          : undefined,
       });
 
       // First Message lock release helper. Safe to call on any exit path: it
@@ -553,7 +566,7 @@ export function useAutoForgeBot(botId: string) {
 
       if (decision.decision === "full_forge") {
         // C5: Per-action rate limit check for full_forge
-        if (!force && !botLimiter.canAct("full_forge")) {
+        if (!force && !supercharged && !botLimiter.canAct("full_forge")) {
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "silence",
@@ -620,19 +633,23 @@ export function useAutoForgeBot(botId: string) {
             const messageToSend = bestVariant.message;
             if (!messageToSend) throw new Error("Best variant had no message");
 
-            // Dedup guard (per-bot sent history)
-            const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
-            const payloadLower = messageToSend.toLowerCase().trim();
-            if (recentSent.includes(payloadLower)) {
-              decision.decision = "deliberate_silence";
-              decision.reason = "Duplicate of recently sent message (full_forge variant).";
-              store.addBotAutoForgeEvent(botId, {
-                timestamp: Date.now(),
-                type: "silence",
-                severity: "low",
-                summary: `[${bot.session.username}] full_forge variant was duplicate — downgraded to silence`,
-                details: { message: messageToSend },
-              });
+            // Dedup guard (per-bot sent history) — bypassed for forced checks
+            // (the user explicitly requested action; the SendGuard dedup at the
+            // Twitch level still catches exact duplicates before they go out).
+            if (!force) {
+              const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
+              const payloadLower = messageToSend.toLowerCase().trim();
+              if (recentSent.includes(payloadLower)) {
+                decision.decision = "deliberate_silence";
+                decision.reason = "Duplicate of recently sent message (full_forge variant).";
+                store.addBotAutoForgeEvent(botId, {
+                  timestamp: Date.now(),
+                  type: "silence",
+                  severity: "low",
+                  summary: `[${bot.session.username}] full_forge variant was duplicate — downgraded to silence`,
+                  details: { message: messageToSend },
+                });
+              }
             } else {
               // Request the speaker floor
               const candidate: BotCandidate = {
@@ -756,7 +773,7 @@ export function useAutoForgeBot(botId: string) {
           decision.action_payload.length * 65));
 
         // C5: Per-action rate limit check for quick_followup
-        if (!force && !botLimiter.canAct("quick_followup")) {
+        if (!force && !supercharged && !botLimiter.canAct("quick_followup")) {
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "silence",
@@ -766,13 +783,18 @@ export function useAutoForgeBot(botId: string) {
           decision.decision = "deliberate_silence";
           decision.reason = "quick_followup per-action rate limit reached.";
         } else {
-        // Dedup guard (per-bot sent history)
-        const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
-        const payloadLower = decision.action_payload.toLowerCase().trim();
-        if (recentSent.includes(payloadLower)) {
-          decision.decision = "deliberate_silence";
-          decision.reason = "Duplicate of recently sent message.";
-        } else {
+        // Dedup guard (per-bot sent history) — bypassed for forced checks
+        let isFollowupDup = false;
+        if (!force) {
+          const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
+          const payloadLower = decision.action_payload.toLowerCase().trim();
+          if (recentSent.includes(payloadLower)) {
+            isFollowupDup = true;
+            decision.decision = "deliberate_silence";
+            decision.reason = "Duplicate of recently sent message.";
+          }
+        }
+        if (!isFollowupDup) {
           // Request the speaker floor at scheduling time so the coordinator's
           // 15s floor gap protects the delayed send from overlapping with
           // other bots.
@@ -867,10 +889,12 @@ export function useAutoForgeBot(botId: string) {
           }, delayMs);
         }
         }
-      } else if (decision.decision !== "deliberate_silence" && decision.decision !== "meta_observation" && decision.action_payload) {
+      } else if (decision.decision !== "deliberate_silence" && decision.action_payload) {
         // Direct-send path for short_reaction, emote_only, joke_callback, meta_observation
+        // (matches the legacy useAutoForge send path — meta_observation is a
+        // valid action that sends a light meta comment, not a silence).
         // C5: Per-action rate limit check
-        if (!force && !botLimiter.canAct(decision.decision)) {
+        if (!force && !supercharged && !botLimiter.canAct(decision.decision)) {
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "silence",
@@ -918,13 +942,20 @@ export function useAutoForgeBot(botId: string) {
           }
         }
 
-        // Dedup guard (per-bot sent history)
-        const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
-        const payloadLower = decision.action_payload.toLowerCase().trim();
-        if (recentSent.includes(payloadLower)) {
-          decision.decision = "deliberate_silence";
-          decision.reason = "Duplicate of recently sent message.";
-        } else {
+        // Dedup guard (per-bot sent history) — bypassed for forced checks
+        // (the user explicitly requested action; the SendGuard dedup at the
+        // Twitch level still catches exact duplicates before they go out).
+        let isDup = false;
+        if (!force) {
+          const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
+          const payloadLower = decision.action_payload.toLowerCase().trim();
+          if (recentSent.includes(payloadLower)) {
+            isDup = true;
+            decision.decision = "deliberate_silence";
+            decision.reason = "Duplicate of recently sent message.";
+          }
+        }
+        if (!isDup) {
           // Request the speaker floor from the coordinator (unless forced).
           const candidate: BotCandidate = {
             decision: effectiveDecision,
@@ -1058,9 +1089,20 @@ export function useAutoForgeBot(botId: string) {
       // silences to reduce unnecessary AI calls during dead periods.
       nextMin = computeAdaptiveBackoff(consecutiveSilenceRef.current, nextMin, isMentioned, activitySpike);
 
+      // Supercharge mode: clamp the next-check interval short so bots re-engage
+      // quickly and can hold a cross-bot conversation. The model's own
+      // estimated_next_action_minutes is respected but capped at 1.5 min, and
+      // the adaptive backoff is skipped (silence shouldn't lengthen the gap
+      // when the user asked for maximum engagement).
+      if (supercharged) {
+        nextMin = Math.min(nextMin, 1.5);
+      }
+
       // A8: Manual activity awareness — delay next AutoForge action if user
       // recently acted or is typing. Mirrors the legacy useAutoForge manual
       // cooldown. Prevents bots from stepping on the user's manual sends.
+      // Supercharge mode still respects this — the user's manual sends always
+      // outrank autonomous activity (realtime-first).
       const nowMs = Date.now();
       const manualCooldown = computeManualCooldown(
         useAppStore.getState().lastManualSendMs,

@@ -15,6 +15,7 @@ import {
   SENTIMENT_AWARENESS_PROMPT,
   buildBotIdentityPrompt,
   FIRST_MESSAGE_DIRECTIVE,
+  SUPERCHARGE_DIRECTIVE,
 } from "./prompts";
 import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
 import {
@@ -922,6 +923,13 @@ export interface AutoForgeParams {
    *  so the bot's next action (short_reaction / emote_only / quick_followup)
    *  or full_forge generation leans toward a natural entrance. Additive only. */
   firstMessageMode?: boolean;
+  /** Supercharge Mode (Easter egg): when true, appends a directive telling the
+   *  bot to converse with the other bots in the channel — reference them by
+   *  name, react to their messages, build on their bits. Additive only. */
+  superchargeMode?: boolean;
+  /** Supercharge Mode: the list of other active bot usernames in the channel,
+   *  so the bot knows who its conversation partners are. */
+  fellowBotUsernames?: string[];
 }
 
 export interface AutoForgeBriefingParams {
@@ -1080,7 +1088,7 @@ Title: ${params.streamMetadata?.title || "Unknown"}
 
 YOUR IDENTITY:
 You are logged in as "${params.botUsername || "Unknown"}". This is your Twitch/Kick handle — when someone mentions this name in chat, they are talking to YOU, not the streamer. The streamer is "${params.streamMetadata?.channelName || "Unknown"}". Do not confuse yourself with the streamer.
-
+${params.superchargeMode && params.fellowBotUsernames && params.fellowBotUsernames.length > 0 ? `\nFELLOW BOT ACCOUNTS (your conversation partners right now): ${params.fellowBotUsernames.join(", ")}. Treat their messages in chat as if they were any other chatter — react to them, reference them by name, build bits with them.\n` : ""}
 LIVE SIGNALS:
 Time since last action: ${timeSinceLastAction} minutes
 Current chat activity level (0-4): ${params.currentChatActivity || 0}
@@ -1117,7 +1125,7 @@ ${params.force ? "\nFORCE MODE: The user has manually forced this action. You MU
 ${params.antiRepetitionContext ? `\n\n${params.antiRepetitionContext}` : ""}
 DECIDE NOW.`;
 
-  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
+  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
 
   let lastError: Error | null = null;
   let usedFallback = false;

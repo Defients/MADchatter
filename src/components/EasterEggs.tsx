@@ -36,6 +36,7 @@ const SECRET_LAB_FORTUNES = [
   "AutoForge never sleeps. It only hungers.",
   "EleGiggle is the sound of one hand clapping",
   "Kreygasm: the face of pure forge energy",
+  "Supercharge: the bots are talking to each other now. Good luck.",
 ];
 
 // ─── Confetti ────────────────────────────────────────────────────────────────
@@ -249,6 +250,30 @@ export function EasterEggs() {
     }
   }, [updateConfig]);
 
+  // ── Supercharge Mode toggle (via Ctrl+Shift+S hotkey from App.tsx) ────────
+  // The secret-word mechanism can't handle "supercharge" because its letters
+  // (s, p, c, h, a, r) collide with single-key hotkeys. Instead, App.tsx
+  // dispatches 'easter-egg-supercharge-toggle' on Ctrl+Shift+S and we handle
+  // the toggle + visual feedback here.
+  useEffect(() => {
+    const onToggle = () => {
+      const s = useAppStore.getState();
+      const next = !s.superchargeActive;
+      s.setSuperchargeActive(next);
+      playSfx('secret_word');
+      if (next) {
+        setConfetti(generateConfetti(80));
+        toast.success('⚡ SUPERCHARGE MODE — bots unleashed, rate limits off, they\'re talking to each other now. Press Ctrl+Shift+S again to disable.', { duration: 5000 });
+        window.dispatchEvent(new CustomEvent('easter-egg-supercharge', { detail: { active: true } }));
+      } else {
+        toast.success('Supercharge disabled. Bots return to normal pacing.', { duration: 3000 });
+        window.dispatchEvent(new CustomEvent('easter-egg-supercharge', { detail: { active: false } }));
+      }
+    };
+    window.addEventListener('easter-egg-supercharge-toggle', onToggle);
+    return () => window.removeEventListener('easter-egg-supercharge-toggle', onToggle);
+  }, []);
+
   // ── 3. MAX RAGE Slider Combo ─────────────────────────────────────────────
   useEffect(() => {
     const bothMaxed = config.humorLevel === 100 && config.chaosLevel === 100;
@@ -307,6 +332,11 @@ export function EasterEggs() {
       {maxRageActive && (
         <div className="fixed inset-0 z-[99996] pointer-events-none max-rage-vignette" />
       )}
+
+      {/* Supercharge mode — full theme applied via .supercharge-theme class
+          on the document root (see App.tsx + index.css). The animated rainbow
+          border, puffy clouds, and sparkles are all CSS-driven, so no overlay
+          element is needed here. */}
 
       {/* Secret Lab overlay */}
       <AnimatePresence>

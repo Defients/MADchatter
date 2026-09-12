@@ -2236,6 +2236,21 @@
   background: radial-gradient(ellipse at center, transparent 40%, rgba(239, 68, 68, 0.15) 100%);
 }
 
+/* ── Easter Egg: Supercharge Mode (animated rainbow border) ────────────────── */
+
+@keyframes supercharge-border-shift {
+  0%   { box-shadow: inset 0 0 0 2px rgba(244, 114, 182, 0.8), inset 0 0 24px 4px rgba(244, 114, 182, 0.25); }
+  20%  { box-shadow: inset 0 0 0 2px rgba(251, 191, 36, 0.8), inset 0 0 24px 4px rgba(251, 191, 36, 0.25); }
+  40%  { box-shadow: inset 0 0 0 2px rgba(52, 211, 153, 0.8), inset 0 0 24px 4px rgba(52, 211, 153, 0.25); }
+  60%  { box-shadow: inset 0 0 0 2px rgba(96, 165, 250, 0.8), inset 0 0 24px 4px rgba(96, 165, 250, 0.25); }
+  80%  { box-shadow: inset 0 0 0 2px rgba(167, 139, 250, 0.8), inset 0 0 24px 4px rgba(167, 139, 250, 0.25); }
+  100% { box-shadow: inset 0 0 0 2px rgba(244, 114, 182, 0.8), inset 0 0 24px 4px rgba(244, 114, 182, 0.25); }
+}
+
+.supercharge-border {
+  animation: supercharge-border-shift 3s linear infinite;
+}
+
 /* ── Easter Egg: Glitch Text (Secret Lab) ────────────────────────────────── */
 
 @keyframes glitch-skew {
@@ -3315,4 +3330,353 @@
 
 .corrupture .hype-mode-overlay::before {
   background: radial-gradient(ellipse at center, transparent 50%, rgba(var(--cr-gold), 0.06) 100%);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Easter Egg: SUPERCHARGE THEME — hot pink + rainbow + puffy clouds + sparkles
+   Activated by typing "supercharge". Overrides all other themes while active.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.supercharge-theme {
+  /* Hot-pink dominant palette with rainbow accents */
+  --sc-bg:          #1a0820;
+  --sc-surface:     #2a0d35;
+  --sc-surface-2:   #341042;
+  --sc-surface-3:   #3f1452;
+  --sc-text:        #ffe4f3;
+  --sc-text-dim:    #d8a8c8;
+  --sc-border:      rgba(255, 105, 180, 0.18);
+  --sc-border-2:    rgba(255, 105, 180, 0.30);
+  --sc-pink:        255, 105, 180;
+  --sc-pink-hot:    255, 20, 147;
+  --sc-pink-soft:   255, 182, 217;
+  --sc-rainbow-1:   255, 105, 180;   /* pink */
+  --sc-rainbow-2:   255, 165, 0;     /* orange */
+  --sc-rainbow-3:   255, 215, 0;     /* yellow */
+  --sc-rainbow-4:   102, 255, 153;   /* green */
+  --sc-rainbow-5:   100, 200, 255;   /* blue */
+  --sc-rainbow-6:   186, 130, 255;   /* violet */
+}
+
+/* ── Root & surfaces ─────────────────────────────────────────────────────── */
+
+.supercharge-theme {
+  background-color: var(--sc-bg) !important;
+  color: var(--sc-text) !important;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Puffy cloud backdrop — soft pink-tinted clouds drifting across the viewport */
+.supercharge-theme::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 280px 90px at 12% 18%, rgba(255, 182, 217, 0.22), transparent 70%),
+    radial-gradient(ellipse 340px 110px at 78% 28%, rgba(255, 105, 180, 0.18), transparent 70%),
+    radial-gradient(ellipse 260px 80px at 45% 65%, rgba(186, 130, 255, 0.16), transparent 70%),
+    radial-gradient(ellipse 300px 100px at 88% 78%, rgba(100, 200, 255, 0.14), transparent 70%),
+    radial-gradient(ellipse 240px 75px at 22% 88%, rgba(255, 215, 0, 0.12), transparent 70%);
+  animation: sc-clouds-drift 24s ease-in-out infinite alternate;
+  opacity: 0.9;
+}
+
+@keyframes sc-clouds-drift {
+  0%   { transform: translateX(0) translateY(0) scale(1); }
+  50%  { transform: translateX(20px) translateY(-10px) scale(1.04); }
+  100% { transform: translateX(-15px) translateY(8px) scale(0.98); }
+}
+
+/* Sparkle layer — tiny twinkling stars */
+.supercharge-theme::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(2px 2px at 8% 12%,  rgba(255, 255, 255, 0.9), transparent 50%),
+    radial-gradient(1.5px 1.5px at 22% 42%, rgba(255, 182, 217, 0.9), transparent 50%),
+    radial-gradient(2px 2px at 38% 78%, rgba(255, 215, 0, 0.85), transparent 50%),
+    radial-gradient(1.5px 1.5px at 55% 22%, rgba(186, 130, 255, 0.9), transparent 50%),
+    radial-gradient(2px 2px at 68% 58%, rgba(100, 200, 255, 0.85), transparent 50%),
+    radial-gradient(1.5px 1.5px at 82% 88%, rgba(255, 105, 180, 0.9), transparent 50%),
+    radial-gradient(2px 2px at 92% 32%, rgba(102, 255, 153, 0.85), transparent 50%),
+    radial-gradient(1.5px 1.5px at 15% 68%, rgba(255, 255, 255, 0.85), transparent 50%),
+    radial-gradient(1.5px 1.5px at 48% 8%,  rgba(255, 165, 0, 0.8), transparent 50%),
+    radial-gradient(2px 2px at 75% 48%, rgba(255, 255, 255, 0.9), transparent 50%);
+  background-size: 100% 100%;
+  animation: sc-sparkle-twinkle 3.5s ease-in-out infinite alternate;
+}
+
+@keyframes sc-sparkle-twinkle {
+  0%   { opacity: 0.35; transform: scale(1); }
+  50%  { opacity: 1;    transform: scale(1.08); }
+  100% { opacity: 0.5;  transform: scale(0.96); }
+}
+
+/* ── Surface overrides ────────────────────────────────────────────────────── */
+
+.supercharge-theme .bg-\[\#121217\],
+.supercharge-theme .bg-\[\#121217\]\/95,
+.supercharge-theme .bg-\[\#121217\]\/90,
+.supercharge-theme .bg-\[\#121217\]\/80 {
+  background-color: var(--sc-surface) !important;
+}
+
+.supercharge-theme .bg-\[\#0F0F12\],
+.supercharge-theme .bg-\[\#0F0F12\]\/95 {
+  background-color: var(--sc-surface-2) !important;
+}
+
+/* Smoked-glass panels: pink-tinted translucent layer + soft glow */
+.supercharge-theme .bg-\[\#121217\]\/95,
+.supercharge-theme .bg-\[\#121217\]\/90 {
+  backdrop-filter: blur(18px) saturate(160%) hue-rotate(-15deg);
+  -webkit-backdrop-filter: blur(18px) saturate(160%) hue-rotate(-15deg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 105, 180, 0.06),
+    inset 0 0 0 1px rgba(255, 105, 180, 0.03),
+    0 8px 32px rgba(60, 0, 40, 0.5);
+}
+
+/* ── Borders ─────────────────────────────────────────────────────────────── */
+
+.supercharge-theme .border-white\/5 {
+  border-color: var(--sc-border) !important;
+}
+
+.supercharge-theme .border-white\/10 {
+  border-color: var(--sc-border-2) !important;
+}
+
+.supercharge-theme .border-white\/\[0\.02\] {
+  border-color: rgba(255, 105, 180, 0.04) !important;
+}
+
+/* ── Text colour shifts ──────────────────────────────────────────────────── */
+
+.supercharge-theme .text-\[\#e0e0e6\] {
+  color: var(--sc-text) !important;
+}
+
+.supercharge-theme .text-gray-300 { color: #f0c8e0 !important; }
+.supercharge-theme .text-gray-400 { color: #d8a8c8 !important; }
+.supercharge-theme .text-gray-500 { color: #b88aa8 !important; }
+.supercharge-theme .text-gray-600 { color: #9870a0 !important; }
+
+/* ── Accent shifts: everything leans hot-pink/rainbow ─────────────────────── */
+
+.supercharge-theme .text-orange-400,
+.supercharge-theme .text-orange-500 {
+  color: rgb(var(--sc-pink)) !important;
+}
+
+.supercharge-theme .text-orange-300 {
+  color: rgb(var(--sc-pink-soft)) !important;
+}
+
+.supercharge-theme .text-orange-400\/60,
+.supercharge-theme .text-orange-400\/50 {
+  color: rgba(var(--sc-pink), 0.6) !important;
+}
+
+.supercharge-theme .text-purple-400,
+.supercharge-theme .text-purple-500 {
+  color: rgb(var(--sc-pink-hot)) !important;
+}
+
+.supercharge-theme .text-purple-300,
+.supercharge-theme .text-purple-200 {
+  color: #ffb6d9 !important;
+}
+
+.supercharge-theme .text-teal-400,
+.supercharge-theme .text-teal-500 {
+  color: rgb(var(--sc-rainbow-4)) !important;
+}
+
+.supercharge-theme .text-blue-400,
+.supercharge-theme .text-blue-500 {
+  color: rgb(var(--sc-rainbow-5)) !important;
+}
+
+.supercharge-theme .text-red-400 {
+  color: rgb(var(--sc-pink-hot)) !important;
+}
+
+.supercharge-theme .text-yellow-400,
+.supercharge-theme .text-yellow-200 {
+  color: rgb(var(--sc-rainbow-3)) !important;
+}
+
+.supercharge-theme .text-green-400,
+.supercharge-theme .text-green-500 {
+  color: rgb(var(--sc-rainbow-4)) !important;
+}
+
+/* ── Background accent shifts ────────────────────────────────────────────── */
+
+.supercharge-theme .bg-orange-500\/10,
+.supercharge-theme .bg-orange-500\/20,
+.supercharge-theme .bg-orange-500\/5 {
+  background-color: rgba(var(--sc-pink), 0.10) !important;
+}
+
+.supercharge-theme .bg-purple-500\/10,
+.supercharge-theme .bg-purple-500\/20 {
+  background-color: rgba(var(--sc-pink-hot), 0.10) !important;
+}
+
+.supercharge-theme .bg-teal-500\/5,
+.supercharge-theme .bg-teal-500\/10 {
+  background-color: rgba(var(--sc-rainbow-4), 0.08) !important;
+}
+
+.supercharge-theme .bg-blue-500\/15,
+.supercharge-theme .bg-blue-500\/20 {
+  background-color: rgba(var(--sc-rainbow-5), 0.10) !important;
+}
+
+.supercharge-theme .bg-red-500\/10,
+.supercharge-theme .bg-red-500\/15,
+.supercharge-theme .bg-red-500\/20 {
+  background-color: rgba(var(--sc-pink-hot), 0.10) !important;
+}
+
+.supercharge-theme .bg-green-500\/10 {
+  background-color: rgba(var(--sc-rainbow-4), 0.10) !important;
+}
+
+.supercharge-theme .bg-yellow-500\/10,
+.supercharge-theme .bg-yellow-500\/15 {
+  background-color: rgba(var(--sc-rainbow-3), 0.10) !important;
+}
+
+/* ── Black overlays → deep magenta ────────────────────────────────────────── */
+
+.supercharge-theme .bg-black\/40,
+.supercharge-theme .bg-black\/30,
+.supercharge-theme .bg-black\/60,
+.supercharge-theme .bg-black\/20 {
+  background-color: rgba(26, 8, 32, 0.65) !important;
+}
+
+/* ── White overlays → pink-tinted ─────────────────────────────────────────── */
+
+.supercharge-theme .bg-white\/5,
+.supercharge-theme .bg-white\/\[0\.02\],
+.supercharge-theme .bg-white\/\[0\.04\] {
+  background-color: rgba(255, 105, 180, 0.04) !important;
+}
+
+.supercharge-theme .bg-white\/10 {
+  background-color: rgba(255, 105, 180, 0.06) !important;
+}
+
+.supercharge-theme .bg-white\/15 {
+  background-color: rgba(255, 105, 180, 0.10) !important;
+}
+
+/* ── Border accent shifts ─────────────────────────────────────────────────── */
+
+.supercharge-theme .border-orange-500\/50,
+.supercharge-theme .border-orange-500\/20 {
+  border-color: rgba(var(--sc-pink), 0.35) !important;
+}
+
+.supercharge-theme .border-purple-500\/20,
+.supercharge-theme .border-purple-500\/30 {
+  border-color: rgba(var(--sc-pink-hot), 0.25) !important;
+}
+
+.supercharge-theme .border-teal-500\/20 {
+  border-color: rgba(var(--sc-rainbow-4), 0.25) !important;
+}
+
+.supercharge-theme .border-blue-500\/20 {
+  border-color: rgba(var(--sc-rainbow-5), 0.25) !important;
+}
+
+.supercharge-theme .border-red-500\/20 {
+  border-color: rgba(var(--sc-pink-hot), 0.25) !important;
+}
+
+.supercharge-theme .border-yellow-500\/40 {
+  border-color: rgba(var(--sc-rainbow-3), 0.35) !important;
+}
+
+.supercharge-theme .border-green-500\/20 {
+  border-color: rgba(var(--sc-rainbow-4), 0.25) !important;
+}
+
+/* ── Glow & shadow shifts ─────────────────────────────────────────────────── */
+
+.supercharge-theme .shadow-\[0_0_8px_rgba\(239\,68\,68\,0\.8\)\] {
+  box-shadow: 0 0 8px rgba(var(--sc-pink-hot), 0.8) !important;
+}
+
+.supercharge-theme .shadow-\[0_0_10px_rgba\(145\,70\,255\,0\.3\)\] {
+  box-shadow: 0 0 10px rgba(var(--sc-pink-hot), 0.4) !important;
+}
+
+/* ── Scrollbar → pink ────────────────────────────────────────────────────── */
+
+.supercharge-theme ::-webkit-scrollbar-track {
+  background: rgba(255, 105, 180, 0.04) !important;
+}
+
+.supercharge-theme ::-webkit-scrollbar-thumb {
+  background: rgba(255, 105, 180, 0.30) !important;
+  border-radius: 4px;
+}
+
+.supercharge-theme ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 105, 180, 0.50) !important;
+}
+
+/* ── Animated rainbow border around the viewport (replaces the old overlay) ─ */
+
+.supercharge-theme body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 99995;
+  pointer-events: none;
+  animation: sc-rainbow-border 4s linear infinite;
+}
+
+@keyframes sc-rainbow-border {
+  0%   { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-1)), inset 0 0 30px 6px rgba(var(--sc-rainbow-1), 0.20); }
+  16%  { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-2)), inset 0 0 30px 6px rgba(var(--sc-rainbow-2), 0.20); }
+  33%  { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-3)), inset 0 0 30px 6px rgba(var(--sc-rainbow-3), 0.20); }
+  50%  { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-4)), inset 0 0 30px 6px rgba(var(--sc-rainbow-4), 0.20); }
+  66%  { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-5)), inset 0 0 30px 6px rgba(var(--sc-rainbow-5), 0.20); }
+  83%  { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-6)), inset 0 0 30px 6px rgba(var(--sc-rainbow-6), 0.20); }
+  100% { box-shadow: inset 0 0 0 3px rgb(var(--sc-rainbow-1)), inset 0 0 30px 6px rgba(var(--sc-rainbow-1), 0.20); }
+}
+
+/* ── Hype mode overlay → pink pulse ───────────────────────────────────────── */
+
+.supercharge-theme .hype-mode-overlay {
+  animation: hype-pulse-glow-sc 1.2s ease-in-out infinite;
+}
+
+@keyframes hype-pulse-glow-sc {
+  0%, 100% { box-shadow: inset 0 0 60px 10px rgba(var(--sc-pink), 0.10); }
+  50%      { box-shadow: inset 0 0 100px 20px rgba(var(--sc-pink-hot), 0.16); }
+}
+
+.supercharge-theme .hype-mode-overlay::before {
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(var(--sc-pink), 0.08) 100%);
+}
+
+/* ── Keep content above the decorative ::before/::after layers ─────────────── */
+
+.supercharge-theme > * {
+  position: relative;
+  z-index: 1;
 }
