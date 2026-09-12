@@ -218,12 +218,15 @@ export function AutoForgeHUD() {
 
   // Apply the pagination offset. Offset 0 = most recent; higher = older.
   // Clamp to the available range so a stale offset (e.g. after a bot was
-  // removed) can't run off the end.
+  // removed) can't run off the end. Done in a useEffect (not during render)
+  // to avoid React #310 (too many re-renders).
   const historyLen = mergedHistory.length;
   const clampedOffset = Math.min(historyOffset, Math.max(0, historyLen - 1));
-  if (historyLen > 0 && clampedOffset !== historyOffset) {
-    setHistoryOffset(clampedOffset);
-  }
+  useEffect(() => {
+    if (historyLen > 0 && clampedOffset !== historyOffset) {
+      setHistoryOffset(clampedOffset);
+    }
+  }, [historyLen, clampedOffset, historyOffset]);
   const viewingHistory = historyLen > 0 && clampedOffset > 0;
   if (viewingHistory) {
     const entry = mergedHistory[historyLen - 1 - clampedOffset];

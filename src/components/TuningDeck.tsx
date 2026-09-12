@@ -168,6 +168,9 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   // Creative Tools inline input state
   const [showTemplateInput, setShowTemplateInput] = useState(false);
   const [templateName, setTemplateName] = useState("");
+  // Creative Tools collapse — default collapsed so the header is compact.
+  // The header persists (with a chevron) so the user can expand it.
+  const [creativeToolsOpen, setCreativeToolsOpen] = useState(false);
 
   // Bot Identity textarea drag-to-resize state
   const DEFAULT_IDENTITY_HEIGHT = 96; // ~4 rows
@@ -2439,14 +2442,21 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       {/* E1/E4: Creative Tools — Templates & Mood Lock.
           Pulled out of the dimmed container above so it stays fully visible
           in multi-bot mode: templates and mood locks are global, not per-bot,
-          so they remain useful when multi-bot is active. */}
-      <Card className="bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0">
-        <CardHeader className="p-1.5 pb-0 flex flex-col space-y-0 gap-1">
-          <CardTitle className="text-xs font-bold uppercase tracking-wider text-gray-300 shrink-0 text-center w-full flex items-center justify-center gap-2">
-            <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+          so they remain useful when multi-bot is active.
+          Collapsible — default collapsed, header persists with a chevron. */}
+      <Card className={cn("bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0", !creativeToolsOpen && "py-0.5")}>
+        <CardHeader className={cn("flex flex-col space-y-0 gap-0", creativeToolsOpen ? "px-1.5 py-1 pb-1" : "px-1.5 py-1")}>
+          <button
+            type="button"
+            onClick={() => setCreativeToolsOpen((v) => !v)}
+            className="text-xs font-bold uppercase tracking-wider text-gray-300 shrink-0 text-center w-full flex items-center justify-center gap-2 hover:text-pink-300 transition-colors"
+          >
+            <Sparkles className="w-3 h-3 text-pink-400" />
             Creative Tools
-          </CardTitle>
+            <ChevronDown className={cn("w-3 h-3 text-gray-500 transition-transform", creativeToolsOpen && "rotate-180")} />
+          </button>
         </CardHeader>
+        {creativeToolsOpen && (
         <CardContent className="p-1.5 pt-0.5 grid grid-cols-2 gap-x-2 gap-y-3">
           {/* E1: Templates */}
           <div className="space-y-1.5">
@@ -2895,6 +2905,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               )}
             </div>
         </CardContent>
+        )}
       </Card>
 
       {/* 4. Big Forge Button — locked to bottom */}
