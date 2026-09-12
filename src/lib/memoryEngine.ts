@@ -26,6 +26,7 @@ import { formatChatLog } from "./chatUtils";
 import { generateId } from "./ids";
 import * as memoryStore from "./memoryStore";
 import { useAppStore } from "../store";
+import { isNearDuplicate } from "./antiRepetition";
 
 function normalizeProvider(rawProvider: string): string {
   if (rawProvider === "gemini-pro" || rawProvider === "gemini-env") return "gemini";
@@ -290,19 +291,63 @@ export async function applyExtractionResults(
   let profilesUpdated = 0;
   let jokesCreated = 0;
 
-  // Store new memories
+  // Store new memories — with semantic deduplication against ALL existing
+  // memories (not just the top 20 sent to the AI prompt). The extraction
+  // prompt sends only the top 20 existing memories as "already known" to
+  // avoid duplicates, but with up to 500 stored memories, 480 are never
+  // checked. This Jaccard similarity pass catches near-duplicate rephrasings
+  // (same fact, different wording) that slip through the AI's dedup window.
   if (result.newMemories && result.newMemories.length > 0) {
-    const newMemories: AutoMemory[] = result.newMemories.map((m) => ({
-      ...m,
-      id: generateId(),
-      createdAt: now,
-      lastReferencedAt: now,
-      referenceCount: 0,
-      strength: 0.7,
-      isVerified: m.confidence >= config.autoVerifyThreshold,
-      subjectUsername: m.subjectUsername || undefined,
-    }));
-    await memoryStore.addMemories(channel, newMemories);
+    // Fetch all existing memories for dedup comparison.
+    const existingMemories = await memoryStore.getAllMemories(channel);
+    const existingContents = existingMemories.map((m) => m.content.toLowerCase().trim());
+
+    const newMemories: AutoMemory[] = [];
+    let skippedDuplicates = 0;
+    for (const m of result.newMemories) {
+      const contentLower = (m.content || "").toLowerCase().trim();
+      // Skip empty or very short contents — not enough signal for dedup.
+      if (contentLower.length < 5) {
+        newMemories.push({
+          ...m,
+          id: generateId(),
+          createdAt: now,
+          lastReferencedAt: now,
+          referenceCount: 0,
+          strength: 0.7,
+          isVerified: m.confidence >= config.autoVerifyThreshold,
+          subjectUsername: m.subjectUsername || undefined,
+        });
+        continue;
+      }
+      // Jaccard similarity check against all existing memory contents.
+      // Threshold 0.7 = 70% word overlap → considered a duplicate.
+      if (isNearDuplicate(contentLower, existingContents, 0.7)) {
+        skippedDuplicates++;
+        continue;
+      }
+      newMemories.push({
+        ...m,
+        id: generateId(),
+        createdAt: now,
+        lastReferencedAt: now,
+        referenceCount: 0,
+        strength: 0.7,
+        isVerified: m.confidence >= config.autoVerifyThreshold,
+        subjectUsername: m.subjectUsername || undefined,
+      });
+      // Add this memory's content to the running list so subsequent new
+      // memories in the same batch are also checked against it.
+      existingContents.push(contentLower);
+    }
+
+    if (skippedDuplicates > 0) {
+      console.log(`[MemoryEngine] Skipped ${skippedDuplicates} duplicate memory(s) via Jaccard dedup (threshold 0.7)`);
+    }
+
+    if (newMemories.length > 0) {
+      await memoryStore.addMemories(channel, newMemories);
+    }
     memoriesAdded = newMemories.length;
   }
 

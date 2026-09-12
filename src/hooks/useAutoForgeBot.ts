@@ -15,7 +15,7 @@ import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetitio
 import { getBotRateLimiter, syncBotRateLimiterConfig } from "../lib/actionRateLimiter";
 import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
-import { getAvailableEmoteNames } from "../lib/emotes";
+import { getAvailableEmoteNames, getAvailableEmotesTagged } from "../lib/emotes";
 import { evaluateAllRules } from "../lib/ruleEngine";
 import {
   computeChatActivity,
@@ -37,6 +37,7 @@ import {
 } from "../lib/autoForgeCore";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
+import { formatThreadContext } from "../lib/conversationThread";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response.
 // Mirrors the legacy useAutoForge constant so multi-bot engagement metrics
@@ -430,6 +431,9 @@ export function useAutoForgeBot(botId: string) {
         availableEmotes: store.emoteAwarenessEnabled
           ? getAvailableEmoteNames(store.streamMetadata.channelName, 50)
           : undefined,
+        availableEmotesTagged: store.emoteAwarenessEnabled
+          ? getAvailableEmotesTagged(store.streamMetadata.channelName, 50)
+          : undefined,
         botIdentityMode: bot.persona.botIdentityMode,
         botIdentityStory: bot.persona.botIdentityStory,
         audioEnergyLabel: store.audioEnergy?.label,
@@ -442,6 +446,7 @@ export function useAutoForgeBot(botId: string) {
               .map((b) => b.session!.username)
               .filter(Boolean)
           : undefined,
+        threadContext: formatThreadContext(botUsername),
       });
 
       // First Message lock release helper. Safe to call on any exit path: it
@@ -600,6 +605,9 @@ export function useAutoForgeBot(botId: string) {
               sentimentContext,
               availableEmotes: store.emoteAwarenessEnabled
                 ? getAvailableEmoteNames(store.streamMetadata.channelName, 50)
+                : undefined,
+              availableEmotesTagged: store.emoteAwarenessEnabled
+                ? getAvailableEmotesTagged(store.streamMetadata.channelName, 50)
                 : undefined,
               // AutoForge full_forge generates the actual message to send.
               // Once the bot has decided to act, this must not be preempted by

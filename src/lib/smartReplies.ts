@@ -5,6 +5,10 @@ import { summarizeSentiment, formatSentimentContext } from "./sentiment";
 import { useAppStore } from "../store";
 import type { SmartReply } from "../types";
 import { generateId } from "./ids";
+import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "./memoryRetrieval";
+import { analyzeRepetition, formatRepetitionContext } from "./antiRepetition";
+import { buildLongTermMemoryContext } from "./autoForgeCore";
+import { getAvailableEmoteNames } from "./emotes";
 
 let lastSmartReplyTime = 0;
 const SMART_REPLY_COOLDOWN_MS = 30_000;
@@ -51,6 +55,23 @@ export async function generateSmartReplies(mentionedLines: string[], options?: {
   };
   const botUsername = resolveBotUsername();
 
+  // Resolve the bot's persona + runtime for context enrichment. In multi-bot
+  // mode (with an explicit botId or manual send bot), use that bot's persona
+  // and sent history. In legacy single-bot mode, fall back to the global
+  // config + global sent messages.
+  const resolveBotPersona = () => {
+    if (options?.botId) {
+      const bot = state.bots.find((b) => b.id === options.botId);
+      if (bot) return bot;
+    }
+    if (state.multiBotEnabled && state.manualSendBotId) {
+      const bot = state.bots.find((b) => b.id === state.manualSendBotId);
+      if (bot) return bot;
+    }
+    return undefined;
+  };
+  const bot = resolveBotPersona();
+
   const sentimentHistory = state.sentimentHistory;
   let sentimentContext = "";
   if (sentimentHistory.length > 0) {
@@ -59,6 +80,96 @@ export async function generateSmartReplies(mentionedLines: string[], options?: {
   }
 
   const recentChat = formatChatLog(state.chatLog.slice(-20));
+
+  // ── Memory context ──────────────────────────────────────────────────────
+  // Enrich smart replies with the same memory + director notes context the
+  // AutoForge loops inject, so reply suggestions are aware of what the bot
+  // knows about the streamer, chatters, and active inside jokes. In multi-bot
+  // mode, use the bot's own per-bot memory; in legacy mode, use the global
+  // auto-memory cache.
+  let memoryContext = "";
+  if (bot) {
+    const runtime = bot.runtime;
+    if (runtime.autoMemoryConfig?.enabled) {
+      const retrieved = retrieveRelevantMemories(
+        runtime.autoMemories,
+        runtime.userProfiles,
+        runtime.insideJokes,
+        runtime.personalityState,
+        {
+          currentChatLog: state.chatLog,
+          audioTranscript: state.audioTranscript,
+          visualContext: state.visualContextTags.join(" "),
+          streamMetadata: state.streamMetadata,
+          activeUsers: [],
+          tokenBudget: runtime.autoMemoryConfig.contextInjectionTokenBudget,
+        },
+      );
+      memoryContext = formatMemoryContext(retrieved, {
+        memoriesFormed: runtime.personalityState?.sessionMemoriesFormed ?? 0,
+        jokesCreated: runtime.personalityState?.sessionJokesCreated ?? 0,
+      }, runtime.directorNotes);
+    } else {
+      // Director notes are user-authored directives — inject even when
+      // AutoMemory is disabled (parity with the AutoForge loops).
+      memoryContext = formatDirectorNotesContext(runtime.directorNotes);
+    }
+  } else if (state.autoMemoryConfig?.enabled) {
+    // Legacy single-bot: use the global auto-memory cache.
+    const retrieved = retrieveRelevantMemories(
+      state.autoMemories,
+      state.userProfiles,
+      state.insideJokes,
+      state.personalityState,
+      {
+        currentChatLog: state.chatLog,
+        audioTranscript: state.audioTranscript,
+        visualContext: state.visualContextTags.join(" "),
+        streamMetadata: state.streamMetadata,
+        activeUsers: [],
+        tokenBudget: state.autoMemoryConfig.contextInjectionTokenBudget,
+      },
+    );
+    memoryContext = formatMemoryContext(retrieved, {
+      memoriesFormed: state.personalityState?.sessionMemoriesFormed ?? 0,
+      jokesCreated: state.personalityState?.sessionJokesCreated ?? 0,
+    }, state.directorNotes);
+  } else {
+    memoryContext = formatDirectorNotesContext(state.directorNotes);
+  }
+
+  // ── Anti-repetition context ────────────────────────────────────────────
+  // Use the bot's own sent history (multi-bot) or the global sent messages
+  // (legacy) so reply suggestions don't repeat what was recently sent.
+  // generateChat doesn't have a dedicated antiRepetitionContext param (that's
+  // autoforgeDecide only), so we fold it into memoryContext which is appended
+  // to the user message verbatim.
+  const sentMessages = bot ? bot.runtime.sentMessages : state.sentMessages;
+  const repAnalysis = analyzeRepetition(sentMessages);
+  const antiRepetitionContext = formatRepetitionContext(repAnalysis);
+  if (antiRepetitionContext) {
+    memoryContext = memoryContext ? `${memoryContext}\n\n${antiRepetitionContext}` : antiRepetitionContext;
+  }
+
+  // ── Long-term memory context (pinned + golden) ─────────────────────────
+  const longTermMemory = bot
+    ? buildLongTermMemoryContext(bot.runtime.longTermMemory, bot.runtime.pinnedMemories, bot.runtime.goldenMemoryId)
+    : buildLongTermMemoryContext(state.longTermMemory, state.pinnedMemories, state.goldenMemoryId);
+
+  // ── Bot identity ────────────────────────────────────────────────────────
+  const botIdentityMode = bot?.persona.botIdentityMode;
+  const botIdentityStory = bot?.persona.botIdentityStory;
+
+  // ── Available emotes ───────────────────────────────────────────────────
+  const availableEmotes = state.emoteAwarenessEnabled
+    ? getAvailableEmoteNames(state.streamMetadata.channelName, 50)
+    : undefined;
+
+  // ── Visual context ─────────────────────────────────────────────────────
+  const visualContext = state.visualContextTags.join(" ");
+
+  // ── Config: prefer the bot's persona config in multi-bot mode ──────────
+  const baseConfig = bot ? bot.persona.config : state.config;
 
   const prompt = `You are a chat co-pilot for a streamer. The bot (${botUsername || "the bot"}) was just mentioned in chat. Generate 3 short, natural-sounding reply suggestions that the bot can click to send instantly.
 
@@ -83,12 +194,19 @@ Rules:
     const result = await generateChat({
       streamMetadata: state.streamMetadata,
       recentChatLog: recentChat,
-      config: { ...state.config, lengthPreference: "short", emoteDensity: "minimal" },
+      visualContext,
+      audioTranscript: state.audioTranscript,
+      longTermContext: longTermMemory,
+      config: { ...baseConfig, lengthPreference: "short", emoteDensity: "minimal" },
       activeProvider,
       count: 3,
       r34lEnabled: state.r34lEnabled,
       botUsername,
+      memoryContext,
       sentimentContext,
+      availableEmotes,
+      botIdentityMode,
+      botIdentityStory,
       // Smart replies are background/autonomous — must not block manual Forge.
       priority: "autonomous",
     });

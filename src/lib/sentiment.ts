@@ -74,16 +74,152 @@ const TOXIC_EMOTES = new Set([
   "PepegaBox", "FeelingKachow",
 ]);
 
-function countMatches(text: string, wordSet: Set<string>, emoteSet: Set<string>): number {
+// ─── Negation & Intensity Handling ────────────────────────────────────────────
+
+/** Negation words that flip the sentiment of a following sentiment word. */
+const NEGATION_WORDS = new Set([
+  "not", "never", "dont", "don't", "doesnt", "doesn't", "isnt", "isn't",
+  "arent", "aren't", "wasnt", "wasn't", "werent", "weren't", "wont",
+  "won't", "cant", "can't", "couldnt", "couldn't", "shouldnt", "shouldn't",
+  "wouldnt", "wouldn't", "no", "nor", "neither", "barely", "hardly",
+]);
+
+/** Intensity amplifiers — multiply the following word's score by 1.5. */
+const AMPLIFIERS = new Set([
+  "very", "really", "super", "extremely", "incredibly", "so", "too",
+  "absolutely", "totally", "completely", "utterly", "hella", "crazy",
+  "insanely", "wildly", "genuinely", "truly", "mad", "af",
+]);
+
+/** Intensity dampeners — multiply the following word's score by 0.5. */
+const DAMPENERS = new Set([
+  "kinda", "kind of", "sorta", "sort of", "slightly", "somewhat",
+  "a bit", "a little", "mildly", "fairly", "reasonably", "semi",
+]);
+
+/** Max words to look back for a negation word. */
+const NEGATION_WINDOW = 3;
+
+/**
+ * Find all match positions of `phrase` in `text` (case-insensitive).
+ * For single words (no spaces), uses word-boundary matching to avoid
+ * false-positive substring matches (e.g. "w" matching "what", "kind"
+ * matching "kinda", "l" matching "let"). Multi-word phrases (e.g. "lets go",
+ * "skill issue") use substring matching since they're specific enough.
+ * Returns the start index of each occurrence.
+ */
+function findMatchPositions(text: string, phrase: string): number[] {
+  const positions: number[] = [];
+  if (!phrase) return positions;
+  if (!phrase.includes(" ")) {
+    // Word-boundary match for single words.
+    const re = new RegExp(`(^|[^a-z0-9])${escapeRegExp(phrase)}([^a-z0-9]|$)`, "gi");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      // Position of the phrase within the match (after the leading boundary).
+      positions.push(m.index + (m[1] ? m[1].length : 0));
+      // Avoid infinite loop on zero-length matches.
+      if (re.lastIndex === m.index) re.lastIndex++;
+    }
+  } else {
+    let idx = text.indexOf(phrase);
+    while (idx >= 0) {
+      positions.push(idx);
+      idx = text.indexOf(phrase, idx + 1);
+    }
+  }
+  return positions;
+}
+
+/** Escape a string for safe use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Extract the words preceding a match position (up to `window` words back).
+ * Returns lowercase word tokens.
+ */
+function getPrecedingWords(text: string, matchPos: number, window: number): string[] {
+  const prefix = text.slice(0, matchPos).trim();
+  if (!prefix) return [];
+  const words = prefix.split(/\s+/);
+  return words.slice(-window).map((w) => w.toLowerCase().replace(/[^a-z']/g, ""));
+}
+
+/**
+ * Check if a negation word appears within the preceding `window` words.
+ * Also returns the word immediately before the match (for intensity detection).
+ */
+function checkNegationAndIntensity(
+  precedingWords: string[],
+): { negated: boolean; multiplier: number } {
+  let negated = false;
+  let multiplier = 1.0;
+
+  for (let i = 0; i < precedingWords.length; i++) {
+    const w = precedingWords[i];
+    if (NEGATION_WORDS.has(w)) {
+      negated = true;
+    }
+    // Intensity modifier must be the word immediately before the match
+    // (last word in precedingWords) to apply.
+    if (i === precedingWords.length - 1) {
+      if (AMPLIFIERS.has(w)) multiplier = 1.5;
+      else if (DAMPENERS.has(w)) multiplier = 0.5;
+    }
+  }
+
+  return { negated, multiplier };
+}
+
+/**
+ * Count matches with negation and intensity awareness.
+ *
+ * For each word/phrase in `wordSet` found in the text:
+ * - If a negation word appears within `NEGATION_WINDOW` words before the match,
+ *   the match contributes 0 to its own category and is tracked separately as
+ *   a "flipped" contribution for the OPPOSITE category (caller routes it).
+ * - If an intensity modifier (amplifier/dampener) is the word immediately before,
+ *   the match's weight is scaled (×1.5 or ×0.5).
+ *
+ * Emotes are not subject to negation (you can't "not PogChamp" an emote).
+ *
+ * Returns `{ direct, flipped }` where:
+ * - `direct` = non-negated matches (contributes to THIS category)
+ * - `flipped` = negated matches (contributes to the OPPOSITE category)
+ */
+function countMatchesWithNegation(
+  text: string,
+  wordSet: Set<string>,
+  emoteSet: Set<string>,
+): { direct: number; flipped: number } {
   const lower = text.toLowerCase();
-  let count = 0;
+  let direct = 0;
+  let flipped = 0;
+
   for (const word of wordSet) {
-    if (lower.includes(word)) count++;
+    const positions = findMatchPositions(lower, word);
+    for (const pos of positions) {
+      const preceding = getPrecedingWords(lower, pos, NEGATION_WINDOW);
+      const { negated, multiplier } = checkNegationAndIntensity(preceding);
+      if (negated) {
+        // Negated match: contributes 0 to its own category, and 0.5 * multiplier
+        // to the opposite category. Reduced weight because negation weakens
+        // the signal — "not great" is mildly negative, not strongly negative.
+        flipped += 0.5 * multiplier;
+      } else {
+        direct += 1 * multiplier;
+      }
+    }
   }
+
+  // Emotes — no negation handling (emotes are visual, not negatable in text).
   for (const emote of emoteSet) {
-    if (text.includes(emote)) count++;
+    if (text.includes(emote)) direct += 1;
   }
-  return count;
+
+  return { direct, flipped };
 }
 
 export function classifySentiment(text: string): { label: SentimentLabel; score: number } {
@@ -91,11 +227,29 @@ export function classifySentiment(text: string): { label: SentimentLabel; score:
     return { label: "neutral", score: 0 };
   }
 
-  const toxicScore = countMatches(text, TOXIC_WORDS, TOXIC_EMOTES) * 3;
-  const hypeScore = countMatches(text, HYPE_WORDS, HYPE_EMOTES) * 2;
-  const wholesomeScore = countMatches(text, WHOLESOME_WORDS, POSITIVE_EMOTES) * 2;
-  const positiveScore = countMatches(text, POSITIVE_WORDS, new Set()) * 1;
-  const negativeScore = countMatches(text, NEGATIVE_WORDS, NEGATIVE_EMOTES) * 1;
+  // Negation-aware scoring: when a sentiment word is negated ("not bad"),
+  // it contributes its weight to the OPPOSITE category instead of its own.
+  // Intensity modifiers scale the weight of the following word.
+  //
+  // Flip routing:
+  //   POSITIVE↔NEGATIVE  ("not great" → negative, "not bad" → positive)
+  //   HYPE→NEGATIVE      ("not pog" → negative; negated hype deflates)
+  //   WHOLESOME→NEGATIVE ("not cute" → negative)
+  //   TOXIC→POSITIVE      ("not trash" → mild positive; negated toxic deflates)
+  const toxic = countMatchesWithNegation(text, TOXIC_WORDS, TOXIC_EMOTES);
+  const hype = countMatchesWithNegation(text, HYPE_WORDS, HYPE_EMOTES);
+  const wholesome = countMatchesWithNegation(text, WHOLESOME_WORDS, POSITIVE_EMOTES);
+  const positive = countMatchesWithNegation(text, POSITIVE_WORDS, new Set());
+  const negative = countMatchesWithNegation(text, NEGATIVE_WORDS, NEGATIVE_EMOTES);
+
+  // Route negated ("flipped") contributions to the opposite category.
+  // POSITIVE↔NEGATIVE, TOXIC→POSITIVE. Hype and wholesome just deflate
+  // when negated (no flip — "not pog" is less hype, not actively negative).
+  const toxicScore = toxic.direct * 3;
+  const hypeScore = hype.direct * 2;
+  const wholesomeScore = wholesome.direct * 2;
+  const positiveScore = (positive.direct + negative.flipped + toxic.flipped) * 1;
+  const negativeScore = (negative.direct + positive.flipped) * 1;
 
   // Toxic overrides everything
   if (toxicScore >= 2) return { label: "toxic", score: Math.min(1, toxicScore / 5) };

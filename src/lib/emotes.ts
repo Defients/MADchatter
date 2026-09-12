@@ -7,6 +7,9 @@ export interface Emote {
   name: string;
   url: string;
   provider: "7tv" | "ffz" | "bttv";
+  /** Whether this emote is channel-specific or global. Channel emotes are
+   *  more contextual and should be favored by the AI over global ones. */
+  scope?: "channel" | "global";
   width?: number;
   height?: number;
 }
@@ -61,6 +64,7 @@ async function fetch7TVGlobal(): Promise<Emote[]> {
         name: e.name,
         url: `https:${e.data.host.url}/${file?.name || "1x.webp"}`,
         provider: "7tv" as const,
+        scope: "global" as const,
         width: file?.width,
         height: file?.height,
       };
@@ -92,6 +96,7 @@ async function fetch7TVChannel(channelName: string): Promise<Emote[]> {
             name: e.name,
             url: `https:${e.data.host.url}/${file?.name || "1x.webp"}`,
             provider: "7tv" as const,
+            scope: "channel" as const,
             width: file?.width,
             height: file?.height,
           });
@@ -124,7 +129,7 @@ interface FFZGlobalResponse {
   sets: { [setId: string]: { emotes: FFZEmote[] } };
 }
 
-function parseFFZEmotes(data: FFZRoomResponse | FFZGlobalResponse): Emote[] {
+function parseFFZEmotes(data: FFZRoomResponse | FFZGlobalResponse, scope: "channel" | "global" = "channel"): Emote[] {
   const emotes: Emote[] = [];
   for (const setId of Object.keys(data.sets || {})) {
     for (const e of data.sets[setId].emotes || []) {
@@ -138,6 +143,7 @@ function parseFFZEmotes(data: FFZRoomResponse | FFZGlobalResponse): Emote[] {
           name: e.name,
           url,
           provider: "ffz" as const,
+          scope,
           width: e.width,
           height: e.height,
         });
@@ -151,7 +157,7 @@ async function fetchFFZGlobal(): Promise<Emote[]> {
   try {
     const res = await fetch("https://api.frankerfacez.com/v1/set/global");
     if (!res.ok) return [];
-    return parseFFZEmotes(await res.json());
+    return parseFFZEmotes(await res.json(), "global");
   } catch (e) {
     if (!isNetworkError(e)) console.warn("[emotes] fetchFFZGlobal failed:", e);
     return [];
@@ -192,6 +198,7 @@ async function fetchBTTVGlobal(): Promise<Emote[]> {
       name: e.code,
       url: `https://cdn.betterttv.net/emote/${e.id}/1x.${e.imageType || "webp"}`,
       provider: "bttv" as const,
+      scope: "global" as const,
     }));
   } catch (e) {
     if (!isNetworkError(e)) console.warn("[emotes] fetchBTTVGlobal failed:", e);
@@ -209,6 +216,7 @@ async function fetchBTTVChannel(twitchUserId: string): Promise<Emote[]> {
       name: e.code,
       url: `https://cdn.betterttv.net/emote/${e.id}/1x.${e.imageType || "webp"}`,
       provider: "bttv" as const,
+      scope: "channel" as const,
     }));
   } catch (e) {
     if (!isNetworkError(e)) console.warn(`[emotes] fetchBTTVChannel(${twitchUserId}) failed:`, e);
@@ -328,6 +336,30 @@ export function getAvailableEmoteNames(channelName: string, limit = 50): string[
   const channelEmotes = all.filter((e) => e.provider !== "7tv" || !globalEmotes?.has(e.name));
   const names = channelEmotes.length > 0 ? channelEmotes : all;
   return names.slice(0, limit).map((e) => e.name);
+}
+
+/**
+ * Returns up to `limit` emote names tagged with their provider and scope,
+ * formatted as `"name (provider-scope)"` (e.g. `"monkaS (7tv-channel)"`).
+ * Channel-specific emotes are listed first, then globals.
+ *
+ * Used by the AI prompt so the model knows which emotes are channel-specific
+ * (BTTV/7TV/FFZ channel emotes — favor these) vs global (use sparingly).
+ * The AI is instructed to favor channel-specific emotes and rarely use
+ * "standard" emotes not in this list.
+ */
+export function getAvailableEmotesTagged(channelName: string, limit = 50): string[] {
+  const map = getCachedChannelEmotes(channelName);
+  if (!map || map.size === 0) return [];
+  const all = Array.from(map.values());
+  // Channel emotes first, then globals — same priority as getAvailableEmoteNames
+  const channel = all.filter((e) => e.scope === "channel");
+  const global = all.filter((e) => e.scope !== "channel");
+  const ordered = channel.length > 0 ? [...channel, ...global] : all;
+  return ordered.slice(0, limit).map((e) => {
+    const scope = e.scope === "channel" ? "channel" : "global";
+    return `${e.name} (${e.provider}-${scope})`;
+  });
 }
 
 // Memoized emote regex — avoids rebuilding on every parse call

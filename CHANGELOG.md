@@ -2,7 +2,60 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
+## [1.0.5] — 2026-09-13
+
+### Enhanced — Smart Reply Context Enrichment
+- **Problem:** `generateSmartReplies()` called `generateChat()` with almost no context — no memory, no director notes, no anti-repetition, no bot identity story, no emotes, no visual context, no long-term memory. Smart reply suggestions were significantly lower quality than Forge/AutoForge outputs because the AI had almost no context to work with.
+- **Fix:** Smart replies now inject the same rich context the AutoForge loops use: memory context (from `retrieveRelevantMemories` + `formatMemoryContext` + `formatDirectorNotesContext`), anti-repetition context (from `analyzeRepetition` on the bot's sent messages, folded into `memoryContext` since `generateChat` doesn't have a dedicated anti-repetition param), long-term memory (pinned + golden), bot identity mode + story, available emotes (when emote awareness is on), and visual context tags. In multi-bot mode, the bot's own per-bot memory and sent history are used; in legacy mode, the global cache is used.
+- **Scope:** Works in both legacy single-bot and multi-bot modes. Director notes are always injected (even when AutoMemory is disabled), matching the AutoForge parity.
+
+### Enhanced — Sentiment Negation & Intensity Handling
+- **Problem:** The lexicon-based `classifySentiment()` had no negation handling. "not bad" scored as negative (contains "bad"), "not great" scored as positive (contains "great"). No intensity modifiers ("very", "really" amplify; "kinda", "slightly" dampen). Single-letter sentiment words ("w", "l", "f") also caused false-positive substring matches ("what" matched "w", "let" matched "l").
+- **Fix:** Two improvements to `src/lib/sentiment.ts`:
+  - **Negation window:** Scans for negation words ("not", "never", "don't", "doesn't", "isn't", "aren't", "wasn't", "won't", "can't", "couldn't", "shouldn't", "wouldn't", "no", "nor", "neither", "barely", "hardly") within 3 words before a sentiment word. Negated matches contribute to the OPPOSITE category with reduced weight (0.5×) — "not great" → mild negative, "not bad" → mild positive. Negated hype and wholesome just deflate (no flip to negative).
+  - **Intensity modifiers:** Amplifiers ("very", "really", "super", "extremely", "incredibly", "so", "too", "absolutely", "totally", "completely", "utterly", "hella", "crazy", "insanely", "wildly", "genuinely", "truly", "mad", "af") multiply the following word's weight by 1.5×. Dampeners ("kinda", "kind of", "sorta", "sort of", "slightly", "somewhat", "a bit", "a little", "mildly", "fairly", "reasonably", "semi") multiply by 0.5×.
+  - **Word-boundary matching:** Single-word sentiment lexicon entries now use word-boundary regex matching instead of substring matching, preventing false positives like "what" matching "w", "kinda" matching "kind", "let" matching "l". Multi-word phrases ("lets go", "skill issue") keep substring matching since they're specific enough.
+- **Impact:** Messages like "not bad" now classify as positive (was negative), "not great" as negative (was positive), "very good" gets a higher score than "good", "kinda great" gets a lower score. This shifts existing sentiment-based analytics slightly but produces more accurate classifications.
+
+### Enhanced — Semantic Memory Deduplication
+- **Problem:** `applyExtractionResults()` stored all new memories that passed the confidence threshold. The AI extraction prompt sends only the top 20 existing memories as "already known" to avoid duplicates — but with up to 500 stored memories, 480 were never checked. Near-duplicate memories (same fact rephrased across extraction cycles) accumulated over time, bloating the memory store and diluting retrieval quality.
+- **Fix:** After extraction, before storing, each new memory's content is checked against ALL existing memories using Jaccard similarity (reusing `isNearDuplicate` from `antiRepetition.ts`). New memories >70% similar to any existing one are skipped and logged. The running list is updated within the batch so subsequent new memories in the same extraction are also checked against earlier ones.
+- **Performance:** ~2500 set comparisons per extraction cycle (500 existing × 5 new) every 10 minutes — negligible. No AI calls added.
+
+### Added — Conversation Threading
+- **Problem:** The bot had no concept of conversation threads. When user A replied to the bot's message, then user B replied to user A, the bot couldn't distinguish a directed reply from a general comment. The existing `twitchReplyCache.ts` captured message IDs for mention rendering but didn't use them for context.
+- **Fix:** A new `src/lib/conversationThread.ts` module tracks Twitch reply threads:
+  - Captures `reply-parent-msg-id` from incoming Twitch messages (standard IRC tag, already available in App.tsx's `client.on('message')` handler).
+  - Maintains a bounded map of `messageId → { username, text, timestamp, parentId, parentUsername }` (200 entries max, 10-minute TTL, pruned on every insert).
+  - Records the bot's own message IDs (when `self=true` messages come back through the handler) as thread roots.
+  - Exposes `getActiveThreads(botUsername)` — returns threads rooted at the bot's messages with recent reply activity — and `formatThreadContext(botUsername)` — formats active threads into a compact prompt block.
+  - The AutoForge decision loops (`useAutoForge` and `useAutoForgeBot`) inject `formatThreadContext()` into `autoforgeDecide` via a new `threadContext` param, so the bot knows when it's being replied to and can maintain coherent multi-turn exchanges.
+  - Cleared on channel switch (parity with `twitchReplyCache.ts`).
+- **Scope:** Twitch only (Kick and Joystick don't support IRC reply tags). Works in both legacy single-bot and multi-bot modes.
+
+### Added — Pure Module Test Suite
+- **Problem:** Only `aiScheduler.test.ts` (41 tests) had test coverage. Seven pure-computation modules with zero side effects were untested: `sentiment.ts`, `autoForgeCore.ts`, `antiRepetition.ts`, `chatStyle.ts`, `personalityEngine.ts`, `memoryRetrieval.ts`, `botCoordinator.ts`.
+- **Fix:** Seven new deterministic test files following the existing `npx tsx` pattern (no test framework dependency):
+  - `sentiment.test.ts` (33 tests) — negation handling, intensity modifiers, label priority, caps lock, emotes, summarizeSentiment, addSentimentReading, formatSentimentContext
+  - `autoForgeCore.test.ts` (57 tests) — chat activity, engagement scores, stream health, hype level, offline detection, long-term memory, confidence normalization, dedup, adaptive backoff, engagement labeling, post-send engagement
+  - `antiRepetition.test.ts` (21 tests) — n-gram extraction, opening phrase detection, Jaccard similarity, variety score, repetition context formatting
+  - `chatStyle.test.ts` (23 tests) — min samples threshold, casing classification, length buckets, emote density, punctuation signals, slang tokens, sample lines, profile formatting
+  - `personalityEngine.test.ts` (34 tests) — mood detection (all 6 moods), mood lock validation, comfort level growth, trait evolution, relationship milestones
+  - `memoryRetrieval.test.ts` (19 tests) — memory scoring (active user boost, keyword overlap, recency, verified), director notes formatting, priority labels, expiry filtering
+  - `botCoordinator.test.ts` (14 tests) — floor gap cooldown, bidding window resolution, mention bonus, persona fit tiebreak, configuration, reset
+- **Total:** 201 new tests across 7 files. All run deterministically without network, AI, or browser APIs.
+
+### Fixed — Emote Scope TypeScript Error
+- **Pre-existing bug:** `src/lib/emotes.ts` line 146 used `scope: scope as const` on a function parameter, which is invalid TypeScript (`as const` can only be applied to literals). This caused `npm run lint` to fail on the pre-existing emote scope changes. Fixed by using `scope` directly (the parameter is already typed as `"channel" | "global"`).
+
 ## [1.0.4] — 2026-09-12
+
+### Enhanced — Emote Preference for Channel-Specific Emotes
+- **Problem:** Bots were using generic/standard emotes (like "LOL", "POG", "Kappa") from their training data instead of the channel-specific emotes available via BetterTTV, 7TV, and FrankerFaceZ. The `AVAILABLE EMOTES` prompt line was a flat list of names with no source tagging or preference guidance.
+- **Fix:** Emotes are now tagged with their provider and scope in the AI prompt: `monkaS (7tv-channel)`, `KEKW (bttv-channel)`, `Kappa (7tv-global)`, etc. The prompt now says "favor channel-specific emotes (marked channel) from BTTV/7TV/FFZ. Rarely use generic/standard emotes not listed here."
+- **Emote scope tracking:** The `Emote` interface gained a `scope` field (`"channel" | "global"`). All emote fetchers (7TV, FFZ, BTTV) now tag their results as channel or global. The new `getAvailableEmotesTagged()` function returns provider+scope-tagged emote names for the prompt, while `getAvailableEmoteNames()` (plain names) remains for chat style analysis.
+- **Prompt rules:** All three system prompts (Forge, AutoForge, Refine) gained an `EMOTE PREFERENCE` rule instructing the AI to favor channel-specific emotes from BTTV/7TV/FFZ, rarely use generic text emotes or standard Twitch global emotes not in the list, and use emotes sparingly (one per message max, zero is fine).
+- **Scope:** Works in both legacy single-bot and multi-bot modes. All four AI call sites (manual Forge, AutoForge decide, AutoForge full_forge, per-bot AutoForge) pass the tagged emote list.
 
 ### Fixed — Twitch @mentions Not Rendering as Special Text
 - **Root cause:** Twitch's web chat only renders `@username` as a clickable, highlighted mention when the user is currently in the channel's chatters list. When a bot sends `@username` via IRC, users who aren't present (or other bots that haven't spoken recently) render as plain text — the `@` is just a character, not a "special" mention.

@@ -248,6 +248,11 @@ export interface GenerateChatParams {
   memoryContext?: string;
   sentimentContext?: string;
   availableEmotes?: string[];
+  /** Emote names tagged with provider+scope (e.g. "monkaS (7tv-channel)").
+   *  When provided, the prompt uses this list with provider/scope tags so the
+   *  AI knows which emotes are channel-specific (favor) vs global (use sparingly).
+   *  Falls back to `availableEmotes` (plain names) when not provided. */
+  availableEmotesTagged?: string[];
   botIdentityMode?: "admit" | "custom";
   botIdentityStory?: string;
   /** Scheduler priority override. Defaults to "critical" (manual Forge).
@@ -915,6 +920,11 @@ export interface AutoForgeParams {
   antiRepetitionContext?: string;
   sentimentContext?: string;
   availableEmotes?: string[];
+  /** Emote names tagged with provider+scope (e.g. "monkaS (7tv-channel)").
+   *  When provided, the prompt uses this list with provider/scope tags so the
+   *  AI knows which emotes are channel-specific (favor) vs global (use sparingly).
+   *  Falls back to `availableEmotes` (plain names) when not provided. */
+  availableEmotesTagged?: string[];
   botIdentityMode?: "admit" | "custom";
   botIdentityStory?: string;
   audioEnergyLabel?: "silent" | "quiet" | "normal" | "loud" | "spike";
@@ -930,6 +940,10 @@ export interface AutoForgeParams {
   /** Supercharge Mode: the list of other active bot usernames in the channel,
    *  so the bot knows who its conversation partners are. */
   fellowBotUsernames?: string[];
+  /** Conversation thread context — active reply chains to the bot's messages.
+   *  Injected into the decision prompt so the bot knows when it's being
+   *  replied to and can maintain coherent multi-turn exchanges. */
+  threadContext?: string;
 }
 
 export interface AutoForgeBriefingParams {
@@ -1112,6 +1126,7 @@ LONG-TERM CONTEXT:
 ${truncatedLongTerm || "None provided"}
 ${params.memoryContext ? `\n${params.memoryContext}` : ""}
 ${params.sentimentContext ? `\n${params.sentimentContext}` : ""}
+${params.threadContext ? `\n${params.threadContext}` : ""}
 
 ACTIVE CONFIGURATION:
 - Primary Profile: ${params.config.primaryProfile && params.config.primaryProfile !== "none" ? params.config.primaryProfile : "None"}

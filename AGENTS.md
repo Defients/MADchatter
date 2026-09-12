@@ -100,6 +100,28 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `extractMemories()` calls AI to extract structured memories from chat context.
 - `retrieveRelevantMemories()` scores by strength, user match, keyword overlap, recency.
 - `useAutoMemory()` hook runs extraction every N seconds + decay cycles, and re-hydrates the Zustand cache (`autoMemories`/`userProfiles`/`insideJokes`/`personalityState`) from IndexedDB whenever `streamMetadata.channelName` changes (with a stale-load guard).
+- **Semantic dedup (v1.0.5):** `applyExtractionResults()` runs a Jaccard similarity check (reusing `isNearDuplicate` from `antiRepetition.ts`) of each new memory against ALL existing memories before storing. New memories >70% similar to any existing one are skipped and logged. Prevents memory bloat from rephrased duplicates that slip through the AI's top-20 dedup window.
+
+### Sentiment (`src/lib/sentiment.ts`)
+- Lexicon-based classifier with 6 labels: positive, negative, hype, wholesome, toxic, neutral.
+- **Negation & intensity (v1.0.5):** `classifySentiment()` scans for negation words ("not", "never", "don't", etc.) within 3 words before a sentiment word and flips its contribution to the opposite category (reduced weight 0.5×). Intensity amplifiers ("very", "really", "super") multiply the following word's weight by 1.5×; dampeners ("kinda", "slightly") by 0.5×. Single-word lexicon entries use word-boundary matching (prevents "what" matching "w", "kinda" matching "kind").
+- `summarizeSentiment()` computes distribution + trend (rising/falling/stable) over last 50 readings.
+- `addSentimentReading()` caps history at 100 entries.
+- `formatSentimentContext()` produces the `[CHAT SENTIMENT]` prompt block.
+
+### Conversation Threading (`src/lib/conversationThread.ts`)
+- Twitch-only reply-thread tracker (Kick/Joystick don't support IRC reply tags).
+- Captures `reply-parent-msg-id` from incoming Twitch messages (App.tsx message handler) and records bot message IDs (when `self=true`).
+- Bounded map: 200 entries, 10-min TTL, pruned on every insert. Cleared on channel switch (`setThreadChannel`).
+- `getActiveThreads(botUsername)` — returns threads rooted at the bot's messages with recent reply activity (5-min window).
+- `formatThreadContext(botUsername)` — formats active threads into a compact `[ACTIVE CONVERSATION THREADS]` prompt block.
+- Both AutoForge loops (`useAutoForge`, `useAutoForgeBot`) inject `formatThreadContext()` into `autoforgeDecide` via the `threadContext` param so the bot knows when it's being replied to.
+
+### Smart Replies (`src/lib/smartReplies.ts`)
+- `generateSmartReplies(mentionedLines, { botId })` — generates 3 short reply suggestions when the bot is mentioned.
+- **Context enrichment (v1.0.5):** Now injects the same rich context as AutoForge: memory context (from `retrieveRelevantMemories` + `formatMemoryContext` + `formatDirectorNotesContext`), anti-repetition context (folded into `memoryContext`), long-term memory (pinned + golden), bot identity mode + story, available emotes, and visual context. In multi-bot mode, uses the bot's own per-bot memory and sent history.
+- 30-second cooldown, 60-second expiry. Scheduled at `autonomous` priority (must not block manual Forge).
+- Resolves the actual bot username from the platform session (multi-bot mode uses the explicit `botId` or `manualSendBotId`).
 
 ### Channel Snapshots (`src/lib/channelStore.ts`)
 - IndexedDB `madchatter-channels` / `snapshots`, keyed by lowercase channel name — the per-channel session archive (LTM, pinned/golden, AutoForge events + decision history, analytics/stats, goals, sentiment, chatter stats, token usage, sent log, and per-bot `botSessions`).
@@ -113,6 +135,13 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `analyzeChatStyle()` — analyzes recent chat for casing, emote density, slang, punctuation.
 - `formatChatStyleProfile()` — injects observed texture into the prompt as a profile block.
 - Cringe tokens (`lol`, `tbh`, `ngl`, `lmao`, etc.) are excluded from the slang lexicon and punctuation signals to prevent re-encouraging trailing closers.
+
+### Emote System (`src/lib/emotes.ts`)
+- Fetches global + channel-specific emotes from 7TV, FrankerFaceZ, and BetterTTV. Channel emotes override globals (same name → channel version). Cached per channel (10-min TTL).
+- `Emote` interface includes `provider` ("7tv" | "ffz" | "bttv") and `scope` ("channel" | "global").
+- `getAvailableEmoteNames(channel, limit)` — plain emote names for chat style analysis (emote density counting).
+- `getAvailableEmotesTagged(channel, limit)` — provider+scope-tagged names (e.g. `"monkaS (7tv-channel)"`) for the AI prompt. Channel emotes listed first, then globals.
+- **Emote preference (v1.0.4):** All three system prompts (Forge, AutoForge, Refine) include an `EMOTE PREFERENCE` rule: favor channel-specific emotes from BTTV/7TV/FFZ, rarely use generic/standard emotes not in the list. The prompt's `AVAILABLE EMOTES` line uses the tagged format when `availableEmotesTagged` is provided, falling back to plain names otherwise.
 
 ### Provider Keys (`src/lib/keys.ts`)
 - `getApiKey(provider)` — returns key or null. Ollama returns a dummy `"ollama-local"`.
@@ -156,13 +185,23 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/lib/ai.ts` | All AI generation + dispatch + JSON repair |
 | `src/lib/aiScheduler.ts` | AI request orchestrator (priority, preemption, cancellation, telemetry) |
 | `src/lib/aiScheduler.test.ts` | Scheduler test suite (run: `npx tsx src/lib/aiScheduler.test.ts`) |
+| `src/lib/sentiment.test.ts` | Sentiment classifier tests (run: `npx tsx src/lib/sentiment.test.ts`) |
+| `src/lib/autoForgeCore.test.ts` | AutoForge core computation tests (run: `npx tsx src/lib/autoForgeCore.test.ts`) |
+| `src/lib/antiRepetition.test.ts` | Anti-repetition + Jaccard dedup tests (run: `npx tsx src/lib/antiRepetition.test.ts`) |
+| `src/lib/chatStyle.test.ts` | Chat style analyzer tests (run: `npx tsx src/lib/chatStyle.test.ts`) |
+| `src/lib/personalityEngine.test.ts` | Personality engine tests (run: `npx tsx src/lib/personalityEngine.test.ts`) |
+| `src/lib/memoryRetrieval.test.ts` | Memory retrieval + director notes tests (run: `npx tsx src/lib/memoryRetrieval.test.ts`) |
+| `src/lib/botCoordinator.test.ts` | Bot coordinator tests (run: `npx tsx src/lib/botCoordinator.test.ts`) |
 | `src/lib/ollamaHealth.ts` | Ollama endpoint/model reachability check |
 | `src/lib/prompts.ts` | System prompts (Forge, AutoForge, R34L, memory) |
 | `src/lib/keys.ts` | Provider keys, `openAiCompatEndpoint()` |
 | `src/lib/chatStyle.ts` | Chat style analysis for R34L adaptation |
+| `src/lib/emotes.ts` | 7TV/FFZ/BTTV emote fetching, parsing, tagged names for AI prompt |
 | `src/lib/botCoordinator.ts` | Multi-bot speaker floor (mention-priority bidding) |
 | `src/lib/autoForgeCore.ts` | Shared AutoForge computation (activity, engagement, health, goals, vibe check, adaptive backoff, dedup) |
 | `src/lib/antiRepetition.ts` | Repetition analysis + Jaccard semantic dedup (`isNearDuplicate`) |
+| `src/lib/conversationThread.ts` | Twitch reply-thread tracker (active thread context for AutoForge) |
+| `src/lib/smartReplies.ts` | Smart reply generation (enriched with full context, v1.0.5) |
 | `src/lib/channelStore.ts` | Per-channel session snapshots in IndexedDB (save/restore on channel switch) |
 | `src/lib/platformSend.ts` | Platform send functions (Twitch/Kick/Joystick) |
 | `src/lib/twitchReplyCache.ts` | Twitch message-ID cache for reply-tagged mentions |

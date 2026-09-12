@@ -75,6 +75,7 @@ import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
 import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
 import { clearTwitchMessageIdCache } from "../lib/twitchReplyCache";
+import { setThreadChannel } from "../lib/conversationThread";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
@@ -835,6 +836,7 @@ export function ForgeLayout() {
       }
       clearAllContext();
       clearTwitchMessageIdCache();
+      setThreadChannel(trimmed.toLowerCase());
       setVariants([]);
       // Queued retries carry the old channel name — sending one would
       // reconnect the client back to the previous streamer.

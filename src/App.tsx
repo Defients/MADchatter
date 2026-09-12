@@ -24,6 +24,7 @@ import { useIsMobile } from './hooks/useMediaQuery';
 import { getKeys } from './lib/keys';
 import { tmiSendManager } from './lib/twitch';
 import { recordTwitchMessageId, clearTwitchMessageIdCache } from './lib/twitchReplyCache';
+import { recordIncomingMessage, markAsBotMessage } from './lib/conversationThread';
 import { KickChatClient, kickSendManager, fetchKickMetadata } from './lib/kick';
 import { JoystickChatClient, joystickSendManager, getJoystickBasicAuthKey, getJoystickSession, getJoystickBotUsername } from './lib/joystick';
 import { sendManualMessage } from './lib/manualSend';
@@ -373,6 +374,15 @@ export default function App() {
     });
 
     client.on('message', (channel, tags, message, self) => {
+      // Capture the bot's own message ID for conversation threading before
+      // the early return. The bot's messages come back through this handler
+      // with self=true — we need the ID to track threads rooted at the bot.
+      if (self && tags.id) {
+        const selfUsername = tags['display-name'] || tags.username || 'bot';
+        markAsBotMessage(tags.id);
+        recordIncomingMessage(tags.id, selfUsername, message, null);
+        return;
+      }
       if (self) return;
       const username = tags['display-name'] || tags.username || 'user';
       // Capture the Twitch message ID so we can send reply-tagged messages
@@ -381,6 +391,11 @@ export default function App() {
       if (tags.id && username) {
         recordTwitchMessageId(username, tags.id);
       }
+      // Conversation threading: capture the reply-parent-msg-id tag (if any)
+      // so we can track reply chains and inject active thread context into
+      // the AutoForge decision prompt.
+      const replyParentId = (tags as any)['reply-parent-msg-id'] || null;
+      recordIncomingMessage(tags.id || '', username, message, replyParentId);
       queueChatMessage(createChatMessage(username, message, 'twitch'));
       incrementMessagesReceived();
       processIncomingMessage(username, message, 'twitch');

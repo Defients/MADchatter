@@ -22,6 +22,7 @@ import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { evaluateAllRules } from "../lib/ruleEngine";
+import { formatThreadContext } from "../lib/conversationThread";
 import {
   computeChatActivity,
   computeEngagementScores,
@@ -473,6 +474,7 @@ export function useAutoForge() {
         audioEnergyLabel: useAppStore.getState().audioEnergy?.label,
         streamEvents: useAppStore.getState().streamEvents.slice(-5),
         superchargeMode: supercharged,
+        threadContext: formatThreadContext(botUsername?.toLowerCase()),
       });
       const responseTimeMs = Date.now() - decisionStartTime;
       console.log("[AutoForge] Decision:", decision);
