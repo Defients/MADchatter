@@ -6,7 +6,7 @@ import { getPlatformSendFn } from "../lib/platformSend";
 import { botCoordinator, type BotCandidate } from "../lib/botCoordinator";
 import { playSfx } from "../lib/sfx";
 import { speakMessage } from "../lib/tts";
-import { getActiveProvider, getApiKey, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
+import { getActiveProvider, getApiKey } from "../lib/keys";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
@@ -36,7 +36,7 @@ import {
   countPostSendEngagement,
 } from "../lib/autoForgeCore";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
-import { isSchedulerCancellation } from "../lib/aiScheduler";
+import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response.
 // Mirrors the legacy useAutoForge constant so multi-bot engagement metrics
@@ -124,16 +124,12 @@ export function useAutoForgeBot(botId: string) {
     store.setBotIsAutoForgeThinking(botId, true);
     try {
       const activeProvider = getActiveProvider();
-      if (!getApiKey(activeProvider) && !hasAnyApiKey()) {
+      // Only the user-selected provider is used — no cross-provider fallback.
+      // If the selected provider isn't configured, skip quietly rather than
+      // silently rerouting to another provider that happens to have a key.
+      if (!getApiKey(activeProvider)) {
         store.setBotAutoForgeNextActionMs(botId, Date.now() + 60000);
         return;
-      }
-      if (!getApiKey(activeProvider)) {
-        const fallback = getProviderWithKey();
-        if (!fallback) {
-          store.setBotAutoForgeNextActionMs(botId, Date.now() + 60000);
-          return;
-        }
       }
 
       // ── Activity metrics (from shared chat) ──────────────────────────────
@@ -230,7 +226,7 @@ export function useAutoForgeBot(botId: string) {
               useAppStore.getState().setSmartRepliesLoading(false);
             })
             .catch((e) => {
-              if (!isSchedulerCancellation(e)) {
+              if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
                 console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
               }
               useAppStore.getState().setSmartRepliesLoading(false);
@@ -726,7 +722,7 @@ export function useAutoForgeBot(botId: string) {
             // Scheduler preemption/cancellation is an intentional yield —
             // don't log as a failure or toast; let the outer catch reschedule
             // quietly.
-            if (isSchedulerCancellation(e)) {
+            if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "skipped" });
               releaseFM();
               throw e;
@@ -1078,16 +1074,17 @@ export function useAutoForgeBot(botId: string) {
       store.setBotAutoForgeNextActionMs(botId, nowMs + nextMin * 60 * 1000);
     } catch (e: any) {
       const errMsg = e?.message || "Unknown error";
-      if (isSchedulerCancellation(e)) {
-        // Intentional yield — the scheduler preempted/cancelled this work for
-        // higher-priority traffic (e.g. a vision capture or manual forge).
-        // Not a failure: no error toast, retry shortly instead of +60s.
+      if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
+        // Intentional yield or queue timeout — not a failure. The scheduler
+        // either preempted/cancelled this work for higher-priority traffic,
+        // or the request waited too long for the Ollama slot (too many bots
+        // queued). No error toast, retry shortly instead of +60s.
         console.log(`[AutoForgeBot ${botId}] yielded: ${errMsg}`);
         store.addBotAutoForgeEvent(botId, {
           timestamp: Date.now(),
           type: "silence",
           severity: "low",
-          summary: `[${bot.session?.username ?? botId}] Yielded to higher-priority request — retrying shortly`,
+          summary: `[${bot.session?.username ?? botId}] ${isQueueTimeout(e) ? "Queue timeout — Ollama slot busy" : "Yielded to higher-priority request"} — retrying shortly`,
           details: { reason: errMsg },
         });
         store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
@@ -1109,13 +1106,35 @@ export function useAutoForgeBot(botId: string) {
   };
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    // Stagger bot check intervals so they don't all fire at once and flood
+    // the single Ollama slot. Each bot's tick is offset by its index in the
+    // roster, distributed evenly across the 15s window. Without this, N
+    // bots all queue simultaneously → queue depth N × ~10s → later bots
+    // always queue-timeout.
+    const computeStaggerMs = () => {
+      const bots = useAppStore.getState().bots;
+      const idx = bots.findIndex((b) => b.id === botId);
+      const count = bots.length || 1;
+      return Math.max(0, idx) * (15000 / count);
+    };
+
+    const tick = () => {
       const store = useAppStore.getState();
       if (store.multiBotEnabled && store.autoForgeEnabled && store.autoForgeAutoCheckEnabled) {
         const bot = store.bots.find((b) => b.id === botId);
         if (bot && bot.active && bot.session) checkBot();
       }
-    }, 15000);
+    };
+
+    // Initial staggered start — each bot waits its offset before the first
+    // tick, then settles into the regular 15s cadence.
+    const staggerMs = computeStaggerMs();
+    const startTimer = setTimeout(() => {
+      tick();
+      const interval = setInterval(tick, 15000);
+      // Store the interval ref so cleanup can clear it.
+      (startTimer as any).__interval = interval;
+    }, staggerMs);
 
     // Clean up expired smart replies every 10 seconds (mirrors legacy loop).
     // Multiple bot loops may run this — the work is idempotent and trivial.
@@ -1142,7 +1161,9 @@ export function useAutoForgeBot(botId: string) {
     window.addEventListener("autoforge-force-check", onForce);
 
     return () => {
-      clearInterval(interval);
+      clearTimeout(startTimer);
+      const interval = (startTimer as any).__interval as ReturnType<typeof setInterval> | undefined;
+      if (interval) clearInterval(interval);
       clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForce);
       if (followupTimerRef.current) {

@@ -280,7 +280,13 @@
   .forge-logo-glow,
   .first-message-ring,
   .multibot-icon-active,
-  .multibot-btn-active {
+  .multibot-btn-active,
+  .forge-processing-icon,
+  .forge-processing-bar,
+  .forge-waiting-pulse,
+  .forge-btn-shimmer,
+  .forge-btn-glow,
+  .forge-btn-active-pulse {
     animation: none !important;
     transition: none !important;
   }
@@ -736,6 +742,54 @@
 }
 .animate-spin-slow {
   animation: spin-slow 3s linear infinite;
+}
+
+@keyframes forge-processing-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+.forge-processing-icon {
+  animation: forge-processing-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes forge-processing-bar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.forge-processing-bar {
+  animation: forge-processing-bar 1.2s ease-in-out infinite;
+}
+
+@keyframes forge-waiting-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+.forge-waiting-pulse {
+  animation: forge-waiting-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes forge-btn-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.forge-btn-shimmer {
+  animation: forge-btn-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes forge-btn-glow {
+  0%, 100% { box-shadow: 0 0 12px 2px rgba(249,115,22,0.4), 0 0 24px 4px rgba(239,68,68,0.2); }
+  50% { box-shadow: 0 0 20px 4px rgba(249,115,22,0.6), 0 0 36px 8px rgba(239,68,68,0.35); }
+}
+.forge-btn-glow {
+  animation: forge-btn-glow 1.2s ease-in-out infinite;
+}
+
+@keyframes forge-btn-active-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+.forge-btn-active-pulse {
+  animation: forge-btn-active-pulse 0.7s ease-in-out infinite;
 }
 
 @keyframes visual-auto-pulse {

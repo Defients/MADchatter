@@ -1,4 +1,4 @@
-import { getApiKey, getProviderWithKey, getKeys, hasAnyApiKey } from "./keys";
+import { getApiKey } from "./keys";
 
 export interface FallbackResult {
   provider: string;
@@ -7,14 +7,14 @@ export interface FallbackResult {
 }
 
 export function getFallbackChain(primaryProvider: string): string[] {
-  const chain: string[] = [primaryProvider];
-  const all = ["gemini", "openai", "claude", "openrouter", "ollama"];
-  for (const p of all) {
-    if (p !== primaryProvider && getApiKey(p)) {
-      chain.push(p);
-    }
-  }
-  return chain;
+  // Only the user-selected provider is used. A stored API key alone does NOT
+  // opt a provider into the fallback chain — the user picks exactly one
+  // provider in the dropdown and expects only that provider to be used.
+  // Silent rerouting to an unselected provider (e.g. OpenRouter just because
+  // a key was pasted) causes surprising timeouts and confusing error labels.
+  // Health-based cooldown still applies via getHealthyFallbackChain().
+  if (!getApiKey(primaryProvider)) return [];
+  return [primaryProvider];
 }
 
 export function getNextAvailableProvider(exclude: string[]): string | null {

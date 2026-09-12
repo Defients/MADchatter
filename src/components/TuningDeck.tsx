@@ -162,6 +162,9 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     setBotIdentityStory,
   } = useAppStore();
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  // Tracks which Forge button was clicked so we can animate it while processing.
+  // null = no active forge, undefined = main "FORGE SMART" button, 1-4 = that number button.
+  const [forgeClickedButton, setForgeClickedButton] = useState<number | null | undefined>(null);
   // Creative Tools inline input state
   const [showTemplateInput, setShowTemplateInput] = useState(false);
   const [templateName, setTemplateName] = useState("");
@@ -404,6 +407,8 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   const handleForge = async (count?: number, autoSend?: boolean) => {
     const { config: cfg, streamMetadata: sm, audioTranscript: at, chatLog: cl, visualSnapshotUrl: vsu, visualContextTags: vct, longTermMemory: ltm, pinnedMemories: pm, goldenMemoryId: gmid, isForging: forging, autoMemoryConfig: cl_autoMemoryConfig, autoMemories: cl_autoMemories, userProfiles: cl_userProfiles, insideJokes: cl_insideJokes, personalityState: cl_personalityState } = forgeDataRef.current;
     if (forging) return;
+    playSfx('forge_start');
+    setForgeClickedButton(count);
     const forgePlatform = useAppStore.getState().platform;
     setIsForging(true);
     toast.loading(count ? `Forging ${count} co-pilot variant${count > 1 ? "s" : ""}...` : "Forging new co-pilot variants...", { id: "forging-variants" });
@@ -484,6 +489,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       toast.error(e.message || "Error forging variants", { id: "forging-variants" });
     } finally {
       setIsForging(false);
+      setForgeClickedButton(null);
     }
   };
 
@@ -2934,10 +2940,20 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             )}
           </div>
           <Button
-            className="flex-1 h-11 bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 text-white font-black text-sm tracking-widest shadow-[0_0_24px_rgba(249,115,22,0.35)] gap-2"
+            className={cn(
+              "flex-1 h-11 bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-400 hover:to-red-500 text-white font-black text-sm tracking-widest gap-2 relative overflow-hidden transition-all",
+              isForging
+                ? "from-orange-600 to-red-700 forge-btn-glow"
+                : "shadow-[0_0_24px_rgba(249,115,22,0.35)]",
+            )}
             onClick={() => handleForge()}
             disabled={isForging}
           >
+            {isForging && (
+              <span className="absolute inset-0 overflow-hidden pointer-events-none">
+                <span className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/30 to-transparent forge-btn-shimmer" />
+              </span>
+            )}
             {isForging ? (
               <>
                 <Bot className="w-4 h-4 animate-spin" /> FORGING...
@@ -2948,21 +2964,32 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               </>
             )}
           </Button>
-          {[1, 2, 3, 4].map((n) => (
+          {[1, 2, 3, 4].map((n) => {
+            const isClicked = isForging && forgeClickedButton === n;
+            return (
             <Button
               key={n}
-              className={`w-11 h-11 font-black text-sm shadow-lg transition-all ${
+              className={cn(
+                "w-11 h-11 font-black text-sm shadow-lg transition-all relative overflow-hidden",
                 n === 1 ? "bg-orange-500/80 hover:bg-orange-400/80 text-white shadow-orange-500/20" :
                 n === 2 ? "bg-orange-600/80 hover:bg-orange-500/80 text-white shadow-orange-600/20" :
                 n === 3 ? "bg-red-600/80 hover:bg-red-500/80 text-white shadow-red-600/20" :
-                          "bg-red-700/80 hover:bg-red-600/80 text-white shadow-red-700/20"
-              }`}
+                          "bg-red-700/80 hover:bg-red-600/80 text-white shadow-red-700/20",
+                isClicked && "forge-btn-active-pulse forge-btn-glow",
+                isForging && !isClicked && "opacity-40",
+              )}
               onClick={() => handleForge(n)}
               disabled={isForging}
             >
-              {n}
+              {isClicked && (
+                <span className="absolute inset-0 overflow-hidden pointer-events-none">
+                  <span className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/40 to-transparent forge-btn-shimmer" />
+                </span>
+              )}
+              {isClicked ? <Bot className="w-4 h-4 animate-spin" /> : n}
             </Button>
-          ))}
+            );
+          })}
         </div>
       </div>
 

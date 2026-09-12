@@ -30,6 +30,7 @@ import {
   getOperationTokenBudget,
   getOperationTimeout,
   isSchedulerCancellation,
+  isQueueTimeout,
   type AIRequestPriority,
 } from "./aiScheduler";
 
@@ -1230,10 +1231,15 @@ DECIDE NOW.`;
       // fallback provider; that would defeat the yield. Rethrow so the caller
       // can reschedule quietly.
       if (isSchedulerCancellation(e)) throw e;
+      // Queue timeout: the request waited too long for the Ollama slot (too
+      // many bots queued). This is a capacity issue, NOT a provider failure —
+      // don't poison provider health or trigger cooldown. Rethrow so the
+      // caller can reschedule quietly (same as preemption).
+      if (isQueueTimeout(e)) throw e;
       recordProviderFailure(currentProvider);
       lastError = e;
       usedFallback = true;
-      console.warn(`[AutoForge] Provider ${currentProvider} failed: ${e.message}. Trying fallback...`);
+      console.warn(`[AutoForge] Provider ${currentProvider} failed: ${e.message}`);
       // D3: Record fallback for analytics
       const nextProvider = fallbackChain[fallbackChain.indexOf(currentProvider) + 1];
       if (nextProvider) {

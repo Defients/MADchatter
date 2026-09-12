@@ -12,6 +12,7 @@ import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
 import { getActiveProvider, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
+import { cn } from "../lib/utils";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { getAvailableEmoteNames } from "../lib/emotes";
@@ -737,9 +738,17 @@ export function TheForge() {
               <button
                 onClick={handleForge}
                 disabled={isForging}
-                className="group relative px-6 py-2.5 rounded-xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 hover:border-orange-400/50 text-orange-300 hover:text-orange-200 font-bold text-sm transition-all shadow-lg hover:shadow-orange-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                className={cn(
+                  "group relative px-6 py-2.5 rounded-xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 hover:border-orange-400/50 text-orange-300 hover:text-orange-200 font-bold text-sm transition-all shadow-lg hover:shadow-orange-500/10 disabled:cursor-not-allowed overflow-hidden",
+                  isForging && "forge-btn-glow",
+                )}
               >
-                <Flame className="w-4 h-4 inline-block mr-2 group-hover:animate-pulse" />
+                {isForging && (
+                  <span className="absolute inset-0 overflow-hidden pointer-events-none">
+                    <span className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/20 to-transparent forge-btn-shimmer" />
+                  </span>
+                )}
+                <Flame className={cn("w-4 h-4 inline-block mr-2", isForging ? "animate-spin" : "group-hover:animate-pulse")} />
                 {isForging ? "Forging..." : "Forge First Batch"}
               </button>
             )}

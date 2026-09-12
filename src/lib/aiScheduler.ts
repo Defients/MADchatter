@@ -15,9 +15,12 @@
 
 export class AIRequestTimeoutError extends Error {
   readonly code = "AI_TIMEOUT" as const;
-  constructor(operation: string, timeoutMs: number) {
-    super(`${operation} timed out after ${timeoutMs}ms`);
+  /** true = timed out waiting in the Ollama queue (capacity issue, not provider failure). */
+  readonly queued: boolean;
+  constructor(operation: string, timeoutMs: number, queued = false) {
+    super(`${operation} timed out after ${timeoutMs}ms${queued ? " (in queue)" : ""}`);
     this.name = "AIRequestTimeoutError";
+    this.queued = queued;
   }
 }
 
@@ -45,6 +48,11 @@ export type AIRequestError =
 /** Check if an error is an intentional scheduler cancellation (not a provider failure). */
 export function isSchedulerCancellation(e: unknown): boolean {
   return e instanceof AIRequestPreemptedError || e instanceof AIRequestCancelledError;
+}
+
+/** Check if an error is a queue timeout (capacity issue, not a provider failure). */
+export function isQueueTimeout(e: unknown): boolean {
+  return e instanceof AIRequestTimeoutError && (e as AIRequestTimeoutError).queued;
 }
 
 /** Check if an error is a timeout (genuine provider stall or slow response). */
@@ -359,7 +367,7 @@ class AIScheduler {
           `[AIQueue] queue-timeout ${meta.operation} waited=${meta.queueWaitMs}ms timeoutMs=${meta.timeoutMs}` +
           `${meta.botId ? ` bot=${meta.botId}` : ""}`,
         );
-        reject(new AIRequestTimeoutError(meta.operation, meta.timeoutMs));
+        reject(new AIRequestTimeoutError(meta.operation, meta.timeoutMs, true));
       }, waitBudgetMs);
 
       // Cancel the deadline once the slot resolves or is rejected.
@@ -612,7 +620,10 @@ export function getOperationTimeout(
     case "vision":
       return isOllama ? 20_000 : 30_000;
     case "autoforge_decide":
-      return isOllama ? 30_000 : 30_000;
+      // Ollama: allow extra room for multi-bot queue depth. Even with
+      // staggered intervals, a vision preemption + retry can briefly
+      // queue 2-3 bots. 45s gives ~3 × 10s execution slots of slack.
+      return isOllama ? 45_000 : 30_000;
     case "autoforge_briefing":
       return isOllama ? 30_000 : 30_000;
     case "memory_extraction":

@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from "react"
 import { createPortal } from "react-dom";
 import { playSfx } from "../lib/sfx";
 import { toast } from "sonner";
+import { useAppStore } from "../store";
 
 // ─── Physics constants ─────────────────────────────────────────────────────
 const MIN_VELOCITY = 0.04;
@@ -153,6 +154,14 @@ type FidgetSpinnerProps = {
 };
 
 export function FidgetSpinner({ size = 80, className = "", showSpinCount = true }: FidgetSpinnerProps) {
+  // Per-streamer-profile spin count: key the localStorage by channel name so
+  // each streamer profile keeps its own spin total + tier progression.
+  const channelName = useAppStore((s) => s.streamMetadata?.channelName || "");
+  const storageKey = useMemo(
+    () => `fidget-total-spins:${channelName || "default"}`,
+    [channelName],
+  );
+
   const svgRef = useRef<SVGSVGElement>(null);
   const rotationRef = useRef(0);
   const velocityRef = useRef(0);
@@ -208,30 +217,58 @@ export function FidgetSpinner({ size = 80, className = "", showSpinCount = true 
   const starsCountRef = useRef(0);
   const lightningCountRef = useRef(0);
 
-  // Load persisted spin count
+  // Load persisted spin count for the current streamer profile. Re-runs when
+  // the channel changes — saves the current spins to the old key first, then
+  // loads the new profile's spins and resets the rotation refs.
+  const storageKeyRef = useRef(storageKey);
   useEffect(() => {
-    const saved = localStorage.getItem("fidget-total-spins");
-    if (saved) {
-      const parsed = parseInt(saved, 10) || 0;
-      setTotalSpins(parsed);
-      lastSpinCountRef.current = parsed;
-      totalRotationRef.current = parsed * 360;
-      const tier = getTierForSpins(parsed);
-      lastTierIdRef.current = tier.id;
-      setUnlockedTier(tier.id);
+    // Channel changed mid-session: persist the old profile's spins first.
+    if (storageKeyRef.current !== storageKey) {
+      const oldSpins = Math.floor(Math.abs(totalRotationRef.current) / 360);
+      localStorage.setItem(storageKeyRef.current, String(oldSpins));
+      storageKeyRef.current = storageKey;
     }
-  }, []);
 
-  // Persist spin count periodically
+    // One-time migration: if this profile has no saved spins but the old
+    // global key exists, inherit those spins (so existing users don't lose
+    // their progress on the first load after this change).
+    let saved = localStorage.getItem(storageKey);
+    if (saved === null) {
+      const legacy = localStorage.getItem("fidget-total-spins");
+      if (legacy) {
+        localStorage.setItem(storageKey, legacy);
+        saved = legacy;
+      }
+    }
+
+    const parsed = saved ? (parseInt(saved, 10) || 0) : 0;
+    setTotalSpins(parsed);
+    lastSpinCountRef.current = parsed;
+    totalRotationRef.current = parsed * 360;
+    lastMilestoneRef.current = Math.floor(parsed / 1000) * 1000;
+    lastBigMilestoneRef.current = Math.floor(parsed / 10000) * 10000;
+    const tier = getTierForSpins(parsed);
+    lastTierIdRef.current = tier.id;
+    setUnlockedTier(tier.id);
+    // Reset rotation display so the spinner doesn't visually jump to the old
+    // profile's angle. The RAF loop will pick up the new rotationRef.
+    rotationRef.current = 0;
+    setRotation(0);
+  }, [storageKey]);
+
+  // Persist spin count periodically (per-profile key)
   useEffect(() => {
     persistTimerRef.current = window.setInterval(() => {
       const spins = Math.floor(Math.abs(totalRotationRef.current) / 360);
-      localStorage.setItem("fidget-total-spins", String(spins));
+      localStorage.setItem(storageKey, String(spins));
     }, 3000);
     return () => {
       if (persistTimerRef.current) clearInterval(persistTimerRef.current);
+      // Final flush on unmount/key change
+      const spins = Math.floor(Math.abs(totalRotationRef.current) / 360);
+      localStorage.setItem(storageKey, String(spins));
     };
-  }, []);
+  }, [storageKey]);
 
   // Current tier (memoized from totalSpins)
   const tier = useMemo(() => getTierForSpins(totalSpins), [totalSpins]);

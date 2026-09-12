@@ -114,6 +114,7 @@ export function AutoForgeHUD() {
     engagementScore,
     streamLikelyOffline,
     bots,
+    isAutoForgeThinking,
     autoForgeAutoCheckEnabled,
     setAutoForgeAutoCheckEnabled,
   } = useAppStore();
@@ -159,6 +160,13 @@ export function AutoForgeHUD() {
     ? activeBots.reduce<number>((min, b) => Math.min(min, b.runtime.autoForgeNextActionMs), Infinity)
     : (autoForgeNextActionMs ?? 0);
   const effectiveNextActionMs = rawNext === Infinity ? 0 : rawNext;
+
+  // Processing state: true when any bot is actively running an AutoForge
+  // check (the AI call is in-flight). In multi-bot mode, check per-bot
+  // runtime flags; in legacy mode, check the global thinking flag.
+  const isProcessing = multiBotActive
+    ? activeBots.some((b) => b.runtime.isAutoForgeThinking)
+    : isAutoForgeThinking;
 
   const effectiveLastActionMs = multiBotActive
     ? activeBots.reduce<number>((max, b) => Math.max(max, b.runtime.autoForgeLastActionMs ?? 0), 0)
@@ -222,6 +230,16 @@ export function AutoForgeHUD() {
     ? "text-[8px] bg-amber-500/25 hover:bg-amber-500/50 text-amber-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors shadow-[0_0_8px_rgba(234,179,8,0.25)] animate-pulse"
     : "text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors";
 
+  // NEXT CHECK display state — three distinct visual modes:
+  // 1. Paused: auto-scheduling off (existing)
+  // 2. Processing: a bot is actively running an AI check — animated brain +
+  //    sweeping progress bar so the user can see work is in-flight
+  // 3. Waiting: timer hit 0 but no bot is processing — the 15s interval
+  //    hasn't fired yet. Subtle pulse so "0s stuck" reads as "waiting for
+  //    tick" rather than "frozen"
+  // 4. Countdown: normal timer (existing)
+  const isWaiting = !nextCheckPaused && !isProcessing && timeUntilNext === 0;
+
   const decisionType = effectiveDecision?.decision || 'None';
   // Defensive: if a model returned reason/action_payload as a non-string
   // (e.g. a nested object), coerce to string so React never sees an object
@@ -256,9 +274,15 @@ export function AutoForgeHUD() {
       <div className="flex items-center justify-between p-2.5 border-b border-white/10 bg-black/40">
         <div className="flex items-center gap-2">
           <div className="relative flex items-center justify-center">
-            <Brain className={cn("w-4 h-4 relative z-10", autoForgeEnabled ? "text-red-500" : "text-gray-500")} />
-            {autoForgeEnabled && (
+            <Brain className={cn(
+              "w-4 h-4 relative z-10",
+              isProcessing ? "text-cyan-400 forge-processing-icon" : autoForgeEnabled ? "text-red-500" : "text-gray-500",
+            )} />
+            {autoForgeEnabled && !isProcessing && (
               <span className="absolute w-4 h-4 bg-red-500/30 rounded-full animate-ping" />
+            )}
+            {isProcessing && (
+              <span className="absolute w-4 h-4 bg-cyan-500/30 rounded-full animate-ping" />
             )}
           </div>
           <span data-tutorial="autoforge-header" className="font-mono text-xs font-bold tracking-widest text-gray-300 uppercase">
@@ -348,22 +372,42 @@ export function AutoForgeHUD() {
             <div className="flex items-center justify-between p-2 bg-white/5 rounded border border-white/5 relative overflow-hidden">
               <div className="flex flex-col min-w-0 flex-1">
                 <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
-                  <Sparkles className="w-3 h-3 text-purple-400" /> Next Check
+                  {isProcessing ? (
+                    <Brain className="w-3 h-3 text-cyan-400 forge-processing-icon" />
+                  ) : (
+                    <Sparkles className="w-3 h-3 text-purple-400" />
+                  )} Next Check
                 </span>
                 <span className={cn(
                   "text-xs font-mono font-bold mt-0.5 transition-colors",
                   nextCheckPaused
                     ? "text-gray-500"
+                    : isProcessing
+                    ? "text-cyan-400"
+                    : isWaiting
+                    ? "text-gray-400 forge-waiting-pulse"
                     : cn(nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext)),
                 )}>
-                  {nextCheckPaused ? "Paused" : `${timeUntilNext}s`}
+                  {nextCheckPaused
+                    ? "Paused"
+                    : isProcessing
+                    ? "Processing..."
+                    : isWaiting
+                    ? "Waiting..."
+                    : `${timeUntilNext}s`}
                 </span>
                 {/* Micro-check progress bar */}
-                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5">
-                  <div
-                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : nextCheckBarColor(timeUntilNext))}
-                    style={{ width: nextCheckPaused ? "100%" : `${cyclePct}%` }}
-                  />
+                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5 relative">
+                  {isProcessing ? (
+                    <div className="absolute inset-0 overflow-hidden">
+                      <div className="absolute inset-y-0 w-1/2 bg-cyan-500 forge-processing-bar" />
+                    </div>
+                  ) : (
+                    <div
+                      className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : isWaiting ? "bg-gray-500" : nextCheckBarColor(timeUntilNext))}
+                      style={{ width: nextCheckPaused ? "100%" : isWaiting ? "100%" : `${cyclePct}%` }}
+                    />
+                  )}
                 </div>
               </div>
               {/* Acceleration flash cue */}
@@ -501,22 +545,42 @@ export function AutoForgeHUD() {
 
               <div className="flex flex-col p-2 bg-white/5 rounded border border-white/5 relative overflow-hidden">
                 <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
-                  <Sparkles className="w-3 h-3 text-purple-400" /> Next Check
+                  {isProcessing ? (
+                    <Brain className="w-3 h-3 text-cyan-400 forge-processing-icon" />
+                  ) : (
+                    <Sparkles className="w-3 h-3 text-purple-400" />
+                  )} Next Check
                 </span>
                 <span className={cn(
                   "text-xs font-mono font-bold mt-0.5 transition-colors",
                   nextCheckPaused
                     ? "text-gray-500"
+                    : isProcessing
+                    ? "text-cyan-400"
+                    : isWaiting
+                    ? "text-gray-400 forge-waiting-pulse"
                     : cn(nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext)),
                 )}>
-                  {nextCheckPaused ? "Paused" : `${timeUntilNext}s`}
+                  {nextCheckPaused
+                    ? "Paused"
+                    : isProcessing
+                    ? "Processing..."
+                    : isWaiting
+                    ? "Waiting..."
+                    : `${timeUntilNext}s`}
                 </span>
                 {/* Micro-check progress bar */}
-                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5">
-                  <div
-                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : nextCheckBarColor(timeUntilNext))}
-                    style={{ width: nextCheckPaused ? "100%" : `${cyclePct}%` }}
-                  />
+                <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5 relative">
+                  {isProcessing ? (
+                    <div className="absolute inset-0 overflow-hidden">
+                      <div className="absolute inset-y-0 w-1/2 bg-cyan-500 forge-processing-bar" />
+                    </div>
+                  ) : (
+                    <div
+                      className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : isWaiting ? "bg-gray-500" : nextCheckBarColor(timeUntilNext))}
+                      style={{ width: nextCheckPaused ? "100%" : isWaiting ? "100%" : `${cyclePct}%` }}
+                    />
+                  )}
                 </div>
                 {/* Acceleration flash cue */}
                 <AnimatePresence>

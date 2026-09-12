@@ -8,7 +8,7 @@ import {
   runDecayCycle,
   type ExtractionParams,
 } from "../lib/memoryEngine";
-import { isSchedulerCancellation, isSchedulerTimeout } from "../lib/aiScheduler";
+import { isSchedulerCancellation, isSchedulerTimeout, isQueueTimeout } from "../lib/aiScheduler";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { startNewSession, saveSessionEnd, detectMoodWithLock, evolveTraits, updateComfortLevel, addRelationshipMilestone } from "../lib/personalityEngine";
 import * as memoryStore from "../lib/memoryStore";
@@ -229,8 +229,10 @@ export function useAutoMemory() {
             // Intentional preemption/cancellation: NOT a failure. No backoff.
             // The scheduler cancelled us because a higher-priority request
             // (e.g. manual Forge) needed the GPU. We'll try again next cycle.
-            if (isSchedulerCancellation(e)) {
-              console.log(`[AutoMemory] Extraction cancelled (preempted) — will retry next cycle`);
+            if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
+              // Intentional preemption/cancellation, or queue timeout (Ollama
+              // slot was too busy). NOT a failure. No backoff.
+              console.log(`[AutoMemory] Extraction ${isQueueTimeout(e) ? "queue timeout" : "cancelled (preempted)"} — will retry next cycle`);
               // Reset the extraction timer so we retry soon, but don't backoff.
               lastExtractionRef.current = now;
               // Don't update the cursor — we didn't process anything.

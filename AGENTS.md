@@ -46,9 +46,9 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `buildProviderRequestOptions("ollama")` adds `reasoning_effort: "none"` to prevent hidden GPU deliberation.
 - `getOperationTokenBudget()` scales output budgets by operation type and card count.
 - `getOperationTimeout()` gives each operation+provider pair an appropriate timeout.
-- Error taxonomy: `AIRequestTimeoutError`, `AIRequestPreemptedError`, `AIRequestCancelledError`. Use `isSchedulerCancellation()` to avoid poisoning provider health on intentional preemption.
+- Error taxonomy: `AIRequestTimeoutError` (with `queued` flag for queue-wait timeouts), `AIRequestPreemptedError`, `AIRequestCancelledError`. Use `isSchedulerCancellation()` for preemption/cancellation and `isQueueTimeout()` for queue-wait timeouts — both avoid poisoning provider health on intentional/capacity issues.
 - `getMetricsSummary()` / `getMetricsHistory()` for diagnostics.
-- Tests: `npx tsx src/lib/aiScheduler.test.ts` (38 deterministic tests).
+- Tests: `npx tsx src/lib/aiScheduler.test.ts` (41 deterministic tests).
 
 ### Ollama Health Check (`src/lib/ollamaHealth.ts`)
 - `checkOllamaHealth(baseUrl, model)` — lightweight `/v1/models` check with 30s cache.
@@ -57,12 +57,14 @@ Known non-fatal Vite build warnings (safe to ignore):
 
 ### AutoForge Loops
 - Legacy: `useAutoForge()` — 15s interval, self-disables when `selectMultiBotActive` is true.
-- Per-bot: `useAutoForgeBot(botId)` — 15s interval per bot, requests speaker floor from `botCoordinator`.
+- Per-bot: `useAutoForgeBot(botId)` — 15s interval per bot, requests speaker floor from `botCoordinator`. Intervals are staggered by bot index across the 15s window so they don't all fire at once and flood the single Ollama slot.
 - Orchestrator: `useMultiBotOrchestrator()` — returns JSX with `<BotLoopHost>` that mounts per-bot hooks. Must be rendered in App.tsx.
 - Both loops run a `vibeCheck()` pre-filter before the expensive `autoforgeDecide` AI call — skips dead-chat/offline/user-forging cycles without spending tokens. Never skips mentions or spikes.
 - Both loops track `consecutiveSilenceRef` and apply `computeAdaptiveBackoff()` to lengthen the check interval during dead periods (resets on any action; mentions/spikes bypass).
-- Watchdogs (120s): the in-flight check guard and global `isForging` self-heal if a hung await wedges them. Force bypasses a live `isForging` gate; scheduler cancellations reschedule quietly (+20s) without error toasts.
+- Watchdogs (120s): the in-flight check guard and global `isForging` self-heal if a hung await wedges them. Force bypasses a live `isForging` gate; scheduler cancellations and queue timeouts reschedule quietly (+20s) without error toasts.
+- Queue timeouts (`isQueueTimeout()`) are capacity issues (too many bots queued for the single Ollama slot), NOT provider failures — they don't poison provider health or trigger cooldown.
 - NEXT CHECK toggle (`autoForgeAutoCheckEnabled`, schema v19, default true): HUD-local clock button in the header pauses the 15s auto-scheduling tick in both loops. Force ignores it (only the master `autoForgeEnabled` gates force). When paused, the HUD shows "Paused" and Force buttons switch to an amber accent.
+- NEXT CHECK display has three visual states: **Processing** (cyan, animated brain + sweeping bar — an AI check is in-flight, derived from `isAutoForgeThinking` / per-bot `runtime.isAutoForgeThinking`), **Waiting** (dimmed gray pulse — timer hit 0 but the 15s interval hasn't fired yet), and the normal color-coded countdown. The header Brain icon also turns cyan with a processing pulse when a check is active.
 
 ### Speaker Coordinator (`src/lib/botCoordinator.ts`)
 - Singleton `botCoordinator`. `requestFloor(botId, candidate)` opens a 2.5s bid window; highest `confidence + personaFit * 0.001 + (isMentioned ? 0.15 : 0)` wins. 15s floor gap between speaks. Manual sends bypass the coordinator.
@@ -90,8 +92,8 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `openAiCompatEndpoint(provider, keys)` — centralizes OpenRouter/Ollama base URL + model defaults.
 
 ### Fallback (`src/lib/providerFallback.ts`)
-- `getHealthyFallbackChain(provider)` — ordered list of available providers.
-- Health tracking: 3 failures → 5min cooldown. `recordProviderFailure/Success`.
+- `getHealthyFallbackChain(provider)` — returns only the user-selected provider (a stored API key alone does NOT opt a provider into the chain). Health-based cooldown still applies: if the selected provider is in cooldown, the chain is empty and the operation fails rather than silently rerouting to an unselected provider.
+- Health tracking: 3 failures → 5min cooldown. `recordProviderFailure/Success`. Infrastructure preserved for future opt-in fallback.
 
 ### First Message Mode (multi-bot)
 - Header toggle (`FirstMessageToggle` in `MultiBotPanel.tsx`) — only shown when `multiBotEnabled`. Enabling creates a **cohort** of the currently active+authenticated bots.

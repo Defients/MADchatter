@@ -9,7 +9,7 @@ import { getPlatformSendFn } from "../lib/platformSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
-import { getActiveProvider, getApiKey, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
+import { getActiveProvider, getApiKey } from "../lib/keys";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
@@ -19,7 +19,7 @@ import { actionRateLimiter } from "../lib/actionRateLimiter";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { notifyMention, notifyAutoForgeError, notifyActivitySpike } from "../lib/notifications";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
-import { isSchedulerCancellation } from "../lib/aiScheduler";
+import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { evaluateAllRules } from "../lib/ruleEngine";
 import {
@@ -177,18 +177,12 @@ export function useAutoForge() {
     try {
       const activeProvider = getActiveProvider();
 
-      // Silently skip if no API key is configured for the active provider
-      if (!getApiKey(activeProvider) && !hasAnyApiKey()) {
+      // Only the user-selected provider is used — no cross-provider fallback.
+      // If the selected provider isn't configured, skip quietly rather than
+      // silently rerouting to another provider that happens to have a key.
+      if (!getApiKey(activeProvider)) {
         setAutoForgeNextActionMs(Date.now() + 60000);
         return;
-      }
-      if (!getApiKey(activeProvider)) {
-        // Active provider has no key, but another provider might — try to find one
-        const fallbackProvider = getProviderWithKey();
-        if (!fallbackProvider) {
-          setAutoForgeNextActionMs(Date.now() + 60000);
-          return;
-        }
       }
       
       // Calculate current chat activity 0-4 using message counter (not chatLog.length which is capped)
@@ -350,7 +344,7 @@ export function useAutoForge() {
               setSmartRepliesLoading(false);
             })
             .catch((e) => {
-              if (!isSchedulerCancellation(e)) {
+              if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
                 console.error("[AutoForge] Smart reply generation failed:", e);
               }
               setSmartRepliesLoading(false);
@@ -738,7 +732,7 @@ export function useAutoForge() {
           // Scheduler preemption/cancellation is an intentional yield —
           // don't log as a failure or toast; let the outer catch reschedule
           // quietly.
-          if (isSchedulerCancellation(e)) {
+          if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
             updateDecisionRef.current(decisionLogId, { outcome: "skipped" });
             throw e;
           }
@@ -985,15 +979,17 @@ export function useAutoForge() {
     } catch (e: any) {
       const errMsg = e?.message || 'Unknown error';
       const isMissingKey = errMsg.includes('No API key configured');
-      if (isSchedulerCancellation(e)) {
-        // Intentional yield — the scheduler preempted/cancelled this work for
-        // higher-priority traffic. Not a failure: no error toast, quick retry.
+      if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
+        // Intentional yield or queue timeout — not a failure. The scheduler
+        // either preempted/cancelled this work for higher-priority traffic,
+        // or the request waited too long for the Ollama slot (too many bots
+        // queued). No error toast, quick retry.
         console.log(`[AutoForge] yielded: ${errMsg}`);
         addEventRef.current({
           timestamp: Date.now(),
           type: "silence",
           severity: "low",
-          summary: `Yielded to higher-priority request — retrying shortly`,
+          summary: `${isQueueTimeout(e) ? "Queue timeout — Ollama slot busy" : "Yielded to higher-priority request"} — retrying shortly`,
           details: { reason: errMsg },
         });
         setAutoForgeNextActionMs(Date.now() + 20_000);

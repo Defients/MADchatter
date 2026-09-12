@@ -14,6 +14,7 @@ import {
   AIRequestCancelledError,
   isSchedulerCancellation,
   isSchedulerTimeout,
+  isQueueTimeout,
   buildProviderRequestOptions,
   getOperationTokenBudget,
   getOperationTimeout,
@@ -345,6 +346,11 @@ async function testQueuedRequestDeadline() {
 
   assert(queuedError instanceof AIRequestTimeoutError, `queued request should time out (got ${queuedError?.message ?? queuedError})`);
   assert(elapsed < 1000, `queued request should fail fast (elapsed=${elapsed}ms)`);
+  // Queue timeout must carry the `queued` flag so callers can distinguish
+  // capacity issues (don't poison provider health) from execution timeouts.
+  assert((queuedError as AIRequestTimeoutError).queued === true, "queue timeout should have queued=true");
+  assert(isQueueTimeout(queuedError), "isQueueTimeout should detect queue timeouts");
+  assert(!isSchedulerCancellation(queuedError), "queue timeout should NOT be a scheduler cancellation");
 
   // Active request settles eventually; slot frees for subsequent tests.
   const activeResult = await activePromise;
