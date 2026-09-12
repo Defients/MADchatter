@@ -277,8 +277,10 @@
   .forge-separator,
   .forge-panel-handle,
   .forge-header-aura,
-  .forge-logo-glow {
+  .forge-logo-glow,
+  .first-message-ring {
     animation: none !important;
+    transition: none !important;
   }
 }
 

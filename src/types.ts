@@ -385,7 +385,7 @@ export interface DecisionLogEntry {
   isMentioned: boolean;
   activitySpike: boolean;
   provider: string;
-  outcome?: "sent" | "failed" | "queued" | "stale";
+  outcome?: "sent" | "failed" | "queued" | "stale" | "skipped";
   responseTimeMs?: number;
 }
 
@@ -685,4 +685,29 @@ export interface Bot extends BotIdentity {
   session: BotSessionPayload | null;
   persona: BotPersona;
   runtime: BotRuntime;
+}
+
+// ─── First Message Mode (multi-bot) ────────────────────────────
+// When enabled, each currently participating Multi-Bot's next successful
+// outbound message is treated as a special "arrival" — the AI leans toward a
+// natural conversational entrance that lightly reveals the bot's persona.
+// State is split: the user preference (`firstMessageModeEnabled`) is persisted;
+// the runtime cohort below is ephemeral (never persisted) so it can never leak
+// across sessions, reloads, or stream/channel switches.
+
+export type FirstMessageStatus = "armed" | "sending" | "complete";
+
+export interface FirstMessageCohort {
+  // Unique id for this activation; a fresh toggle-on creates a new id.
+  id: string;
+  // Bot ids that were active+authenticated at toggle-on time. This is the
+  // fixed set required for completion — newly activated bots do NOT join an
+  // in-progress cohort, keeping progress deterministic.
+  botIds: string[];
+  // Per-bot status within this cohort. Absent = not a member.
+  status: Record<string, FirstMessageStatus>;
+  createdAt: number;
+  // Guards against duplicate confetti: set true exactly once when the cohort
+  // transitions to all-complete.
+  celebrated: boolean;
 }

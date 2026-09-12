@@ -187,7 +187,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
           abortSignal: signal,
         },
       }),
-      { operation: "extractMemories/gemini", provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+      { operation: `extractMemories/${provider}`, provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
     );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
@@ -213,7 +213,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         ],
         ...ollamaOpts,
       }, { signal }),
-      { operation: "extractMemories/openai", provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+      { operation: `extractMemories/${provider}`, provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
     );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
@@ -233,7 +233,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
         messages: [{ role: "user", content: userMessage }],
       }, { signal }),
-      { operation: "extractMemories/claude", provider, model: "claude-haiku-4-5-20251001", priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+      { operation: `extractMemories/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
     );
     generatedJsonStr = (response.content[0] as any).text || "{}";
     if (response.usage) {

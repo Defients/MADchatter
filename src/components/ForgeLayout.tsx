@@ -15,7 +15,8 @@ import { buttonVariants } from "./ui/button";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
-import { MultiBotPanel, MultiBotButton, MultiBotModeBadge } from "./MultiBotPanel";
+import { MultiBotPanel, MultiBotButton, MultiBotModeBadge, FirstMessageToggle } from "./MultiBotPanel";
+import { FirstMessageWatcher } from "./FirstMessageWatcher";
 import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useDeepgramTranscription } from "../hooks/useDeepgramTranscription";
 import { ensureMicPermission } from "../hooks/usePushToTalk";
@@ -260,6 +261,7 @@ export function ForgeLayout() {
 
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
 
   // Active auth based on platform
   const activeAuth = platform === 'kick' ? kickAuth : platform === 'joystick' ? joystickAuth : { user, loading: authLoading, loginError, loginInProgress, login, logout, loginWithDevToken, clearLoginError };
@@ -3019,6 +3021,9 @@ export function ForgeLayout() {
                     )}
                   </div>
 
+                  {/* First Message Mode toggle — only relevant in multi-bot mode */}
+                  {multiBotEnabled && <FirstMessageToggle />}
+
                   {/* Mode indicator: appears only when multi-bot is actually engaged */}
                   <MultiBotModeBadge />
 
@@ -3529,6 +3534,9 @@ export function ForgeLayout() {
       })}
       </>
       )}
+      {/* First Message Mode: confetti-on-completion + stream-change reset.
+          Non-visual (returns null); mounted here so it lives inside the app. */}
+      <FirstMessageWatcher />
     </TooltipProvider>
   );
 }

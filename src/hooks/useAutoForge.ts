@@ -19,6 +19,7 @@ import { actionRateLimiter } from "../lib/actionRateLimiter";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { notifyMention, notifyAutoForgeError, notifyActivitySpike } from "../lib/notifications";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
+import { isSchedulerCancellation } from "../lib/aiScheduler";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { evaluateAllRules } from "../lib/ruleEngine";
 import {
@@ -43,9 +44,15 @@ import {
 // D4: Post-send engagement correlation — delay before evaluating chat response
 const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
 
+// Max time a single check run (or a manual Forge) may hold its gate before
+// it's considered wedged — e.g. a hung SDK call or dead-socket send whose
+// promise never settles. A real forge never exceeds ~60s.
+const FORGE_WATCHDOG_MS = 120_000;
+
 export function useAutoForge() {
   const {
     autoForgeEnabled,
+    autoForgeAutoCheckEnabled,
     config,
     streamMetadata,
     audioTranscript,
@@ -102,11 +109,12 @@ export function useAutoForge() {
   const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Concurrency guard: prevents overlapping checkAutoForge executions
   const isAutoForgingRef = useRef(false);
+  const forgingStartedAtRef = useRef(0);
   // Track engagement-check timers for cleanup on unmount
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes });
+  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes });
 
-  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes };
+  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes };
 
   // Sync rate limiter config
   actionRateLimiter.updateConfig(rateLimitConfig);
@@ -130,15 +138,41 @@ export function useAutoForge() {
     // With 0–1 authed bots the legacy loop keeps running so there's no dead zone.
     // (Placed inside the callback so React's rules of hooks are unaffected.)
     if (selectMultiBotActive(useAppStore.getState())) return;
-    // Concurrency guard: skip if a previous check is still in-flight
-    if (isAutoForgingRef.current) return;
+    // Concurrency guard: skip if a previous check is still in-flight.
+    // Watchdog: if the previous run's await never settled (hung SDK call,
+    // dead-socket send, etc.) the flag would wedge the loop forever.
+    if (isAutoForgingRef.current) {
+      if (Date.now() - forgingStartedAtRef.current > FORGE_WATCHDOG_MS) {
+        console.warn(`[AutoForge] in-flight check exceeded ${FORGE_WATCHDOG_MS / 1000}s — resetting guard`);
+        isAutoForgingRef.current = false;
+        useAppStore.getState().setIsAutoForgeThinking(false);
+      } else {
+        if (force) toast.info("A check is already running — try again in a moment.");
+        return;
+      }
+    }
     const state = storeRef.current;
-    if (!state.autoForgeEnabled || state.isForging) return;
+    const live = useAppStore.getState();
+    // Self-heal a wedged manual-forge flag — a hung forge request would
+    // otherwise gate every AutoForge check + force forever.
+    if (live.isForging && (live.forgeStartedAtMs === null || Date.now() - live.forgeStartedAtMs > FORGE_WATCHDOG_MS)) {
+      console.warn(`[AutoForge] isForging stuck >${FORGE_WATCHDOG_MS / 1000}s — clearing stale flag`);
+      live.setIsForging(false);
+    }
+    if (!state.autoForgeEnabled) return;
+    if (live.isForging && !force) {
+      // Gated on a live manual forge — push NEXT CHECK forward so the HUD
+      // countdown reflects the real deferral instead of sitting at 0s.
+      setAutoForgeNextActionMs(Date.now() + 15_000);
+      return;
+    }
+    // force bypasses the isForging gate — the scheduler arbitrates contention.
 
     // Only trigger if we've passed the next scheduled action time
     if (!force && Date.now() < state.autoForgeNextActionMs) return;
 
     isAutoForgingRef.current = true;
+    forgingStartedAtRef.current = Date.now();
     setIsAutoForgeThinking(true);
     try {
       const activeProvider = getActiveProvider();
@@ -316,7 +350,9 @@ export function useAutoForge() {
               setSmartRepliesLoading(false);
             })
             .catch((e) => {
-              console.error("[AutoForge] Smart reply generation failed:", e);
+              if (!isSchedulerCancellation(e)) {
+                console.error("[AutoForge] Smart reply generation failed:", e);
+              }
               setSmartRepliesLoading(false);
             });
         }
@@ -699,6 +735,13 @@ export function useAutoForge() {
             },
           });
         } catch (e: any) {
+          // Scheduler preemption/cancellation is an intentional yield —
+          // don't log as a failure or toast; let the outer catch reschedule
+          // quietly.
+          if (isSchedulerCancellation(e)) {
+            updateDecisionRef.current(decisionLogId, { outcome: "skipped" });
+            throw e;
+          }
           console.error("[AutoForge] full_forge generation failed:", e);
           updateDecisionRef.current(decisionLogId, { outcome: "failed" });
           addEventRef.current({
@@ -942,22 +985,36 @@ export function useAutoForge() {
     } catch (e: any) {
       const errMsg = e?.message || 'Unknown error';
       const isMissingKey = errMsg.includes('No API key configured');
-      if (!isMissingKey) {
-        console.error("[AutoForge] execution failed:", e);
-        if (useAppStore.getState().desktopNotificationsEnabled) {
-          notifyAutoForgeError(errMsg);
-        }
-        toast.error(`AutoForge check failed: ${errMsg}`);
+      if (isSchedulerCancellation(e)) {
+        // Intentional yield — the scheduler preempted/cancelled this work for
+        // higher-priority traffic. Not a failure: no error toast, quick retry.
+        console.log(`[AutoForge] yielded: ${errMsg}`);
         addEventRef.current({
           timestamp: Date.now(),
-          type: "error",
-          severity: "high",
-          summary: `Error: ${errMsg}`,
-          details: { error: errMsg, stack: e.stack },
+          type: "silence",
+          severity: "low",
+          summary: `Yielded to higher-priority request — retrying shortly`,
+          details: { reason: errMsg },
         });
+        setAutoForgeNextActionMs(Date.now() + 20_000);
+      } else {
+        if (!isMissingKey) {
+          console.error("[AutoForge] execution failed:", e);
+          if (useAppStore.getState().desktopNotificationsEnabled) {
+            notifyAutoForgeError(errMsg);
+          }
+          toast.error(`AutoForge check failed: ${errMsg}`);
+          addEventRef.current({
+            timestamp: Date.now(),
+            type: "error",
+            severity: "high",
+            summary: `Error: ${errMsg}`,
+            details: { error: errMsg, stack: e.stack },
+          });
+        }
+        // Backoff on error
+        setAutoForgeNextActionMs(Date.now() + 60000);
       }
-      // Backoff on error
-      setAutoForgeNextActionMs(Date.now() + 60000);
     } finally {
       // Release concurrency guard
       isAutoForgingRef.current = false;
@@ -968,7 +1025,7 @@ export function useAutoForge() {
   useEffect(() => {
     // Run the check every 15 seconds to see if it's time to act
     const interval = setInterval(() => {
-      if (storeRef.current.autoForgeEnabled) {
+      if (storeRef.current.autoForgeEnabled && storeRef.current.autoForgeAutoCheckEnabled) {
         checkAutoForge();
       }
     }, 15000);

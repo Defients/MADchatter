@@ -228,7 +228,7 @@ async function testProviderSwitchCancels() {
 
   const error = await bgPromise;
   assert(tracker.wasAborted(), "should be aborted after cancelProvider");
-  assert(isSchedulerCancellation(error) || isSchedulerTimeout(error), "should be cancellation or timeout");
+  assert(error instanceof AIRequestCancelledError, "should be classified as cancelled (not timeout)");
 }
 
 async function testSlotReleased() {
@@ -321,6 +321,77 @@ async function testTimeouts() {
   assert(cloudForgeTimeout > 0, "cloud Forge timeout should be positive");
 }
 
+async function testQueuedRequestDeadline() {
+  // If the active Ollama request ignores abort and settles very late (simulating
+  // a hung SDK call), a queued request must NOT wait forever — it should reject
+  // with AIRequestTimeoutError at its own deadline.
+  const lateSettle = () => new Promise<string>((resolve) => {
+    // Ignores the abort signal entirely; resolves after 400ms.
+    setTimeout(() => resolve("late"), 400);
+  });
+  const activePromise = aiScheduler.execute(
+    lateSettle,
+    { operation: "hung-active", provider: "ollama", priority: "critical", timeoutMs: 10_000 },
+  ).catch((e) => e);
+
+  await new Promise((r) => setTimeout(r, 20)); // let it acquire the slot
+
+  const t0 = Date.now();
+  const queuedError = await aiScheduler.execute(
+    makeResolvingTask("never-runs", 10),
+    { operation: "queued-behind-hung", provider: "ollama", priority: "background", timeoutMs: 80 },
+  ).catch((e) => e);
+  const elapsed = Date.now() - t0;
+
+  assert(queuedError instanceof AIRequestTimeoutError, `queued request should time out (got ${queuedError?.message ?? queuedError})`);
+  assert(elapsed < 1000, `queued request should fail fast (elapsed=${elapsed}ms)`);
+
+  // Active request settles eventually; slot frees for subsequent tests.
+  const activeResult = await activePromise;
+  assert(activeResult === "late", "hung-then-late request should still resolve");
+}
+
+async function testCancelBotPurgesPending() {
+  // A queued request for a bot must be rejected when cancelBot fires — it must
+  // not sit in the queue and run after the bot is gone.
+  const activePromise = aiScheduler.execute(
+    makeResolvingTask("active", 120),
+    { operation: "holder", provider: "ollama", priority: "critical", timeoutMs: 5000 },
+  ).catch((e) => e);
+
+  await new Promise((r) => setTimeout(r, 20));
+
+  const queuedPromise = aiScheduler.execute(
+    makeResolvingTask("queued", 10),
+    { operation: "bot-queued", provider: "ollama", priority: "background", timeoutMs: 5000, botId: "bot-x" },
+  ).catch((e) => e);
+
+  await new Promise((r) => setTimeout(r, 20));
+  aiScheduler.cancelBot("bot-x");
+
+  const queuedError = await queuedPromise;
+  assert(queuedError instanceof AIRequestCancelledError, `pending bot request should be cancelled (got ${queuedError?.message ?? queuedError})`);
+
+  await activePromise; // slot releases cleanly for later tests
+}
+
+async function testCancelProviderIsCancelledNotTimeout() {
+  // cancelProvider on an ACTIVE request must classify as cancelled, not timeout.
+  const tracker = makeAbortTrackingTask();
+  const promise = aiScheduler.execute(
+    tracker.task,
+    { operation: "active-cancel", provider: "ollama", priority: "autonomous", timeoutMs: 10_000 },
+  ).catch((e) => e);
+
+  await new Promise((r) => setTimeout(r, 20));
+  aiScheduler.cancelProvider("ollama");
+
+  const error = await promise;
+  assert(error instanceof AIRequestCancelledError, `should throw AIRequestCancelledError (got ${error?.message ?? error})`);
+  assert(isSchedulerCancellation(error), "cancelled should be a scheduler cancellation");
+  assert(!isSchedulerTimeout(error), "cancelled should NOT be reported as timeout");
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -337,6 +408,9 @@ async function main() {
   await runTest("Slot released after completion", testSlotReleased);
   await runTest("Slot released after timeout", testSlotReleasedOnTimeout);
   await runTest("Slot released after failure", testSlotReleasedOnFailure);
+  await runTest("Queued request deadline (no infinite wait)", testQueuedRequestDeadline);
+  await runTest("cancelBot purges pending queue", testCancelBotPurgesPending);
+  await runTest("cancelProvider reports cancelled not timeout", testCancelProviderIsCancelledNotTimeout);
   await runTest("Ollama reasoning disabled by default", testOllamaReasoningDisabled);
   await runTest("Cloud providers don't get Ollama fields", testCloudNoReasoningField);
   await runTest("Token budgets scale correctly", testTokenBudgets);

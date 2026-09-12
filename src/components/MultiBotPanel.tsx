@@ -30,6 +30,11 @@ function BotCard({
   const sentCount = useAppStore((s) => s.bots.find((b) => b.id === botId)?.runtime.sentMessages.length ?? 0);
   const prevSentCount = useRef(sentCount);
   const controls = useAnimationControls();
+  // First Message Mode: subscribe to this bot's status in the active cohort.
+  // "armed" / "sending" → show the muted-gold arrival ring; "complete" → fade
+  // it out. Non-cohort bots (status absent) show nothing.
+  const firstMessageStatus = useAppStore((s) => s.firstMessageCohort?.status[botId]);
+  const firstMessageArmed = firstMessageStatus === "armed" || firstMessageStatus === "sending";
 
   useEffect(() => {
     if (sentCount > prevSentCount.current) {
@@ -55,8 +60,22 @@ function BotCard({
   return (
     <motion.div
       animate={controls}
-      className="border border-white/10 rounded-md bg-white/[0.02] overflow-hidden"
+      className="relative border border-white/10 rounded-md bg-white/[0.02] overflow-hidden"
     >
+      {/* First Message arrival ring — a separate overlay so it never conflicts
+          with the framer-motion send-pulse inline styles. Fades in/out via
+          CSS opacity transition (~700ms). Respects prefers-reduced-motion. */}
+      <div
+        aria-hidden={!firstMessageArmed}
+        className={cn(
+          "first-message-ring pointer-events-none absolute inset-0 rounded-md transition-opacity duration-700 ease-out",
+          firstMessageArmed ? "opacity-100" : "opacity-0",
+        )}
+        style={{
+          boxShadow: firstMessageArmed ? "0 0 0 1px rgba(234,179,8,0.55) inset, 0 0 10px 0 rgba(234,179,8,0.18)" : undefined,
+          border: "1px solid rgba(234,179,8,0.5)",
+        }}
+      />
       <div className="flex items-center gap-2 p-2">
         <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
         {idx < 9 && (
@@ -714,6 +733,63 @@ export function MultiBotButton({ onClick, active }: { onClick: () => void; activ
       <Zap className="w-3 h-3" />
       <span>Bots</span>
     </button>
+  );
+}
+
+/**
+ * FirstMessageToggle — header control for First Message Mode.
+ *
+ * Only rendered when multi-bot mode is enabled. Enabling creates a cohort of
+ * the currently active+authenticated bots; each armed bot's next successful
+ * send is treated as a special "arrival". The tooltip shows live progress
+ * (e.g. "First Messages: 2 / 4 sent"). Disabling cancels the cohort without
+ * confetti.
+ */
+export function FirstMessageToggle() {
+  const enabled = useAppStore((s) => s.firstMessageModeEnabled);
+  const cohort = useAppStore((s) => s.firstMessageCohort);
+  const setFirstMessageMode = useAppStore((s) => s.setFirstMessageMode);
+
+  const total = cohort?.botIds.length ?? 0;
+  const sent = cohort
+    ? cohort.botIds.filter((id) => cohort.status[id] === "complete").length
+    : 0;
+  const progress = total > 0 ? `First Messages: ${sent} / ${total} sent` : "No armed bots yet";
+
+  return (
+    <ThemedTooltip
+      content={
+        <div className="flex flex-col gap-0.5 max-w-[220px]">
+          <span className="font-bold text-[11px]">
+            {enabled ? progress : "First Message Mode"}
+          </span>
+          <span className="text-gray-400 font-normal text-[10px] leading-snug">
+            Makes each Multi-Bot's next first message feel like a natural introduction, then automatically marks that bot complete.
+          </span>
+        </div>
+      }
+    >
+      <button
+        type="button"
+        onClick={() => setFirstMessageMode(!enabled)}
+        aria-pressed={enabled}
+        aria-label="Toggle First Message Mode"
+        className={cn(
+          "h-7 px-2 flex items-center gap-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors",
+          enabled
+            ? "bg-amber-400/15 border-amber-400/50 text-amber-300 shadow-[0_0_10px_rgba(234,179,8,0.15)]"
+            : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
+        )}
+      >
+        <span
+          className={cn(
+            "w-1.5 h-1.5 rounded-full transition-colors",
+            enabled ? "bg-amber-400" : "bg-gray-500",
+          )}
+        />
+        <span>First Msg</span>
+      </button>
+    </ThemedTooltip>
   );
 }
 

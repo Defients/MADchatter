@@ -247,12 +247,17 @@ class AIScheduler {
       // Try to acquire the Ollama slot immediately, or preempt, or queue.
       const acquired = this.tryAcquireOllamaSlot(meta);
       if (!acquired) {
-        // Wait in queue
+        // Wait in queue — bounded by the same timeout budget. Without this a
+        // queued request could wait forever behind a hung active request,
+        // wedging callers (e.g. isForging never releasing → all AutoForge
+        // loops gated → NEXT CHECK stuck at 0s).
         try {
           await this.waitForOllamaSlot(meta);
         } catch (e) {
-          // Cancelled while waiting in queue
+          // Cancelled or timed out while waiting in queue.
           if (meta.dedupeKey) this.dedupeKeys.delete(meta.dedupeKey);
+          meta.queueWaitMs = Date.now() - meta.enqueuedAt;
+          recordMetrics(meta);
           throw e;
         }
       }
@@ -289,11 +294,14 @@ class AIScheduler {
       meta.durationMs = meta.completedAt - (meta.startedAt ?? meta.enqueuedAt);
 
       if (abortController.signal.aborted) {
-        // Distinguish timeout from preemption.
-        // If we were preempted, the preemption setter already set status.
+        // Distinguish preemption / explicit cancellation from timeout.
         if ((meta.status as AIRequestMeta["status"]) === "preempted") {
           this.logPreempted(meta);
           throw new AIRequestPreemptedError(options.operation, meta.preemptedByOp ?? "unknown");
+        }
+        if ((meta.status as AIRequestMeta["status"]) === "cancelled") {
+          this.logCancelled(meta);
+          throw new AIRequestCancelledError(options.operation, "cancelled by scheduler");
         }
         // Otherwise it's a timeout.
         meta.status = "timeout";
@@ -335,6 +343,31 @@ class AIScheduler {
       this.ollamaPending.push(meta);
       this.ollamaPending.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
       this.slotResolvers.set(meta.id, { resolve, reject });
+
+      // Queue-wait deadline: don't wait longer than the request's own timeout
+      // budget. Protects callers from an unbounded wait if the active request
+      // never settles (e.g. an SDK call that ignores the abort signal).
+      const waitBudgetMs = Math.max(1, meta.enqueuedAt + meta.timeoutMs - Date.now());
+      const timer = setTimeout(() => {
+        const idx = this.ollamaPending.findIndex((m) => m.id === meta.id);
+        if (idx < 0) return; // Already started or removed.
+        this.ollamaPending.splice(idx, 1);
+        this.slotResolvers.delete(meta.id);
+        meta.status = "timeout";
+        meta.queueWaitMs = Date.now() - meta.enqueuedAt;
+        console.warn(
+          `[AIQueue] queue-timeout ${meta.operation} waited=${meta.queueWaitMs}ms timeoutMs=${meta.timeoutMs}` +
+          `${meta.botId ? ` bot=${meta.botId}` : ""}`,
+        );
+        reject(new AIRequestTimeoutError(meta.operation, meta.timeoutMs));
+      }, waitBudgetMs);
+
+      // Cancel the deadline once the slot resolves or is rejected.
+      const orig = this.slotResolvers.get(meta.id)!;
+      this.slotResolvers.set(meta.id, {
+        resolve: () => { clearTimeout(timer); orig.resolve(); },
+        reject: (e) => { clearTimeout(timer); orig.reject(e); },
+      });
     });
   }
 
@@ -415,6 +448,19 @@ class AIScheduler {
         meta.abortController.abort();
       }
     }
+    // Also drop queued Ollama requests for this bot so they don't run after
+    // the bot is gone.
+    this.ollamaPending = this.ollamaPending.filter((m) => {
+      if (m.botId === botId) {
+        const resolver = this.slotResolvers.get(m.id);
+        if (resolver) {
+          this.slotResolvers.delete(m.id);
+          resolver.reject(new AIRequestCancelledError(m.operation, reason));
+        }
+        return false;
+      }
+      return true;
+    });
   }
 
   /** Get the current active request count. */
@@ -462,6 +508,13 @@ class AIScheduler {
     console.log(
       `[AIQueue] preempt ${meta.operation} → ${meta.preemptedByOp ?? "unknown"}` +
       ` duration=${meta.durationMs}ms` +
+      `${meta.botId ? ` bot=${meta.botId}` : ""}`,
+    );
+  }
+
+  private logCancelled(meta: AIRequestMeta) {
+    console.log(
+      `[AIQueue] cancelled ${meta.operation} duration=${meta.durationMs}ms` +
       `${meta.botId ? ` bot=${meta.botId}` : ""}`,
     );
   }

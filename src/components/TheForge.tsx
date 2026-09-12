@@ -121,6 +121,15 @@ export function TheForge() {
         });
       }
 
+      // First Message Mode (manual Forge): if the bot the user will send as is
+      // still awaiting its first message in the current cohort, inject the
+      // "arrival" directive into this generation. No lock is acquired here —
+      // the user may discard the variants; completion happens on the actual
+      // successful send (sendManualMessage → addBotSentMessage).
+      const fmmState = useAppStore.getState();
+      const manualSendBotId = fmmState.manualSendBotId;
+      const firstMessageMode = !!(manualSendBotId && fmmState.isBotFirstMessagePending(manualSendBotId));
+
       const data = await generateChat({
         streamMetadata,
         visualContext: visualContextTags.join(" "),
@@ -140,6 +149,7 @@ export function TheForge() {
           : undefined,
         botIdentityMode: useAppStore.getState().botIdentityMode,
         botIdentityStory: useAppStore.getState().botIdentityStory,
+        firstMessageMode,
       });
 
       if (data.tokenUsage) {

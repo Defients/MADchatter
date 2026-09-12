@@ -114,6 +114,8 @@ export function AutoForgeHUD() {
     engagementScore,
     streamLikelyOffline,
     bots,
+    autoForgeAutoCheckEnabled,
+    setAutoForgeAutoCheckEnabled,
   } = useAppStore();
   const multiBotActive = useAppStore(selectMultiBotActive);
 
@@ -212,16 +214,31 @@ export function AutoForgeHUD() {
   const elapsedMs = effectiveLastActionMs ? Math.max(0, now - effectiveLastActionMs) : 0;
   const cyclePct = totalCycleMs ? Math.min(100, Math.round((elapsedMs / totalCycleMs) * 100)) : 0;
 
+  // NEXT CHECK paused: auto-scheduling is off, so the timer is meaningless.
+  // Force buttons become the primary interaction — switch them to an amber
+  // accent with a subtle pulse so the user knows they're "live".
+  const nextCheckPaused = !autoForgeAutoCheckEnabled;
+  const forceBtnClass = nextCheckPaused
+    ? "text-[8px] bg-amber-500/25 hover:bg-amber-500/50 text-amber-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors shadow-[0_0_8px_rgba(234,179,8,0.25)] animate-pulse"
+    : "text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors";
+
   const decisionType = effectiveDecision?.decision || 'None';
-  const decisionReason = effectiveDecision?.reason || 'Waiting for initial signal check...';
+  // Defensive: if a model returned reason/action_payload as a non-string
+  // (e.g. a nested object), coerce to string so React never sees an object
+  // child (error #31). The source fix is in autoforgeDecide, but this guard
+  // also protects against persisted stale decisions from older sessions.
+  const rawReason = effectiveDecision?.reason;
+  const decisionReason = typeof rawReason === "string" ? rawReason : "Waiting for initial signal check...";
   const confidence = effectiveDecision?.confidence || 0;
   const activityLevel = effectiveDecision?.activityLevel || 0;
+  const rawActionPayload = effectiveDecision?.action_payload;
+  const safeActionPayload = typeof rawActionPayload === "string" ? rawActionPayload : "";
 
   // Multi-bot "why chosen" context for the decision card.
   const decisionBotUsername = decisionBot?.session?.username ?? null;
   const decisionPersonaFit = effectiveDecision?.personaFit;
   const decisionWasMentioned = effectiveDecision?.isMentioned === true;
-  const decisionWasSent = decisionType !== 'None' && decisionType !== 'deliberate_silence' && decisionType !== 'meta_observation' && !!effectiveDecision?.action_payload;
+  const decisionWasSent = decisionType !== 'None' && decisionType !== 'deliberate_silence' && decisionType !== 'meta_observation' && !!safeActionPayload;
   
   return (
     <motion.div
@@ -249,6 +266,40 @@ export function AutoForgeHUD() {
           </span>
         </div>
         <div className="flex items-center gap-1">
+          <ThemedTooltip
+            content={
+              <div className="flex flex-col gap-0.5 max-w-[220px]">
+                <span className="font-bold text-[11px] flex items-center gap-1.5">
+                  <Clock className="w-3 h-3 text-green-400" />
+                  NEXT CHECK {autoForgeAutoCheckEnabled ? "· Auto" : "· Paused"}
+                </span>
+                <span className="text-gray-400 font-normal text-[10px] leading-snug">
+                  {autoForgeAutoCheckEnabled
+                    ? "Auto-scheduling is on — bots check in on their own cadence. Toggle off to pause the timer and drive checks manually with the Force buttons."
+                    : "Auto-scheduling is paused — use the Force buttons below to run a check whenever you want."}
+                </span>
+              </div>
+            }
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setAutoForgeAutoCheckEnabled(!autoForgeAutoCheckEnabled);
+                playSfx('panel_collapse');
+              }}
+              aria-pressed={autoForgeAutoCheckEnabled}
+              aria-label="Toggle NEXT CHECK auto-scheduling"
+              className={cn(
+                "p-1 rounded transition-colors",
+                autoForgeAutoCheckEnabled
+                  ? "text-green-400 bg-green-500/15 hover:bg-green-500/25"
+                  : "text-gray-500 bg-white/5 hover:bg-white/10",
+              )}
+            >
+              <Clock className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
           <ThemedTooltip content="View AutoForge Report">
             <button
               type="button"
@@ -299,14 +350,19 @@ export function AutoForgeHUD() {
                 <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
                   <Sparkles className="w-3 h-3 text-purple-400" /> Next Check
                 </span>
-                <span className={cn("text-xs font-mono font-bold mt-0.5 transition-colors", nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext))}>
-                  {timeUntilNext}s
+                <span className={cn(
+                  "text-xs font-mono font-bold mt-0.5 transition-colors",
+                  nextCheckPaused
+                    ? "text-gray-500"
+                    : cn(nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext)),
+                )}>
+                  {nextCheckPaused ? "Paused" : `${timeUntilNext}s`}
                 </span>
                 {/* Micro-check progress bar */}
                 <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5">
                   <div
-                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckBarColor(timeUntilNext))}
-                    style={{ width: `${cyclePct}%` }}
+                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : nextCheckBarColor(timeUntilNext))}
+                    style={{ width: nextCheckPaused ? "100%" : `${cyclePct}%` }}
                   />
                 </div>
               </div>
@@ -337,7 +393,7 @@ export function AutoForgeHUD() {
                           window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: bot.id } }));
                           setTimeout(() => setBurstIntensity(0), 30000);
                         }}
-                        className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                        className={forceBtnClass}
                       >
                         #{idx + 1}
                       </button>
@@ -355,7 +411,7 @@ export function AutoForgeHUD() {
                       window.dispatchEvent(new Event("autoforge-force-check"));
                       setTimeout(() => setBurstIntensity(0), 30000);
                     }}
-                    className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                    className={forceBtnClass}
                   >
                     Force
                   </button>
@@ -391,9 +447,9 @@ export function AutoForgeHUD() {
                   </div>
                 )}
                 <p className="text-xs text-gray-300 leading-relaxed italic pr-4">"{decisionReason}"</p>
-                {effectiveDecision?.action_payload && (
+                {safeActionPayload && (
                   <div className="mt-1 p-2 bg-black/50 rounded border border-white/5 text-[10px] font-mono text-white break-words">
-                    {effectiveDecision.action_payload}
+                    {safeActionPayload}
                   </div>
                 )}
               </div>
@@ -447,14 +503,19 @@ export function AutoForgeHUD() {
                 <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
                   <Sparkles className="w-3 h-3 text-purple-400" /> Next Check
                 </span>
-                <span className={cn("text-xs font-mono font-bold mt-0.5 transition-colors", nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext))}>
-                  {timeUntilNext}s
+                <span className={cn(
+                  "text-xs font-mono font-bold mt-0.5 transition-colors",
+                  nextCheckPaused
+                    ? "text-gray-500"
+                    : cn(nextCheckColor(timeUntilNext), nextCheckGlow(timeUntilNext)),
+                )}>
+                  {nextCheckPaused ? "Paused" : `${timeUntilNext}s`}
                 </span>
                 {/* Micro-check progress bar */}
                 <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden mt-1.5">
                   <div
-                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckBarColor(timeUntilNext))}
-                    style={{ width: `${cyclePct}%` }}
+                    className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : nextCheckBarColor(timeUntilNext))}
+                    style={{ width: nextCheckPaused ? "100%" : `${cyclePct}%` }}
                   />
                 </div>
                 {/* Acceleration flash cue */}
@@ -484,7 +545,7 @@ export function AutoForgeHUD() {
                             window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: bot.id } }));
                             setTimeout(() => setBurstIntensity(0), 30000);
                           }}
-                          className="text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                          className={forceBtnClass}
                         >
                           #{idx + 1}
                         </button>
@@ -502,7 +563,7 @@ export function AutoForgeHUD() {
                         window.dispatchEvent(new Event("autoforge-force-check"));
                         setTimeout(() => setBurstIntensity(0), 30000);
                       }}
-                      className="absolute bottom-2 right-2 text-[8px] bg-purple-500/20 hover:bg-purple-500/40 text-purple-200 px-1.5 py-0.5 rounded font-mono uppercase transition-colors"
+                      className={cn("absolute bottom-2 right-2", forceBtnClass)}
                     >
                       Force
                     </button>
@@ -731,7 +792,7 @@ export function AutoForgeHUD() {
                       <span className="text-[10px] font-mono text-purple-400 font-bold uppercase">Quick Follow-Up</span>
                     </div>
                     <div className="p-2 bg-black/50 rounded border border-white/5 text-[10px] font-mono text-white break-words">
-                      {autoForgeFollowup.message}
+                      {typeof autoForgeFollowup.message === "string" ? autoForgeFollowup.message : ""}
                     </div>
                   </div>
                 </motion.div>

@@ -20,7 +20,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 15 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 19 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
@@ -41,13 +41,14 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Centralized orchestrator: priority, preemption, real cancellation, telemetry, error taxonomy.
 - Priority: `critical` (manual Forge) > `interactive` (refine/vision/briefing) > `autonomous` (AutoForge/Smart Replies) > `background` (AutoMemory).
 - Ollama: single active slot with priority-based preemption. Cloud providers run concurrently.
+- Queued Ollama requests have a wait deadline (`enqueuedAt + timeoutMs`) — a hung active request cannot block the slot forever.
 - Real cancellation via `AbortSignal` passed to all SDKs. Timeout = `abortController.abort()`.
 - `buildProviderRequestOptions("ollama")` adds `reasoning_effort: "none"` to prevent hidden GPU deliberation.
 - `getOperationTokenBudget()` scales output budgets by operation type and card count.
 - `getOperationTimeout()` gives each operation+provider pair an appropriate timeout.
 - Error taxonomy: `AIRequestTimeoutError`, `AIRequestPreemptedError`, `AIRequestCancelledError`. Use `isSchedulerCancellation()` to avoid poisoning provider health on intentional preemption.
 - `getMetricsSummary()` / `getMetricsHistory()` for diagnostics.
-- Tests: `npx tsx src/lib/aiScheduler.test.ts` (31 deterministic tests).
+- Tests: `npx tsx src/lib/aiScheduler.test.ts` (38 deterministic tests).
 
 ### Ollama Health Check (`src/lib/ollamaHealth.ts`)
 - `checkOllamaHealth(baseUrl, model)` — lightweight `/v1/models` check with 30s cache.
@@ -60,6 +61,8 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Orchestrator: `useMultiBotOrchestrator()` — returns JSX with `<BotLoopHost>` that mounts per-bot hooks. Must be rendered in App.tsx.
 - Both loops run a `vibeCheck()` pre-filter before the expensive `autoforgeDecide` AI call — skips dead-chat/offline/user-forging cycles without spending tokens. Never skips mentions or spikes.
 - Both loops track `consecutiveSilenceRef` and apply `computeAdaptiveBackoff()` to lengthen the check interval during dead periods (resets on any action; mentions/spikes bypass).
+- Watchdogs (120s): the in-flight check guard and global `isForging` self-heal if a hung await wedges them. Force bypasses a live `isForging` gate; scheduler cancellations reschedule quietly (+20s) without error toasts.
+- NEXT CHECK toggle (`autoForgeAutoCheckEnabled`, schema v19, default true): HUD-local clock button in the header pauses the 15s auto-scheduling tick in both loops. Force ignores it (only the master `autoForgeEnabled` gates force). When paused, the HUD shows "Paused" and Force buttons switch to an amber accent.
 
 ### Speaker Coordinator (`src/lib/botCoordinator.ts`)
 - Singleton `botCoordinator`. `requestFloor(botId, candidate)` opens a 2.5s bid window; highest `confidence + personaFit * 0.001 + (isMentioned ? 0.15 : 0)` wins. 15s floor gap between speaks. Manual sends bypass the coordinator.
@@ -89,6 +92,17 @@ Known non-fatal Vite build warnings (safe to ignore):
 ### Fallback (`src/lib/providerFallback.ts`)
 - `getHealthyFallbackChain(provider)` — ordered list of available providers.
 - Health tracking: 3 failures → 5min cooldown. `recordProviderFailure/Success`.
+
+### First Message Mode (multi-bot)
+- Header toggle (`FirstMessageToggle` in `MultiBotPanel.tsx`) — only shown when `multiBotEnabled`. Enabling creates a **cohort** of the currently active+authenticated bots.
+- State: `firstMessageModeEnabled` (persisted preference) + `firstMessageCohort` (ephemeral runtime — never persisted). Schema v18.
+- Per-bot status: `"armed" | "sending" | "complete"` in `cohort.status`.
+- Prompt injection: `FIRST_MESSAGE_DIRECTIVE` (`prompts.ts`) appended to the system prompt when `firstMessageMode` is true in `generateChat` / `autoforgeDecide` (`ai.ts`). Additive only — never alters the bot's persona.
+- Generation lock: `acquireFirstMessageLock(botId)` (armed→sending) prevents duplicate concurrent first-message generations; released on any non-send outcome, completed on successful send.
+- Completion: hooked in `addBotSentMessage` (the single send-success point) → `completeBotFirstMessage`. Failed sends never consume the state.
+- Cohort semantics: fixed at toggle-on; newly activated bots do NOT join; deactivated/removed bots are dropped (can't deadlock completion).
+- Celebration: `FirstMessageWatcher` (`src/components/FirstMessageWatcher.tsx`) fires a one-shot dual-corner `fireConfetti("bottom")` when all members complete. Guarded by `cohort.celebrated` + a per-cohort-id ref.
+- Stream/channel change → `resetFirstMessageCohort()` (clean state, no leak). Reload → re-arms from current active bots if the preference is on.
 
 ## Conventions
 

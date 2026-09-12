@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote } from "./types";
+import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
 import { getFallbackHistory } from "./lib/providerFallback";
@@ -8,7 +8,7 @@ import type { AutoForgeDecision } from "./lib/ai";
 import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 17;
+const SETTINGS_VERSION = 19;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -258,6 +258,10 @@ interface AppState {
   
   autoForgeEnabled: boolean;
   setAutoForgeEnabled: (enabled: boolean) => void;
+  // When false, the AutoForge loops pause automatic NEXT CHECK scheduling but
+  // Force commands still work — lets the user drive checks manually.
+  autoForgeAutoCheckEnabled: boolean;
+  setAutoForgeAutoCheckEnabled: (enabled: boolean) => void;
 
   r34lEnabled: boolean;
   setR34lEnabled: (enabled: boolean) => void;
@@ -282,6 +286,10 @@ interface AppState {
   setLastUserChatTypingMs: (ms: number) => void;
   
   isForging: boolean;
+  /** When the current forge started — used by AutoForge loops to detect and
+   * clear a wedged isForging flag (a hung provider request would otherwise
+   * gate every bot check + force forever). Runtime-only, not persisted. */
+  forgeStartedAtMs: number | null;
   setIsForging: (isForging: boolean) => void;
   
   variants: ForgeSuggestion[];
@@ -653,6 +661,36 @@ interface AppState {
   addBotDirectorNote: (id: string, text: string) => void;
   clearBotDirectorNotes: (id: string) => void;
 
+  // ─── First Message Mode (multi-bot) ────────────────────────────
+  // User preference (persisted). When true, the next successful outbound
+  // message of each active Multi-Bot is treated as a special "arrival".
+  firstMessageModeEnabled: boolean;
+  setFirstMessageMode: (enabled: boolean) => void;
+  // Runtime cohort (ephemeral — never persisted). Created on toggle-on from
+  // the bots that are active+authenticated at that moment; cleared on
+  // toggle-off, stream change, or multi-bot disable.
+  firstMessageCohort: FirstMessageCohort | null;
+  // Acquire the per-bot first-message generation lock. Returns true iff the
+  // bot is a cohort member currently in "armed" state (transitions it to
+  // "sending"). Callers pass `firstMessageMode: true` to the AI only when
+  // this returns true, preventing duplicate concurrent first-message
+  // generations for the same bot.
+  acquireFirstMessageLock: (botId: string) => boolean;
+  // Release the lock back to "armed" after a failed generation/send. No-op
+  // if the bot isn't in "sending" state (e.g. already completed).
+  releaseFirstMessageLock: (botId: string) => void;
+  // Mark a bot's first message complete (called from addBotSentMessage on
+  // every successful send — idempotent for non-cohort / already-complete bots).
+  completeBotFirstMessage: (botId: string) => void;
+  // Remove a bot from the cohort (used on deactivation/removal so an inactive
+  // bot can never deadlock cohort completion).
+  removeBotFromFirstMessageCohort: (botId: string) => void;
+  // Clear the cohort entirely (stream/channel change, multi-bot disable).
+  resetFirstMessageCohort: () => void;
+  // Read-only helper: is a bot still awaiting its first message in the
+  // current cohort (armed or sending)?
+  isBotFirstMessagePending: (botId: string) => boolean;
+
   exportSettings: () => string;
   importSettings: (json: string) => boolean;
 }
@@ -736,6 +774,8 @@ export const useAppStore = create<AppState>()(
 
       autoForgeEnabled: false,
       setAutoForgeEnabled: (enabled) => set({ autoForgeEnabled: enabled }),
+      autoForgeAutoCheckEnabled: true,
+      setAutoForgeAutoCheckEnabled: (enabled) => set({ autoForgeAutoCheckEnabled: enabled }),
 
       r34lEnabled: false,
       setR34lEnabled: (enabled) => set({ r34lEnabled: enabled }),
@@ -760,7 +800,8 @@ export const useAppStore = create<AppState>()(
       setLastUserChatTypingMs: (ms) => set({ lastUserChatTypingMs: ms }),
 
       isForging: false,
-      setIsForging: (isForging) => set({ isForging }),
+      forgeStartedAtMs: null,
+      setIsForging: (isForging) => set({ isForging, forgeStartedAtMs: isForging ? Date.now() : null }),
 
       variants: [],
       setVariants: (variants) => set({ variants }),
@@ -1615,6 +1656,95 @@ export const useAppStore = create<AppState>()(
       tutorialStep: 0,
       setTutorialStep: (step) => set({ tutorialStep: step }),
 
+      // ─── First Message Mode (multi-bot) ────────────────────────────
+      firstMessageModeEnabled: false,
+      firstMessageCohort: null,
+      setFirstMessageMode: (enabled) => {
+        const state = get();
+        if (enabled) {
+          // Create a fresh cohort from the bots that are active AND
+          // authenticated at this exact moment. Newly activated bots do NOT
+          // join an in-progress cohort (keeps progress deterministic).
+          const eligible = state.multiBotEnabled
+            ? state.bots.filter((b) => b.active && !!b.session).map((b) => b.id)
+            : [];
+          const status: Record<string, FirstMessageStatus> = {};
+          for (const id of eligible) status[id] = "armed";
+          set({
+            firstMessageModeEnabled: true,
+            firstMessageCohort: {
+              id: generateId(),
+              botIds: eligible,
+              status,
+              createdAt: Date.now(),
+              celebrated: false,
+            },
+          });
+        } else {
+          // Toggle OFF: cancel the cohort immediately. No confetti, no
+          // highlighting; normal multi-bot messaging is unaffected.
+          set({
+            firstMessageModeEnabled: false,
+            firstMessageCohort: null,
+          });
+        }
+      },
+      acquireFirstMessageLock: (botId) => {
+        const cohort = get().firstMessageCohort;
+        if (!cohort) return false;
+        if (cohort.status[botId] !== "armed") return false;
+        set({
+          firstMessageCohort: {
+            ...cohort,
+            status: { ...cohort.status, [botId]: "sending" },
+          },
+        });
+        return true;
+      },
+      releaseFirstMessageLock: (botId) => {
+        const cohort = get().firstMessageCohort;
+        if (!cohort || cohort.status[botId] !== "sending") return;
+        set({
+          firstMessageCohort: {
+            ...cohort,
+            status: { ...cohort.status, [botId]: "armed" },
+          },
+        });
+      },
+      completeBotFirstMessage: (botId) => {
+        const cohort = get().firstMessageCohort;
+        if (!cohort) return;
+        const prev = cohort.status[botId];
+        if (prev !== "armed" && prev !== "sending") return;
+        set({
+          firstMessageCohort: {
+            ...cohort,
+            status: { ...cohort.status, [botId]: "complete" },
+          },
+        });
+      },
+      removeBotFromFirstMessageCohort: (botId) => {
+        const cohort = get().firstMessageCohort;
+        if (!cohort) return;
+        if (!cohort.status[botId]) return;
+        const status = { ...cohort.status };
+        delete status[botId];
+        set({
+          firstMessageCohort: {
+            ...cohort,
+            botIds: cohort.botIds.filter((id) => id !== botId),
+            status,
+          },
+        });
+      },
+      resetFirstMessageCohort: () => set({ firstMessageCohort: null }),
+      isBotFirstMessagePending: (botId) => {
+        const cohort = get().firstMessageCohort;
+        if (!cohort) return false;
+        const s = cohort.status[botId];
+        return s === "armed" || s === "sending";
+      },
+
       // ─── Multi-Bot Mode (toggle-gated, additive) ────────────────
       multiBotEnabled: false,
       setMultiBotEnabled: (enabled) => {
@@ -1798,7 +1928,7 @@ export const useAppStore = create<AppState>()(
         // re-enabling multi-bot restores the user's configured bots instead
         // of wiping them. All consumers gate on multiBotEnabled, so the saved
         // data is inert while disabled and persists via partialize.
-        set({ multiBotEnabled: false });
+        set({ multiBotEnabled: false, firstMessageCohort: null });
       },
       bots: [],
       activeBotId: null,
@@ -1830,11 +1960,13 @@ export const useAppStore = create<AppState>()(
         set((state) => ({ bots: [...state.bots, newBot] }));
         return id;
       },
-      removeBot: (id) =>
+      removeBot: (id) => {
         set((state) => ({
           bots: state.bots.filter((b) => b.id !== id),
           activeBotId: state.activeBotId === id ? (state.bots.find((b) => b.id !== id)?.id ?? null) : state.activeBotId,
-        })),
+        }));
+        get().removeBotFromFirstMessageCohort(id);
+      },
       updateBotPersona: (id, updates) =>
         set((state) => ({
           bots: state.bots.map((b) => (b.id === id ? { ...b, persona: { ...b.persona, ...updates } } : b)),
@@ -1847,21 +1979,33 @@ export const useAppStore = create<AppState>()(
         set((state) => ({
           bots: state.bots.map((b) => (b.id === id ? { ...b, session } : b)),
         })),
-      toggleBotActive: (id) =>
+      toggleBotActive: (id) => {
+        const wasActive = get().bots.find((b) => b.id === id)?.active;
         set((state) => ({
           bots: state.bots.map((b) => (b.id === id ? { ...b, active: !b.active } : b)),
-        })),
+        }));
+        // A bot deactivated mid-cohort must not permanently block completion.
+        // Newly activated bots do NOT join the existing cohort (deterministic).
+        if (wasActive) get().removeBotFromFirstMessageCohort(id);
+      },
       getBot: (id) => get().bots.find((b) => b.id === id),
 
       // ─── Bot-scoped action twins (additive) ───────────────────────────────
-      addBotSentMessage: (id, msg) =>
+      addBotSentMessage: (id, msg) => {
         set((state) => ({
           bots: state.bots.map((b) =>
             b.id === id
               ? { ...b, runtime: { ...b.runtime, sentMessages: [...b.runtime.sentMessages, { ...msg, id: generateId() }].slice(-100) } }
               : b
           ),
-        })),
+        }));
+        // A successful send is the reliable completion signal for First
+        // Message Mode. This is the single hook point that covers every send
+        // path (manual, smart reply, AutoForge full_forge / short_reaction /
+        // quick_followup) since they all record through addBotSentMessage.
+        // Idempotent for non-cohort / already-complete bots.
+        get().completeBotFirstMessage(id);
+      },
       clearBotSentMessages: (id) =>
         set((state) => ({
           bots: state.bots.map((b) =>
@@ -2021,6 +2165,10 @@ export const useAppStore = create<AppState>()(
           multiBotEnabled: state.multiBotEnabled,
           activeBotId: state.activeBotId,
           bots: state.bots.map((b) => ({ ...b, session: null })),
+          // First Message Mode: export the user preference only (cohort is ephemeral).
+          firstMessageModeEnabled: state.firstMessageModeEnabled,
+          // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
+          autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
           exportedAt: new Date().toISOString(),
           version: SETTINGS_VERSION,
         };
@@ -2074,6 +2222,11 @@ export const useAppStore = create<AppState>()(
           if (data.multiBotEnabled !== undefined) set({ multiBotEnabled: data.multiBotEnabled });
           if (data.activeBotId !== undefined) set({ activeBotId: data.activeBotId });
           if (data.bots) set({ bots: data.bots });
+          // First Message Mode: restore the preference only. The cohort is
+          // always rebuilt from the current active bots on next toggle-on.
+          if (data.firstMessageModeEnabled !== undefined) set({ firstMessageModeEnabled: data.firstMessageModeEnabled });
+          // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
+          if (data.autoForgeAutoCheckEnabled !== undefined) set({ autoForgeAutoCheckEnabled: data.autoForgeAutoCheckEnabled });
           return true;
         } catch (e) {
           console.warn("[store] importSettings failed:", e);
@@ -2139,6 +2292,12 @@ export const useAppStore = create<AppState>()(
         bots: state.bots,
         activeBotId: state.activeBotId,
         hasForgedOnce: state.hasForgedOnce,
+        // First Message Mode: only the user preference persists. The runtime
+        // cohort is ephemeral (never serialized) so it can never leak across
+        // reloads or stream/channel switches.
+        firstMessageModeEnabled: state.firstMessageModeEnabled,
+        // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
+        autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
       }),
       version: SETTINGS_VERSION,
       migrate: (persistedState: any, version: number) => {
@@ -2312,6 +2471,22 @@ export const useAppStore = create<AppState>()(
                 b.persona.config.activeProfiles = normalizeList(b.persona.config.activeProfiles);
               }
             });
+          }
+        }
+        // v18: First Message Mode (multi-bot). Only the user preference is
+        // persisted; the runtime cohort is ephemeral. Default to false so
+        // the feature is off for upgraders (no behavior change on upgrade).
+        if (version < 18 && persistedState) {
+          if (persistedState.firstMessageModeEnabled === undefined) {
+            persistedState.firstMessageModeEnabled = false;
+          }
+        }
+        // v19: NEXT CHECK auto-scheduling toggle (HUD-local). Default true so
+        // upgraders keep the existing auto-check behavior; the HUD toggle just
+        // exposes a way to pause it and drive checks via Force.
+        if (version < 19 && persistedState) {
+          if (persistedState.autoForgeAutoCheckEnabled === undefined) {
+            persistedState.autoForgeAutoCheckEnabled = true;
           }
         }
         return persistedState;

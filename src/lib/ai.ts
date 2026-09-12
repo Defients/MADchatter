@@ -14,6 +14,7 @@ import {
   ANTI_REPETITION_PROMPT,
   SENTIMENT_AWARENESS_PROMPT,
   buildBotIdentityPrompt,
+  FIRST_MESSAGE_DIRECTIVE,
 } from "./prompts";
 import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
 import {
@@ -247,6 +248,10 @@ export interface GenerateChatParams {
   /** Scheduler priority override. Defaults to "critical" (manual Forge).
    *  Smart Replies and AutoForge full_forge should pass "autonomous" or "background". */
   priority?: AIRequestPriority;
+  /** First Message Mode: when true, appends the temporary "arrival" directive
+   *  to the system prompt so this bot's next message feels like a natural
+   *  entrance. Additive only — never alters the bot's persona. */
+  firstMessageMode?: boolean;
 }
 
 /**
@@ -387,7 +392,7 @@ ${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMO
 ${effortDirective}
 ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count} suggestion${params.count > 1 ? "s" : ""}. Do not generate more or fewer than ${params.count}.` : ""}`;
 
-  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "");
+  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
   let generatedJsonStr = "";
 
   const forgeTimeout = getOperationTimeout("forge", provider);
@@ -415,7 +420,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
           abortSignal: signal,
         },
       }),
-      { operation: "generateChat/gemini", provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+      { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
     );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
@@ -445,7 +450,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         ],
         ...ollamaOpts,
       }, { signal }),
-      { operation: "generateChat/openai", provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+      { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
     );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
@@ -472,7 +477,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
         messages: [{ role: "user", content }],
       }, { signal }),
-      { operation: "generateChat/claude", provider, model: "claude-haiku-4-5-20251001", priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+      { operation: `generateChat/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
     );
     generatedJsonStr = (response.content.find((c: any) => c.type === "text") as any)?.text || "";
     if (response.usage) {
@@ -670,7 +675,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
           abortSignal: signal,
         },
       }),
-      { operation: "generateVisionContext/gemini", provider, model, priority: visionPriority, timeoutMs: visionTimeout },
+      { operation: `generateVisionContext/${provider}`, provider, model, priority: visionPriority, timeoutMs: visionTimeout },
     );
     if (response.usageMetadata) {
       usage = {
@@ -697,7 +702,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         }],
         ...ollamaOpts,
       }, { signal }),
-      { operation: "generateVisionContext/openai", provider, model, priority: visionPriority, timeoutMs: visionTimeout },
+      { operation: `generateVisionContext/${provider}`, provider, model, priority: visionPriority, timeoutMs: visionTimeout },
     );
     if (response.usage) {
       usage = {
@@ -723,7 +728,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
           ],
         }],
       }, { signal }),
-      { operation: "generateVisionContext/claude", provider, model: "claude-haiku-4-5-20251001", priority: visionPriority, timeoutMs: visionTimeout },
+      { operation: `generateVisionContext/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: visionPriority, timeoutMs: visionTimeout },
     );
     if (response.usage) {
       usage = {
@@ -798,7 +803,7 @@ Custom Instruction: ${params.customInstruction || "None"}
           abortSignal: signal,
         },
       }),
-      { operation: "refineSuggestion/gemini", provider, model, priority: refinePriority, timeoutMs: refineTimeout },
+      { operation: `refineSuggestion/${provider}`, provider, model, priority: refinePriority, timeoutMs: refineTimeout },
     );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
@@ -824,7 +829,7 @@ Custom Instruction: ${params.customInstruction || "None"}
         ],
         ...ollamaOpts,
       }, { signal }),
-      { operation: "refineSuggestion/openai", provider, model, priority: refinePriority, timeoutMs: refineTimeout },
+      { operation: `refineSuggestion/${provider}`, provider, model, priority: refinePriority, timeoutMs: refineTimeout },
     );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
@@ -844,7 +849,7 @@ Custom Instruction: ${params.customInstruction || "None"}
         system: REFINE_SYSTEM_PROMPT + "\n\nYou must output ONLY valid JSON matching the schema format.",
         messages: [{ role: "user", content: userMessageContent }],
       }, { signal }),
-      { operation: "refineSuggestion/claude", provider, model: "claude-haiku-4-5-20251001", priority: refinePriority, timeoutMs: refineTimeout },
+      { operation: `refineSuggestion/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: refinePriority, timeoutMs: refineTimeout },
     );
     generatedJsonStr = (response.content[0] as any).text;
     if (response.usage) {
@@ -862,6 +867,16 @@ Custom Instruction: ${params.customInstruction || "None"}
   } catch (e) {
     console.warn("[refineSuggestion] Failed to parse model JSON, returning original suggestion", e);
     parsed = { ...params.suggestion };
+  }
+  // Sanitize: coerce string-expected fields to strings so an object value
+  // never reaches a React render site (error #31).
+  if (parsed.message != null && typeof parsed.message !== "string") {
+    parsed.message = typeof parsed.message === "object"
+      ? (parsed.message.message ?? parsed.message.message_content ?? JSON.stringify(parsed.message))
+      : String(parsed.message);
+  }
+  if (parsed.why_it_fits != null && typeof parsed.why_it_fits !== "string") {
+    parsed.why_it_fits = String(parsed.why_it_fits);
   }
   if (usage) parsed.tokenUsage = usage;
   return parsed;
@@ -893,6 +908,10 @@ export interface AutoForgeParams {
   botIdentityStory?: string;
   audioEnergyLabel?: "silent" | "quiet" | "normal" | "loud" | "spike";
   streamEvents?: string[];
+  /** First Message Mode: when true, appends the temporary "arrival" directive
+   *  so the bot's next action (short_reaction / emote_only / quick_followup)
+   *  or full_forge generation leans toward a natural entrance. Additive only. */
+  firstMessageMode?: boolean;
 }
 
 export interface AutoForgeBriefingParams {
@@ -953,7 +972,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
           abortSignal: signal,
         },
       }),
-      { operation: "generateAutoForgeBriefing/gemini", provider, model, priority: briefingPriority, timeoutMs: briefingTimeout },
+      { operation: `generateAutoForgeBriefing/${provider}`, provider, model, priority: briefingPriority, timeoutMs: briefingTimeout },
     );
     if (response.usageMetadata) {
       usage = {
@@ -978,7 +997,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         ],
         ...ollamaOpts,
       }, { signal }),
-      { operation: "generateAutoForgeBriefing/openai", provider, model, priority: briefingPriority, timeoutMs: briefingTimeout },
+      { operation: `generateAutoForgeBriefing/${provider}`, provider, model, priority: briefingPriority, timeoutMs: briefingTimeout },
     );
     if (response.usage) {
       usage = {
@@ -998,7 +1017,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         system: systemPrompt,
         messages: [{ role: "user", content: userMessageContent }],
       }, { signal }),
-      { operation: "generateAutoForgeBriefing/claude", provider, model: "claude-haiku-4-5-20251001", priority: briefingPriority, timeoutMs: briefingTimeout },
+      { operation: `generateAutoForgeBriefing/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: briefingPriority, timeoutMs: briefingTimeout },
     );
     if (response.usage) {
       usage = {
@@ -1079,7 +1098,7 @@ ${params.force ? "\nFORCE MODE: The user has manually forced this action. You MU
 ${params.antiRepetitionContext ? `\n\n${params.antiRepetitionContext}` : ""}
 DECIDE NOW.`;
 
-  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "");
+  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
 
   let lastError: Error | null = null;
   let usedFallback = false;
@@ -1112,7 +1131,7 @@ DECIDE NOW.`;
               abortSignal: signal,
             },
           }),
-          { operation: "autoforgeDecide/gemini", provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
         );
         generatedJsonStr = response.text || "{}";
         if (response.usageMetadata) {
@@ -1138,7 +1157,7 @@ DECIDE NOW.`;
             ],
             ...ollamaOpts,
           }, { signal }),
-          { operation: "autoforgeDecide/openai", provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
         );
         generatedJsonStr = response.choices[0].message.content || "{}";
         if (response.usage) {
@@ -1158,7 +1177,7 @@ DECIDE NOW.`;
             system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
             messages: [{ role: "user", content: userMessageContent }],
           }, { signal }),
-          { operation: "autoforgeDecide/claude", provider: currentProvider, model: "claude-haiku-4-5-20251001", priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model: "claude-haiku-4-5-20251001", priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
         );
         generatedJsonStr = (response.content[0] as any).text;
         if (response.usage) {
@@ -1173,6 +1192,29 @@ DECIDE NOW.`;
       // Record success only after we have valid JSON — a malformed response
       // should not mark the provider as healthy
       const result = JSON.parse(cleanJsonStr(generatedJsonStr));
+      // Sanitize: some models (especially smaller Ollama ones) return
+      // action_payload as a nested object {decision, message_content} or use
+      // `message_content` as the key name instead of `action_payload`. Both
+      // would flow through to the HUD and crash React with error #31
+      // ("Objects are not valid as a React child") when rendered as a child.
+      // Coerce all string-expected fields and alias message_content → action_payload.
+      if (result.action_payload == null && typeof result.message_content === "string") {
+        result.action_payload = result.message_content;
+      }
+      if (result.action_payload != null && typeof result.action_payload !== "string") {
+        result.action_payload = typeof result.action_payload === "object"
+          ? (result.action_payload.message_content ?? result.action_payload.message ?? JSON.stringify(result.action_payload))
+          : String(result.action_payload);
+      }
+      if (result.reason != null && typeof result.reason !== "string") {
+        result.reason = String(result.reason);
+      }
+      if (result.decision != null && typeof result.decision !== "string") {
+        result.decision = String(result.decision);
+      }
+      if (result.suggested_trigger != null && typeof result.suggested_trigger !== "string") {
+        result.suggested_trigger = String(result.suggested_trigger);
+      }
       recordProviderSuccess(currentProvider);
       if (usedFallback && currentProvider !== rawProvider) {
         result.used_fallback_provider = currentProvider;
@@ -1182,20 +1224,20 @@ DECIDE NOW.`;
       }
       return result;
     } catch (e: any) {
-      // Intentional scheduler cancellation/preemption is NOT a provider failure.
-      // Only record genuine provider errors as failures.
-      if (!isSchedulerCancellation(e)) {
-        recordProviderFailure(currentProvider);
-      }
+      // Preemption/cancellation is terminal for this decide cycle — the
+      // scheduler yielded our inference slot on purpose (e.g. a higher-
+      // priority interactive request arrived). Do NOT reroute the work to a
+      // fallback provider; that would defeat the yield. Rethrow so the caller
+      // can reschedule quietly.
+      if (isSchedulerCancellation(e)) throw e;
+      recordProviderFailure(currentProvider);
       lastError = e;
       usedFallback = true;
       console.warn(`[AutoForge] Provider ${currentProvider} failed: ${e.message}. Trying fallback...`);
-      // D3: Record fallback for analytics (only for genuine failures, not preemption)
-      if (!isSchedulerCancellation(e)) {
-        const nextProvider = fallbackChain[fallbackChain.indexOf(currentProvider) + 1];
-        if (nextProvider) {
-          recordFallback(currentProvider, nextProvider, e.message || "Provider error");
-        }
+      // D3: Record fallback for analytics
+      const nextProvider = fallbackChain[fallbackChain.indexOf(currentProvider) + 1];
+      if (nextProvider) {
+        recordFallback(currentProvider, nextProvider, e.message || "Provider error");
       }
       continue;
     }

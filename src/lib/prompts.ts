@@ -498,3 +498,30 @@ PERSONA STORY / BACKSTORY:
 ${cleanStory}`;
 }
 
+// ─── First Message Mode (multi-bot) ─────────────────────────────────────────
+// A temporary, additive prompt-layer modifier injected ONLY when a bot is
+// about to send its first successful message in the current cohort. It never
+// overwrites the bot's persona or normal directives — it composes on top of
+// them, then is permanently removed for that bot after the send succeeds.
+
+export const FIRST_MESSAGE_DIRECTIVE = `
+
+### FIRST MESSAGE CONTEXT — ACTIVE (this message only)
+This is this account's first message in the current chat. On Twitch a viewer's first-ever message in a channel receives extra visual attention, so this message will be noticed more than usual. Treat it as a natural conversational entrance.
+
+Your response should:
+- acknowledge or enter the current conversation naturally, as if you just arrived and are catching the vibe;
+- lean slightly more greeting-like or introductory than usual — but only slightly;
+- lightly reveal your existing persona, attitude, humor, or conversational style when it fits (a single tell, not a dump);
+- stay relevant to what is actually happening on stream / in chat right now;
+- sound like a real participant arriving, not a scripted introduction.
+
+Hard constraints for this message:
+- Do NOT explicitly say you are a bot, AI, persona, "first message," or that Twitch is highlighting you — unless your existing persona/context already independently calls for it.
+- Do NOT force a formal introduction. Do NOT dump biography or persona traits.
+- Do NOT produce a generic repeated greeting like "Hey everyone! Nice to meet you!" or "Hey guys! What's up?".
+- Other Multi-Bot accounts may also be making their first appearance around the same time. Do NOT mirror their opening structure, greeting phrase, joke, punctuation pattern, or self-introduction style. Let your persona and the moment drive a distinct entrance.
+
+The goal is a memorable but believable first impression. After this message is sent, this special instruction no longer applies — return to your normal behavior immediately.
+### END FIRST MESSAGE CONTEXT`;
+

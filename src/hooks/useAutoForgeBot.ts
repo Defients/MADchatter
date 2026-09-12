@@ -36,11 +36,17 @@ import {
   countPostSendEngagement,
 } from "../lib/autoForgeCore";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
+import { isSchedulerCancellation } from "../lib/aiScheduler";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response.
 // Mirrors the legacy useAutoForge constant so multi-bot engagement metrics
 // use the same 30-second observation window.
 const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
+
+// Max time a single checkBot run (or a manual Forge) may hold its gate before
+// it's considered wedged — e.g. a hung SDK call or dead-socket send whose
+// promise never settles. A real forge never exceeds ~60s.
+const FORGE_WATCHDOG_MS = 120_000;
 
 /**
  * Per-bot AutoForge decision loop (multi-bot mode only).
@@ -62,6 +68,7 @@ const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
  */
 export function useAutoForgeBot(botId: string) {
   const isForgingRef = useRef(false);
+  const forgingStartedAtRef = useRef(0);
   const lastChatLengthRef = useRef(0);
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
@@ -70,17 +77,50 @@ export function useAutoForgeBot(botId: string) {
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   const checkBot = async (force = false) => {
-    if (isForgingRef.current) return;
     const store = useAppStore.getState();
+    if (isForgingRef.current) {
+      // Watchdog: if a previous check's await never settled (hung SDK call,
+      // dead-socket send, etc.) the flag would wedge this bot forever — the
+      // NEXT CHECK timer sits at 0s and FORCE is silently swallowed.
+      if (Date.now() - forgingStartedAtRef.current > FORGE_WATCHDOG_MS) {
+        console.warn(`[AutoForgeBot ${botId}] in-flight check exceeded ${FORGE_WATCHDOG_MS / 1000}s — resetting guard`);
+        isForgingRef.current = false;
+        store.setBotIsAutoForgeThinking(botId, false);
+      } else {
+        if (force) toast.info("A check is already running — try again in a moment.");
+        return;
+      }
+    }
     if (!store.multiBotEnabled) return;
     const bot = store.bots.find((b) => b.id === botId);
-    if (!bot || !bot.active || !bot.session) return;
-    if (!store.autoForgeEnabled || store.isForging) return;
-
+    if (!bot || !bot.active || !bot.session) {
+      if (force) toast.info("Bot must be active and signed in to force a check.");
+      return;
+    }
+    if (!store.autoForgeEnabled) {
+      if (force) toast.info("Enable AutoForge to use Force.");
+      return;
+    }
+    // Self-heal a wedged manual-forge flag. If a forge request hung without
+    // settling, isForging would gate every bot check + force forever.
+    if (store.isForging && (store.forgeStartedAtMs === null || Date.now() - store.forgeStartedAtMs > FORGE_WATCHDOG_MS)) {
+      console.warn(`[AutoForgeBot ${botId}] isForging stuck >${FORGE_WATCHDOG_MS / 1000}s — clearing stale flag`);
+      store.setIsForging(false);
+    }
+    if (store.isForging && !force) {
+      // Gated on a live manual forge — push NEXT CHECK forward so the HUD
+      // countdown reflects the real deferral instead of sitting at 0s.
+      store.setBotAutoForgeNextActionMs(botId, Date.now() + 15_000);
+      return;
+    }
+    // force bypasses the isForging gate — the scheduler arbitrates contention
+    // (the decide queues behind the critical forge on Ollama, or runs
+    // concurrently on cloud providers).
     const runtime = bot.runtime;
     if (!force && Date.now() < runtime.autoForgeNextActionMs) return;
 
     isForgingRef.current = true;
+    forgingStartedAtRef.current = Date.now();
     store.setBotIsAutoForgeThinking(botId, true);
     try {
       const activeProvider = getActiveProvider();
@@ -190,7 +230,9 @@ export function useAutoForgeBot(botId: string) {
               useAppStore.getState().setSmartRepliesLoading(false);
             })
             .catch((e) => {
-              console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
+              if (!isSchedulerCancellation(e)) {
+                console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
+              }
               useAppStore.getState().setSmartRepliesLoading(false);
             });
         }
@@ -349,6 +391,15 @@ export function useAutoForgeBot(botId: string) {
 
       // ── Decide ───────────────────────────────────────────────────────────
       const decisionStartTime = Date.now();
+      // First Message Mode: acquire the per-bot generation lock before the
+      // decision call so the "arrival" directive is injected into BOTH the
+      // autoforgeDecide call (short_reaction / emote_only / quick_followup
+      // generate their payload here) and the full_forge generateChat call.
+      // The lock prevents duplicate concurrent first-message generations for
+      // the same bot. It is released on any non-send outcome (silence, failed
+      // generation, failed send); a successful send completes it via
+      // addBotSentMessage → completeBotFirstMessage.
+      const isFirstMessage = useAppStore.getState().acquireFirstMessageLock(botId);
       const decision = await autoforgeDecide({
         streamMetadata: store.streamMetadata,
         visualContext: store.visualContextTags.join(" "),
@@ -377,7 +428,18 @@ export function useAutoForgeBot(botId: string) {
         botIdentityStory: bot.persona.botIdentityStory,
         audioEnergyLabel: store.audioEnergy?.label,
         streamEvents: store.streamEvents.slice(-5),
+        firstMessageMode: isFirstMessage,
       });
+
+      // First Message lock release helper. Safe to call on any exit path: it
+      // only acts on the "sending" state, so it's a no-op once a successful
+      // send has completed the bot (status → "complete"). This keeps the
+      // lock from leaking on silence / failed-generation / failed-send paths.
+      const releaseFM = () => { if (isFirstMessage) useAppStore.getState().releaseFirstMessageLock(botId); };
+      // True when a quick_followup send is deferred via setTimeout — the lock
+      // must stay held until that deferred send resolves (complete on success,
+      // release on failure), so the end-of-cycle release is skipped for it.
+      let firstMessageSendPending = false;
 
       // Record token usage from the decision call
       if (decision.tokenUsage) {
@@ -454,6 +516,7 @@ export function useAutoForgeBot(botId: string) {
         let nextMin = decision.estimated_next_action_minutes || 1.5;
         if (!Number.isFinite(nextMin) || nextMin < 0) nextMin = 1.5;
         store.setBotAutoForgeNextActionMs(botId, Date.now() + nextMin * 60 * 1000);
+        releaseFM();
         return;
       }
 
@@ -527,12 +590,14 @@ export function useAutoForgeBot(botId: string) {
                 : undefined,
               // AutoForge full_forge is background — must yield to manual Forge.
               priority: "autonomous",
+              firstMessageMode: isFirstMessage,
             });
 
             // Stale channel guard: discard if the user switched streamers.
             const currentChannel = useAppStore.getState().streamMetadata.channelName;
             if (currentChannel !== forgeChannel) {
               console.log(`[AutoForgeBot:${botId}] Discarding stale full_forge result (channel changed: ${forgeChannel} → ${currentChannel})`);
+              releaseFM();
               return;
             }
 
@@ -584,6 +649,7 @@ export function useAutoForgeBot(botId: string) {
                   details: { decision: "full_forge", confidence: conf },
                 });
                 store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+                releaseFM();
                 return;
               }
 
@@ -609,6 +675,7 @@ export function useAutoForgeBot(botId: string) {
                   details: { decision: "full_forge", message: messageToSend },
                 });
                 store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+                releaseFM();
                 return;
               }
 
@@ -656,6 +723,14 @@ export function useAutoForgeBot(botId: string) {
               }
             }
           } catch (e: any) {
+            // Scheduler preemption/cancellation is an intentional yield —
+            // don't log as a failure or toast; let the outer catch reschedule
+            // quietly.
+            if (isSchedulerCancellation(e)) {
+              store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "skipped" });
+              releaseFM();
+              throw e;
+            }
             store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
             console.error(`[AutoForgeBot ${bot.session.username}] full_forge generation failed:`, e);
             store.addBotAutoForgeEvent(botId, {
@@ -666,6 +741,7 @@ export function useAutoForgeBot(botId: string) {
               details: { decision: "full_forge", reason: decision.reason },
             });
             toast.error(`AutoForge [${bot.session.username}] full_forge failed: ${e.message || e}`);
+            releaseFM();
           }
         }
       } else if (decision.decision === "quick_followup" && decision.action_payload) {
@@ -714,6 +790,7 @@ export function useAutoForgeBot(botId: string) {
               details: { decision: "quick_followup", confidence: conf },
             });
             store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+            releaseFM();
             return;
           }
 
@@ -733,6 +810,10 @@ export function useAutoForgeBot(botId: string) {
           const followupPayload = decision.action_payload;
           const followupReason = decision.reason;
           const followupConf = conf;
+          // The send is deferred — keep the First Message lock held until it
+          // resolves (complete on success via addBotSentMessage, release on
+          // failure). Skip the end-of-cycle release for this path.
+          firstMessageSendPending = true;
 
           followupTimerRef.current = setTimeout(() => {
             followupTimerRef.current = null;
@@ -777,6 +858,7 @@ export function useAutoForgeBot(botId: string) {
                 summary: `[${bot.session.username}] Quick follow-up send FAILED: ${e.message || e}`,
                 details: { decision: "quick_followup", message: followupPayload },
               });
+              releaseFM();
             });
           }, delayMs);
         }
@@ -859,6 +941,7 @@ export function useAutoForgeBot(botId: string) {
               details: { decision: effectiveDecision, confidence: conf },
             });
             store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+            releaseFM();
             return;
           }
 
@@ -883,6 +966,7 @@ export function useAutoForgeBot(botId: string) {
               summary: `Send failed: ${e.message || e}`,
             });
             store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+            releaseFM();
             return;
           }
 
@@ -947,6 +1031,13 @@ export function useAutoForgeBot(botId: string) {
         consecutiveSilenceRef.current = 0;
       }
 
+      // First Message: release the lock for any cycle that did NOT dispatch a
+      // send (silence, meta_observation, rate-limited fallthrough, or a send
+      // that already completed — release is a no-op once status is "complete").
+      // Skipped when a quick_followup send is still deferred (its own
+      // .then/.catch handles completion/release).
+      if (isFirstMessage && !firstMessageSendPending) releaseFM();
+
       // ── Evaluate session goals ──────────────────────────────────────────
       if (store.sessionGoals && store.sessionGoals.length > 0) {
         const results = evaluateSessionGoals(
@@ -987,11 +1078,30 @@ export function useAutoForgeBot(botId: string) {
       store.setBotAutoForgeNextActionMs(botId, nowMs + nextMin * 60 * 1000);
     } catch (e: any) {
       const errMsg = e?.message || "Unknown error";
-      if (!errMsg.includes("No API key configured")) {
-        console.error(`[AutoForgeBot ${botId}] failed:`, e);
-        toast.error(`AutoForge [bot] failed: ${errMsg}`);
+      if (isSchedulerCancellation(e)) {
+        // Intentional yield — the scheduler preempted/cancelled this work for
+        // higher-priority traffic (e.g. a vision capture or manual forge).
+        // Not a failure: no error toast, retry shortly instead of +60s.
+        console.log(`[AutoForgeBot ${botId}] yielded: ${errMsg}`);
+        store.addBotAutoForgeEvent(botId, {
+          timestamp: Date.now(),
+          type: "silence",
+          severity: "low",
+          summary: `[${bot.session?.username ?? botId}] Yielded to higher-priority request — retrying shortly`,
+          details: { reason: errMsg },
+        });
+        store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+      } else {
+        if (!errMsg.includes("No API key configured")) {
+          console.error(`[AutoForgeBot ${botId}] failed:`, e);
+          toast.error(`AutoForge [bot] failed: ${errMsg}`);
+        }
+        store.setBotAutoForgeNextActionMs(botId, Date.now() + 60000);
       }
-      store.setBotAutoForgeNextActionMs(botId, Date.now() + 60000);
+      // Safety net: if autoforgeDecide (or any pre-send step) threw while the
+      // First Message lock was held, restore it to "armed" so the next cycle
+      // can retry. No-op if the bot already completed or was never armed.
+      useAppStore.getState().releaseFirstMessageLock(botId);
     } finally {
       isForgingRef.current = false;
       useAppStore.getState().setBotIsAutoForgeThinking(botId, false);
@@ -1001,7 +1111,7 @@ export function useAutoForgeBot(botId: string) {
   useEffect(() => {
     const interval = setInterval(() => {
       const store = useAppStore.getState();
-      if (store.multiBotEnabled && store.autoForgeEnabled) {
+      if (store.multiBotEnabled && store.autoForgeEnabled && store.autoForgeAutoCheckEnabled) {
         const bot = store.bots.find((b) => b.id === botId);
         if (bot && bot.active && bot.session) checkBot();
       }
