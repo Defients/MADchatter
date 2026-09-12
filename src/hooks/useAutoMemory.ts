@@ -10,6 +10,8 @@ import {
 } from "../lib/memoryEngine";
 import { isSchedulerCancellation, isSchedulerTimeout, isQueueTimeout } from "../lib/aiScheduler";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
+import { captureMemoryExtractionCursor, hasNewMemorySignal, type MemoryExtractionCursor } from "../lib/memoryContinuity";
+import { captureSessionScope, isSessionScopeCurrent, type SessionScope } from "../lib/sessionScope";
 import { startNewSession, saveSessionEnd, detectMoodWithLock, evolveTraits, updateComfortLevel, addRelationshipMilestone } from "../lib/personalityEngine";
 import * as memoryStore from "../lib/memoryStore";
 import type { PersonalityState } from "../types";
@@ -46,16 +48,17 @@ export function useAutoMemory() {
   chatLogRef.current = chatLog;
 
   // ── AutoMemory hardening: extraction cursor, dedup, backoff ──────────────
-  // Watermark: the chatLog length at the last SUCCESSFUL extraction. We only
-  // extract when there's enough new chat since the last extraction.
-  const extractionCursorRef = useRef<number>(0);
+  // ID-set cursor: tracks the *processed window* (which message IDs have
+  // been seen), not the chatLog length. chatLog is a rolling buffer capped
+  // at 150 messages — a count-based watermark stops growing once the buffer
+  // fills and extraction never fires again. The ID-set + audio tail detect
+  // new signal even when the total count is stable, and trigger on
+  // audio-only signal too.
+  const extractionCursorRef = useRef<MemoryExtractionCursor | null>(null);
   // Backoff: after a real failure (timeout or provider error), wait longer
   // before retrying. Preemption does NOT trigger backoff.
   const backoffUntilRef = useRef<number>(0);
   const consecutiveFailuresRef = useRef<number>(0);
-  // Stale channel guard: capture the channel at extraction start so we can
-  // discard results if the user switches streamers mid-extraction.
-  const extractionChannelRef = useRef<string>("");
 
   const channel = (streamMetadata?.channelName || "default").toLowerCase();
 
@@ -76,9 +79,12 @@ export function useAutoMemory() {
         ]);
         // Stale-load guard: the channel may have changed again while the
         // IndexedDB reads were in flight — discard instead of writing the
-        // wrong channel's memories into state.
+        // wrong channel's memories into state. Uses session scope so an
+        // A→B→A round-trip (switch away and back) is also caught — the
+        // revision bumps on every clearAllContext.
+        const initScope = captureSessionScope();
         const nowChannel = (useAppStore.getState().streamMetadata?.channelName || "default").toLowerCase();
-        if (nowChannel !== channel) return;
+        if (nowChannel !== channel || !isSessionScopeCurrent(initScope)) return;
         setAutoMemories(memories);
         setUserProfiles(profiles);
         setInsideJokes(jokes);
@@ -151,20 +157,24 @@ export function useAutoMemory() {
         const nonMarkerCount = recentChat.filter((m) => !m.marker).length;
         const hasEnoughData = nonMarkerCount >= 10 || state.audioTranscript.length > 100;
 
-        // ── Extraction cursor: only extract if there's enough NEW chat since
-        // the last successful extraction. Prevents reprocessing the same
-        // chat window repeatedly.
-        const newMessagesSinceCursor = nonMarkerCount - extractionCursorRef.current;
-        const minNewMessages = 5; // minimum new signal to justify extraction
+        // ── Extraction cursor (ID-set + audio tail): only extract if there's
+        // enough NEW signal since the last successful extraction. The ID-set
+        // detects new messages even when chatLog is at its 150-message cap
+        // (a count watermark would stall there), and the audio tail triggers
+        // extraction on audio-only signal too.
+        const hasNewSignal = hasNewMemorySignal(recentChat, state.audioTranscript, extractionCursorRef.current);
 
         // ── Backoff: after real failures, wait before retrying.
         // Preemption does NOT trigger backoff (it's intentional, not a failure).
         const inBackoff = now < backoffUntilRef.current;
 
-        if (hasEnoughData && !inBackoff && newMessagesSinceCursor >= minNewMessages) {
-          // Capture channel at extraction start for stale-result guard.
+        if (hasEnoughData && !inBackoff && hasNewSignal) {
+          // Capture session scope at extraction start for the stale-result
+          // guard. The revision bumps on channel/platform change and on
+          // clearAllContext, so an A→B→A round-trip mid-extraction is caught
+          // (a plain channel-name compare would miss it).
+          const extractionScope = captureSessionScope();
           const extractionChannel = channel;
-          extractionChannelRef.current = extractionChannel;
           try {
             const params: ExtractionParams = {
               chatLog: recentChat,
@@ -178,13 +188,14 @@ export function useAutoMemory() {
 
             const result = await extractMemories(params);
 
-            // ── Stale channel guard: discard results if the user switched
-            // streamers while extraction was in flight.
-            const currentChannel = (useAppStore.getState().streamMetadata?.channelName || "default").toLowerCase();
-            if (currentChannel !== extractionChannel) {
-              console.log(`[AutoMemory] Discarding stale extraction result (channel changed: ${extractionChannel} → ${currentChannel})`);
+            // ── Stale scope guard: discard results if the user switched
+            // streamers (or switched away and back — A→B→A) while the
+            // extraction was in flight. The session revision catches
+            // round-trips a channel-name compare would miss.
+            if (!isSessionScopeCurrent(extractionScope)) {
+              console.log(`[AutoMemory] Discarding stale extraction result (session changed)`);
               lastExtractionRef.current = now;
-              extractionCursorRef.current = nonMarkerCount;
+              extractionCursorRef.current = captureMemoryExtractionCursor(recentChat, state.audioTranscript);
               consecutiveFailuresRef.current = 0;
               return;
             }
@@ -201,6 +212,16 @@ export function useAutoMemory() {
                 memoryStore.getAllProfiles(extractionChannel),
                 memoryStore.getAllJokes(extractionChannel),
               ]);
+              // Re-check scope after the IndexedDB reload — a channel
+              // switch during the reads would otherwise write the old
+              // channel's freshly-extracted memories into the new session.
+              if (!isSessionScopeCurrent(extractionScope)) {
+                console.log(`[AutoMemory] Discarding stale extraction reload (session changed)`);
+                lastExtractionRef.current = now;
+                extractionCursorRef.current = captureMemoryExtractionCursor(recentChat, state.audioTranscript);
+                consecutiveFailuresRef.current = 0;
+                return;
+              }
               setAutoMemories(memories);
               setUserProfiles(profiles);
               setInsideJokes(jokes);
@@ -227,7 +248,7 @@ export function useAutoMemory() {
             }
 
             lastExtractionRef.current = now;
-            extractionCursorRef.current = nonMarkerCount;
+            extractionCursorRef.current = captureMemoryExtractionCursor(recentChat, state.audioTranscript);
             consecutiveFailuresRef.current = 0;
           } catch (e) {
             // ── Preemption-aware error handling ────────────────────────────

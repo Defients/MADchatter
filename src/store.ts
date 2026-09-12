@@ -275,6 +275,8 @@ function createDefaultTokenUsage(): Record<TokenFeatureKey, FeatureTokenStats> {
 
 interface AppState {
   platform: Platform;
+  /** Runtime generation: invalidates work even after switching A -> B -> A. */
+  sessionRevision: number;
   setPlatform: (platform: Platform) => void;
 
   authTick: number;
@@ -761,7 +763,11 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       platform: "twitch",
-      setPlatform: (platform) => set({ platform }),
+      sessionRevision: 0,
+      setPlatform: (platform) => set((state) => ({
+        platform,
+        sessionRevision: state.sessionRevision + (platform !== state.platform ? 1 : 0),
+      })),
 
       authTick: 0,
       bumpAuthTick: () => set((state) => ({ authTick: state.authTick + 1 })),
@@ -775,6 +781,8 @@ export const useAppStore = create<AppState>()(
       updateStreamMetadata: (updates) =>
         set((state) => ({
           streamMetadata: { ...state.streamMetadata, ...updates },
+          sessionRevision: state.sessionRevision + (updates.channelName !== undefined &&
+            updates.channelName.trim().toLowerCase() !== state.streamMetadata.channelName.trim().toLowerCase() ? 1 : 0),
         })),
 
       visualSnapshotUrl: null,
@@ -941,6 +949,10 @@ export const useAppStore = create<AppState>()(
 
       clearAllContext: () =>
         set((state) => ({
+          sessionRevision: state.sessionRevision + 1,
+          variants: [],
+          isForging: false,
+          smartRepliesLoading: false,
           chatLog: [],
           sentMessages: [],
           audioTranscript: "",
@@ -1023,14 +1035,14 @@ export const useAppStore = create<AppState>()(
       // memoryStore, so it's not included here.
       saveCurrentChannelSnapshot: async () => {
         const state = get();
-        const channel = (state.streamMetadata?.channelName || "default").toLowerCase();
+        const channel = state.streamMetadata.channelName.trim().toLowerCase();
         if (!channel) return;
         // Merge global + per-bot AutoForge events (mirrors AutoForgeReport)
         const global = state.autoForgeEventLog.map((e) => ({
           ...e,
           botName: undefined as string | undefined,
         }));
-        const perBot = state.bots.flatMap((b) =>
+        const perBot = (state.multiBotEnabled ? state.bots : []).flatMap((b) =>
           b.runtime.autoForgeEvents.map((e) => ({ ...e, botName: b.session?.username })),
         );
         const merged = [...global, ...perBot].sort((a, b) => a.timestamp - b.timestamp);
@@ -1085,8 +1097,11 @@ export const useAppStore = create<AppState>()(
       // channelSnapshots IndexedDB store for the given channel. If no snapshot
       // exists, the current (cleared) state is left as-is (fresh start).
       restoreChannelSnapshot: async (channel: string) => {
+        const revision = get().sessionRevision;
+        const platform = get().platform;
         const snapshot: ChannelSnapshot | null = await loadChannelSnapshot(channel);
-        if (!snapshot) return;
+        if (!snapshot || get().sessionRevision !== revision || get().platform !== platform ||
+          get().streamMetadata.channelName.trim().toLowerCase() !== channel.trim().toLowerCase()) return;
         set((state) => ({
           longTermMemory: snapshot.longTermMemory,
           pinnedMemories: snapshot.pinnedMemories,
@@ -1156,7 +1171,7 @@ export const useAppStore = create<AppState>()(
                 runtime: {
                   ...b.runtime,
                   autoForgeEvents: snapshot.autoForgeEvents.filter(
-                    (e) => e.botName === b.session?.username || !e.botName,
+                    (e) => !!e.botName && e.botName === b.session?.username,
                   ),
                 },
               };

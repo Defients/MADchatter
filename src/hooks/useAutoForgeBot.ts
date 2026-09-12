@@ -12,7 +12,7 @@ import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesConte
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
 import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/jokeEngine";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
-import { getBotRateLimiter, syncBotRateLimiterConfig } from "../lib/actionRateLimiter";
+import { getBotRateLimiter, syncBotRateLimiterConfig, removeBotRateLimiter } from "../lib/actionRateLimiter";
 import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { getAvailableEmoteNames, getAvailableEmotesTagged } from "../lib/emotes";
@@ -38,6 +38,7 @@ import {
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { formatThreadContext } from "../lib/conversationThread";
+import { createAutoForgeExecutionGuard, captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response.
 // Mirrors the legacy useAutoForge constant so multi-bot engagement metrics
@@ -124,6 +125,15 @@ export function useAutoForgeBot(botId: string) {
     isForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
     store.setBotIsAutoForgeThinking(botId, true);
+    // Execution guard: invalidates in-flight work if the session context
+    // changes mid-check (channel switch incl. A→B→A round-trips, platform
+    // switch, AutoForge toggle, dry-run flip, multi-bot mode flip) OR if
+    // this bot loses its identity (deactivated/session lost). Disposed in
+    // the finally below so we don't leak a subscription per cycle.
+    const guard = createAutoForgeExecutionGuard(() => {
+      const b = useAppStore.getState().bots.find((x) => x.id === botId);
+      return !!b && b.active && !!b.session;
+    });
     try {
       const activeProvider = getActiveProvider();
       // Only the user-selected provider is used — no cross-provider fallback.
@@ -222,6 +232,12 @@ export function useAutoForgeBot(botId: string) {
           store.setSmartRepliesLoading(true);
           generateSmartReplies(allMentionLines, { botId })
             .then((replies) => {
+              // Don't write stale replies into a new session.
+              if (!guard.isCurrent()) {
+                console.log(`[AutoForgeBot ${bot.session.username}] Discarding stale smart replies (session changed)`);
+                useAppStore.getState().setSmartRepliesLoading(false);
+                return;
+              }
               if (replies.length > 0) {
                 useAppStore.getState().setSmartReplies(replies);
               }
@@ -459,6 +475,15 @@ export function useAutoForgeBot(botId: string) {
       // release on failure), so the end-of-cycle release is skipped for it.
       let firstMessageSendPending = false;
 
+      // Session-scope guard: if the session context changed during the
+      // decision AI call (channel switch incl. A→B→A, platform switch,
+      // mode flip, or this bot lost its identity), discard the result.
+      if (!guard.isCurrent()) {
+        console.log(`[AutoForgeBot:${botId}] Discarding stale decision (session changed mid-check)`);
+        releaseFM();
+        return;
+      }
+
       // Record token usage from the decision call
       if (decision.tokenUsage) {
         useAppStore.getState().recordTokenUsage("autoforge_decide", decision.tokenUsage);
@@ -586,9 +611,6 @@ export function useAutoForgeBot(botId: string) {
           // is a draft; we replace it with a fully generated + ranked variant
           // so multi-bot full_forge matches single-bot quality.
           try {
-            // Stale channel guard: capture channel before the async generation
-            // so we can discard results if the user switched streamers mid-Forge.
-            const forgeChannel = store.streamMetadata.channelName;
             const chatResult = await generateChat({
               streamMetadata: store.streamMetadata,
               visualContext: store.visualContextTags.join(" "),
@@ -618,10 +640,13 @@ export function useAutoForgeBot(botId: string) {
               firstMessageMode: isFirstMessage,
             });
 
-            // Stale channel guard: discard if the user switched streamers.
-            const currentChannel = useAppStore.getState().streamMetadata.channelName;
-            if (currentChannel !== forgeChannel) {
-              console.log(`[AutoForgeBot:${botId}] Discarding stale full_forge result (channel changed: ${forgeChannel} → ${currentChannel})`);
+            // Session-scope guard: discard if the session changed during the
+            // generateChat call (channel switch incl. A→B→A, platform switch,
+            // mode flip, or this bot lost its identity). Replaces the
+            // channel-name compare which missed round-trips.
+            if (!guard.isCurrent()) {
+              console.log(`[AutoForgeBot:${botId}] Discarding stale full_forge result (session changed)`);
+              store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "stale" });
               releaseFM();
               return;
             }
@@ -644,10 +669,17 @@ export function useAutoForgeBot(botId: string) {
             // Dedup guard (per-bot sent history) — bypassed for forced checks
             // (the user explicitly requested action; the SendGuard dedup at the
             // Twitch level still catches exact duplicates before they go out).
+            // Uses the isDup-flag pattern (matching quick_followup + direct-send)
+            // so non-forced non-duplicate full_forge decisions still reach the
+            // floor request + send. The previous if/else structure put the
+            // floor+send inside `else` of `if (!force)`, so autonomous (non-forced)
+            // full_forge decisions generated variants but never sent.
+            let isFullForgeDup = false;
             if (!force) {
               const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
               const payloadLower = messageToSend.toLowerCase().trim();
               if (recentSent.includes(payloadLower)) {
+                isFullForgeDup = true;
                 decision.decision = "deliberate_silence";
                 decision.reason = "Duplicate of recently sent message (full_forge variant).";
                 store.addBotAutoForgeEvent(botId, {
@@ -658,7 +690,9 @@ export function useAutoForgeBot(botId: string) {
                   details: { message: messageToSend },
                 });
               }
-            } else {
+            }
+
+            if (!isFullForgeDup) {
               // Request the speaker floor
               const candidate: BotCandidate = {
                 decision: "full_forge",
@@ -678,6 +712,15 @@ export function useAutoForgeBot(botId: string) {
                   details: { decision: "full_forge", confidence: conf },
                 });
                 store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
+                releaseFM();
+                return;
+              }
+
+              // Final scope check before the send — the floor bid window
+              // (2.5s) may have overlapped a session change.
+              if (!guard.isCurrent()) {
+                console.log(`[AutoForgeBot:${botId}] Aborting full_forge send (session changed before send)`);
+                store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "stale" });
                 releaseFM();
                 return;
               }
@@ -849,8 +892,20 @@ export function useAutoForgeBot(botId: string) {
           // failure). Skip the end-of-cycle release for this path.
           firstMessageSendPending = true;
 
+          // Capture the scope now so the deferred send can verify the session
+          // hasn't changed by the time it fires (the execution guard is
+          // disposed in the finally below, so we use a plain scope snapshot).
+          const followupScope = captureSessionScope();
           followupTimerRef.current = setTimeout(() => {
             followupTimerRef.current = null;
+            // Don't send into a stale session — the channel/platform/mode
+            // may have changed during the delay.
+            if (!isSessionScopeCurrent(followupScope)) {
+              console.log(`[AutoForgeBot:${botId}] Aborting quick_followup send (session changed during delay)`);
+              store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "stale" });
+              releaseFM();
+              return;
+            }
             const sendFn = getPlatformSendFn(store.platform, botId);
             sendFn(channel, followupPayload).then(() => {
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
@@ -989,6 +1044,14 @@ export function useAutoForgeBot(botId: string) {
           }
 
           // Won the floor — send via this bot's own identity.
+          // Final scope check before the send — the floor bid window (2.5s)
+          // may have overlapped a session change.
+          if (!guard.isCurrent()) {
+            console.log(`[AutoForgeBot:${botId}] Aborting ${effectiveDecision} send (session changed before send)`);
+            store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "stale" });
+            releaseFM();
+            return;
+          }
           const sendFn = getPlatformSendFn(store.platform, botId);
           const channel = store.streamMetadata.channelName;
           playSfx("autoforge_action");
@@ -1158,6 +1221,8 @@ export function useAutoForgeBot(botId: string) {
       // can retry. No-op if the bot already completed or was never armed.
       useAppStore.getState().releaseFirstMessageLock(botId);
     } finally {
+      // Release the execution guard (prevents a subscription leak per cycle).
+      guard.dispose();
       isForgingRef.current = false;
       useAppStore.getState().setBotIsAutoForgeThinking(botId, false);
     }
@@ -1194,9 +1259,17 @@ export function useAutoForgeBot(botId: string) {
     const allMentionLines = [...mentionedLines, ...audioMentionLines];
     if (allMentionLines.length === 0) return;
 
+    // Capture scope so the async smart-reply result doesn't write into a
+    // different session if the channel switched during generation.
+    const mentionScope = captureSessionScope();
     store.setSmartRepliesLoading(true);
     generateSmartReplies(allMentionLines, { botId })
       .then((replies) => {
+        if (!isSessionScopeCurrent(mentionScope)) {
+          console.log(`[AutoForgeBot ${bot.session.username}] Discarding stale smart replies (session changed)`);
+          useAppStore.getState().setSmartRepliesLoading(false);
+          return;
+        }
         if (replies.length > 0) useAppStore.getState().setSmartReplies(replies);
         useAppStore.getState().setSmartRepliesLoading(false);
       })
@@ -1265,11 +1338,27 @@ export function useAutoForgeBot(botId: string) {
     };
     window.addEventListener("autoforge-force-check", onForce);
 
+    // Supercharge teardown — when the user disables Supercharge, reset this
+    // bot's pacing state so it returns to normal cadence immediately instead
+    // of inheriting the fast schedule + zeroed silence counter from the
+    // Supercharge session. Without this, the model keeps returning low
+    // estimated_next_action_minutes (it sees recent frequent activity in its
+    // context) and there's no floor to stop it, so the bot keeps firing fast.
+    const onSupercharge = (e: Event) => {
+      const active = (e as CustomEvent).detail?.active;
+      if (active) return; // only act on disable
+      removeBotRateLimiter(botId);
+      consecutiveSilenceRef.current = 0;
+      useAppStore.getState().setBotAutoForgeNextActionMs(botId, Date.now() + 90_000);
+    };
+    window.addEventListener("easter-egg-supercharge", onSupercharge);
+
     return () => {
       clearTimeout(startTimer);
       if (botInterval) clearInterval(botInterval);
       clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForce);
+      window.removeEventListener("easter-egg-supercharge", onSupercharge);
       if (followupTimerRef.current) {
         clearTimeout(followupTimerRef.current);
         followupTimerRef.current = null;

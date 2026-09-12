@@ -76,6 +76,7 @@ import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
 import { clearTwitchMessageIdCache } from "../lib/twitchReplyCache";
 import { setThreadChannel } from "../lib/conversationThread";
+import { captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
@@ -1689,7 +1690,17 @@ export function ForgeLayout() {
       // Async vision request with previous context for delta-aware prompting
       try {
         const provider = getActiveProvider();
+        // Capture scope before the async vision call so we can discard the
+        // result if the session changed (channel switch incl. A→B→A, platform
+        // switch) while the vision API was in flight. Without this, an in-flight
+        // vision result can repopulate visual context after clearAllContext
+        // wiped it for the new channel.
+        const visionScope = captureSessionScope();
         const data = await visionRequest(dataUrl, provider, prevVisualContextRef.current);
+        if (!isSessionScopeCurrent(visionScope)) {
+          console.log("[Visual] Discarding stale vision result (session changed)");
+          return;
+        }
         if (data.tokenUsage) {
           useAppStore.getState().recordTokenUsage("vision", data.tokenUsage);
         }

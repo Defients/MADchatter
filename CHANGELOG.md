@@ -2,7 +2,43 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
+## [1.0.6] — 2026-09-12
+
+### Fixed — Per-Bot full_forge Never Sent (Autonomous Mode)
+- **Problem:** In `useAutoForgeBot.ts`, the `full_forge` floor-request + send block was nested inside `else` of `if (!force)`. Non-forced (autonomous) `full_forge` decisions generated and ranked 3 variants, ran the dedup check, then silently exited — the floor request and send only ran for forced checks. This meant autonomous `full_forge` (the bot deciding on its own to do a full co-pilot Forge) was a no-op in multi-bot mode.
+- **Fix:** Restructured to the `isFullForgeDup`-flag pattern used by `quick_followup` and the direct-send path. The dedup check sets a flag; if the flag is false, the floor request + send proceed for both forced and non-forced decisions. The `force ? true : await botCoordinator.requestFloor(...)` line that was dead code is now live for autonomous decisions.
+- **Scope:** Multi-bot mode only (the legacy single-bot `useAutoForge` loop was already correct).
+
+### Fixed — AutoMemory Extraction Stalls at chatLog Cap
+- **Problem:** `useAutoMemory`'s extraction cursor stored `nonMarkerCount` (the chatLog length) and required `nonMarkerCount - cursor >= 5` to trigger extraction. But `chatLog` is a rolling buffer capped at 150 messages (`store.ts` `appendChatLog`/`appendChatLogBatch`). Once the buffer fills, `nonMarkerCount` never exceeds 150, the delta stays 0, and extraction never fires again for the rest of the session. It also couldn't trigger on audio-only signal (no new chat messages but new audio transcript).
+- **Fix:** Replaced the count-based cursor with an ID-set cursor (`MemoryExtractionCursor` in `src/lib/memoryContinuity.ts`). `captureMemoryExtractionCursor()` stores the set of processed message IDs + the audio transcript tail. `hasNewMemorySignal()` detects new messages by ID (works even when the total count is stable at the cap) and new audio by comparing the transcript tail with suffix/prefix overlap recovery. The extraction loop now gates on `hasNewMemorySignal()` instead of the count delta.
+- **Scope:** Both legacy and multi-bot modes (AutoMemory is shared).
+
+### Fixed — Memory Decay Compounds Runaway
+- **Problem:** `memoryEngine.applyMemoryDecay`/`applyJokeDecay` multiplied the *current* strength by `0.5^(daysSinceLastReference / halfLife)` every 30-minute cycle. Since `daysSinceLastReference` grew with wall-clock time (not cycle count), each cycle re-applied the full elapsed decay to the already-decayed strength — the exponent compounded with cycle count. With the default 7-day half-life, a memory lost ~91% of its strength in 1 day of 30-min cycles instead of the intended ~10%.
+- **Fix:** Decay is now anchored to `lastDecayedAt` (falling back to `lastReferencedAt`/`lastUsedAt` for older saves). Each cycle applies `0.5^(elapsedSinceAnchor / halfLife)` and updates `lastDecayedAt` to `now`. Running the cycle N times over a span T now equals running it once over T — no compounding drift. `lastDecayedAt?: number` was already added to `AutoMemory` and `InsideJoke` in `types.ts`.
+- **Impact:** Stored strengths decay at the configured half-life instead of far faster. Existing memories with `lastDecayedAt` absent start from `lastReferencedAt`/`lastUsedAt` (same as before, just non-compounding going forward).
+
+### Fixed — Stale Work Survives Channel Round-Trips (A→B→A)
+- **Problem:** Every stale-channel guard compared channel-name strings (`forgeChannel !== currentChannel`, `extractionChannel !== currentChannel`). If the user switched channels and switched back while an AI call was in flight, the string compare passed (same channel name) and the old session's work (decisions, sent messages, memory writes, smart replies, vision context) wrote into the restored session.
+- **Fix:** A new `src/lib/sessionScope.ts` module provides `SessionScope` (`revision` + `platform` + normalized `channel`), `captureSessionScope()`, `isSessionScopeCurrent()`, and `createAutoForgeExecutionGuard(identityIsCurrent)`. The store already had `sessionRevision` (bumped on `setPlatform`, `updateStreamMetadata` channel change, and `clearAllContext`); the module wires it into every async guard site:
+  - **AutoForge loops:** `createAutoForgeExecutionGuard()` subscribes to the store and invalidates on channel/platform change, AutoForge toggle, dry-run flip, multi-bot mode flip, or bot identity loss. Both `useAutoForge` and `useAutoForgeBot` create a guard per check cycle, check `guard.isCurrent()` after each `await` (decision, generateChat, floor bid) and before each send, and `guard.dispose()` in `finally`. Deferred `quick_followup` sends use a captured `SessionScope` (the guard is disposed before the timer fires).
+  - **AutoMemory:** Extraction uses `captureSessionScope()`/`isSessionScopeCurrent()` before and after `extractMemories` + after the IndexedDB reload. The init rehydrate stale-load guard also uses session scope.
+  - **Vision:** `ForgeLayout.tsx` captures scope before `visionRequest` and discards the result if the session changed.
+  - **Smart replies:** Both mention-only paths (AutoForge off) capture scope before `generateSmartReplies` and check before writing.
+- **Scope:** All AI call sites in both legacy and multi-bot modes.
+
+### Added — Test Suite: Memory Continuity + Session Scope
+- **`src/lib/memoryContinuity.test.ts`** (40 tests) — cursor capture (non-marker IDs, audio tail), new-signal detection (message IDs, audio-only, audio rollover overlap, chatLog at cap), incremental decay (non-compounding over repeated cycles, anchored to `lastDecayedAt`, legacy entries, zero half-life, clamp to 0), joke decay (status transitions at 0.1/0.03, non-compounding, legacy).
+- **`src/lib/sessionScope.test.ts`** (22 tests) — channel normalization, scope capture/compare, channel change invalidation, platform change, `clearAllContext` revision bump, A→B→A round-trip, same-channel no-op, case-only difference, execution guard (trips on channel change, AutoForge toggle, dry-run flip, multi-bot flip, identity failure), `cancel()`, `dispose()` semantics, non-context changes don't trip.
+- **Total:** 62 new tests. All run deterministically without network, AI, or browser APIs.
+
 ## [1.0.5] — 2026-09-13
+
+### Fixed — Supercharge Teardown (Pacing Stuck Fast After Disable)
+- **Problem:** When the user disabled Supercharge Mode (`Ctrl+Shift+S`), bots kept processing at extremely high speeds. The `supercharged` flag was correctly read as `false` on the next check, but three pieces of state from the Supercharge session persisted: (1) the rate limiter was full of Supercharge-era action timestamps (actions are recorded unconditionally, even when the `canAct` gate is bypassed), so the limiter either blocked everything or, once those timestamps aged out, offered a clean slate that allowed a burst; (2) `consecutiveSilenceRef` was 0 (Supercharge produces actions, not silences), so `computeAdaptiveBackoff()` never lengthened the interval; (3) the model returned low `estimated_next_action_minutes` because its recent-chat context still showed the frequent activity from the Supercharge session, and there was no floor to stop it.
+- **Fix:** Both AutoForge loops (`useAutoForge`, `useAutoForgeBot`) now listen for the `easter-egg-supercharge` event with `detail.active === false` and reset pacing state on disable: the rate limiter is cleared (`actionRateLimiter.reset()` / `removeBotRateLimiter(botId)`), `consecutiveSilenceRef` is reset to 0, and the next-action timestamp is pushed forward 90 seconds. The 90s gap lets the recent-chat context age out so the model stops seeing Supercharge-era frequent activity and returns normal intervals. Normal rate limits (30/hour, 8/10min, 15s cooldown) apply immediately on the next action.
+- **Scope:** Works in both legacy single-bot and multi-bot modes.
 
 ### Enhanced — Smart Reply Context Enrichment
 - **Problem:** `generateSmartReplies()` called `generateChat()` with almost no context — no memory, no director notes, no anti-repetition, no bot identity story, no emotes, no visual context, no long-term memory. Smart reply suggestions were significantly lower quality than Forge/AutoForge outputs because the AI had almost no context to work with.
@@ -49,6 +85,11 @@ All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD f
 - **Pre-existing bug:** `src/lib/emotes.ts` line 146 used `scope: scope as const` on a function parameter, which is invalid TypeScript (`as const` can only be applied to literals). This caused `npm run lint` to fail on the pre-existing emote scope changes. Fixed by using `scope` directly (the parameter is already typed as `"channel" | "global"`).
 
 ## [1.0.4] — 2026-09-12
+
+### Fixed — Bots Using R34L Typing Style When R34L Is Off
+- **Problem:** When R34L mode was off, bots still typed in all-lowercase with mutated spellings and dropped punctuation — the R34L typing texture. This happened because the base prompts say "be human-like" and the recent chat log (Twitch chat) is overwhelmingly lowercase, so the model mirrored that texture by default. There was no explicit instruction to use normal capitalization when R34L was off.
+- **Fix:** Added `STANDARD_TYPING_PROMPT` in `src/lib/prompts.ts`. When `r34lEnabled` is false, this prompt is injected instead of the R34L override. It explicitly instructs: capitalize the first word of sentences, proper nouns, and "I"; use standard punctuation; use standard spelling (no mutations like "ppl"/"rn"/"bcuz"); keep it casual but not deliberately messy; do not mirror the lowercase typing style of the chat log. The Refine prompt also gained a permanent `TYPING STYLE` rule since it doesn't gate on `r34lEnabled`.
+- **Scope:** All three AI call sites — `generateChat()` (manual Forge + Smart Replies), `autoforgeDecide()` (AutoForge decide + full_forge), and `refineSuggestion()` (Refine). Works in both legacy single-bot and multi-bot modes.
 
 ### Enhanced — Emote Preference for Channel-Specific Emotes
 - **Problem:** Bots were using generic/standard emotes (like "LOL", "POG", "Kappa") from their training data instead of the channel-specific emotes available via BetterTTV, 7TV, and FrankerFaceZ. The `AVAILABLE EMOTES` prompt line was a flat list of names with no source tagging or preference guidance.

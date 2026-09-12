@@ -23,6 +23,7 @@ import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { evaluateAllRules } from "../lib/ruleEngine";
 import { formatThreadContext } from "../lib/conversationThread";
+import { createAutoForgeExecutionGuard, captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
 import {
   computeChatActivity,
   computeEngagementScores,
@@ -176,6 +177,14 @@ export function useAutoForge() {
     isAutoForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
     setIsAutoForgeThinking(true);
+    // Execution guard: invalidates in-flight work if the session context
+    // changes mid-check (channel switch incl. A→B→A round-trips, platform
+    // switch, AutoForge toggle, dry-run flip, multi-bot mode flip). The
+    // guard subscribes to the store and flips `isCurrent()` to false on
+    // any of those. Disposed in the finally below so we don't leak a
+    // subscription per 15s cycle. The identity check is trivially true
+    // here (the legacy loop only runs when multi-bot is NOT active).
+    const guard = createAutoForgeExecutionGuard(() => !selectMultiBotActive(useAppStore.getState()));
     try {
       const activeProvider = getActiveProvider();
 
@@ -344,6 +353,12 @@ export function useAutoForge() {
           setSmartRepliesLoading(true);
           generateSmartReplies(allMentionedLines)
             .then((replies) => {
+              // Don't write stale replies into a new session.
+              if (!guard.isCurrent()) {
+                console.log("[AutoForge] Discarding stale smart replies (session changed)");
+                setSmartRepliesLoading(false);
+                return;
+              }
               if (replies.length > 0) {
                 setSmartReplies(replies);
               }
@@ -478,6 +493,14 @@ export function useAutoForge() {
       });
       const responseTimeMs = Date.now() - decisionStartTime;
       console.log("[AutoForge] Decision:", decision);
+
+      // Session-scope guard: if the channel/platform/mode changed during the
+      // decision AI call (incl. A→B→A round-trips), discard the result — it
+      // belongs to a stale session and writing it would corrupt the new one.
+      if (!guard.isCurrent()) {
+        console.log("[AutoForge] Discarding stale decision (session changed mid-check)");
+        return;
+      }
 
       // Record token usage from the decision call
       if ((decision as any).tokenUsage) {
@@ -627,10 +650,12 @@ export function useAutoForge() {
             priority: "interactive",
           });
 
-          // Stale channel guard: discard if the user switched streamers.
-          const currentChannel = useAppStore.getState().streamMetadata.channelName;
-          if (currentChannel !== forgeChannel) {
-            console.log(`[AutoForge] Discarding stale full_forge result (channel changed: ${forgeChannel} → ${currentChannel})`);
+          // Session-scope guard: discard if the session changed during the
+          // generateChat call (channel switch incl. A→B→A, platform switch,
+          // mode flip). Replaces the channel-name compare which missed
+          // round-trips.
+          if (!guard.isCurrent()) {
+            console.log(`[AutoForge] Discarding stale full_forge result (session changed)`);
             updateDecisionRef.current(decisionLogId, { outcome: "stale" });
             return;
           }
@@ -653,6 +678,13 @@ export function useAutoForge() {
 
           // Send the best variant directly
           const sendFn = getPlatformSendFn(state.platform);
+          // Final scope check before the send — the ranking + dedup checks
+          // above may have taken time, and the session may have changed.
+          if (!guard.isCurrent()) {
+            console.log(`[AutoForge] Aborting full_forge send (session changed before send)`);
+            updateDecisionRef.current(decisionLogId, { outcome: "stale" });
+            return;
+          }
           try {
             await sendFn(state.streamMetadata.channelName, messageToSend);
             updateDecisionRef.current(decisionLogId, { outcome: "sent" });
@@ -819,6 +851,13 @@ export function useAutoForge() {
           markActionBucketRef.current();
           
           const sendFn = getPlatformSendFn(state.platform);
+          // Scope check before the send — the joke-engine lookup above may
+          // have taken time; don't send into a stale session.
+          if (!guard.isCurrent()) {
+            console.log(`[AutoForge] Aborting ${effectiveDecision} send (session changed before send)`);
+            updateDecisionRef.current(decisionLogId, { outcome: "stale" });
+            return;
+          }
           try {
             await sendFn(state.streamMetadata.channelName, decision.action_payload);
             updateDecisionRef.current(decisionLogId, { outcome: "sent" });
@@ -894,7 +933,20 @@ export function useAutoForge() {
             clearTimeout(followupTimerRef.current);
             followupTimerRef.current = null;
           }
+          // Capture the scope now so the deferred send can verify the
+          // session hasn't changed by the time it fires (the execution
+          // guard is disposed in the finally below, so we use a plain
+          // scope snapshot here).
+          const followupScope = captureSessionScope();
           followupTimerRef.current = setTimeout(() => {
+            // Don't send into a stale session — the channel/platform/mode
+            // may have changed during the delay.
+            if (!isSessionScopeCurrent(followupScope)) {
+              console.log(`[AutoForge] Aborting quick_followup send (session changed during delay)`);
+              updateDecisionRef.current(decisionLogId, { outcome: "stale" });
+              followupTimerRef.current = null;
+              return;
+            }
             const sendFn2 = getPlatformSendFn(state.platform);
             sendFn2(state.streamMetadata.channelName, decision.action_payload)
               .then(() => {
@@ -1036,6 +1088,8 @@ export function useAutoForge() {
         setAutoForgeNextActionMs(Date.now() + 60000);
       }
     } finally {
+      // Release the execution guard (prevents a subscription leak per cycle).
+      guard.dispose();
       // Release concurrency guard
       isAutoForgingRef.current = false;
       setIsAutoForgeThinking(false);
@@ -1071,9 +1125,17 @@ export function useAutoForge() {
     }
     if (mentionedLines.length === 0) return;
 
+    // Capture scope so the async smart-reply result doesn't write into a
+    // different session if the channel switched during generation.
+    const mentionScope = captureSessionScope();
     setSmartRepliesLoading(true);
     generateSmartReplies(mentionedLines)
       .then((replies) => {
+        if (!isSessionScopeCurrent(mentionScope)) {
+          console.log("[AutoForge] Discarding stale smart replies (session changed)");
+          setSmartRepliesLoading(false);
+          return;
+        }
         if (replies.length > 0) setSmartReplies(replies);
         setSmartRepliesLoading(false);
       })
@@ -1103,6 +1165,21 @@ export function useAutoForge() {
     };
     window.addEventListener("autoforge-force-check", onForceCheck);
 
+    // Supercharge teardown — when the user disables Supercharge, reset pacing
+    // state so the loop returns to normal cadence immediately instead of
+    // inheriting the fast schedule + zeroed silence counter from the
+    // Supercharge session. Without this, the model keeps returning low
+    // estimated_next_action_minutes (it sees recent frequent activity in its
+    // context) and there's no floor to stop it, so the bot keeps firing fast.
+    const onSupercharge = (e: Event) => {
+      const active = (e as CustomEvent).detail?.active;
+      if (active) return; // only act on disable
+      actionRateLimiter.reset();
+      consecutiveSilenceRef.current = 0;
+      setAutoForgeNextActionMs(Date.now() + 90_000);
+    };
+    window.addEventListener("easter-egg-supercharge", onSupercharge);
+
     // Clean up expired smart replies every 10 seconds
     const replyCleanup = setInterval(() => {
       const current = useAppStore.getState().smartReplies;
@@ -1118,6 +1195,7 @@ export function useAutoForge() {
       clearInterval(interval);
       clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForceCheck);
+      window.removeEventListener("easter-egg-supercharge", onSupercharge);
       if (followupTimerRef.current) {
         clearTimeout(followupTimerRef.current);
         followupTimerRef.current = null;

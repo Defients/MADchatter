@@ -142,6 +142,8 @@ export interface AutoMemory {
   confidence: number;
   createdAt: number;
   lastReferencedAt: number;
+  /** Last applied decay; absent in older saves, which start from lastReferencedAt. */
+  lastDecayedAt?: number;
   referenceCount: number;
   strength: number;
   tags: string[];
@@ -206,6 +208,8 @@ export interface InsideJoke {
   }[];
   usageCount: number;
   lastUsedAt: number;
+  /** Last applied decay; absent in older saves, which start from lastUsedAt. */
+  lastDecayedAt?: number;
   strength: number;
   status: "active" | "fading" | "retired";
   createdAt: number;

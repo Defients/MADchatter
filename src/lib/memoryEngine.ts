@@ -446,28 +446,41 @@ export async function applyExtractionResults(
 }
 
 // ─── Memory Decay & Pruning ─────────────────────────────────────
+//
+// Decay is anchored to `lastDecayedAt` (falling back to lastReferencedAt /
+// lastUsedAt for older saves that predate the field). Each cycle applies
+// `0.5^(elapsedSinceAnchor / halfLife)` — so running the cycle N times
+// over a span T equals running it once over T (no compounding drift).
+// Without this anchor, the old code recomputed from lastReferencedAt
+// every cycle but multiplied the *current* strength, so the exponent
+// grew with cycle count and memories decayed far faster than the
+// configured half-life.
 
-export function applyMemoryDecay(memories: AutoMemory[], halfLifeDays: number): AutoMemory[] {
-  const now = Date.now();
-  const halfLifeMs = halfLifeDays * 86400000;
+function decayFactor(previous: number, halfLifeDays: number, now: number): number {
+  if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0) return 1;
+  const elapsedMs = Math.max(0, now - previous);
+  return Math.pow(0.5, elapsedMs / (halfLifeDays * 86400000));
+}
+
+export function applyMemoryDecay(memories: AutoMemory[], halfLifeDays: number, now = Date.now()): AutoMemory[] {
   return memories.map((m) => {
-    const daysSinceReference = (now - m.lastReferencedAt) / 86400000;
-    const decayFactor = Math.pow(0.5, daysSinceReference / halfLifeDays);
-    const newStrength = m.strength * decayFactor;
-    return { ...m, strength: Math.max(0, newStrength) };
+    const anchor = Math.max(m.lastReferencedAt, m.lastDecayedAt ?? m.lastReferencedAt);
+    return {
+      ...m,
+      strength: Math.max(0, m.strength * decayFactor(anchor, halfLifeDays, now)),
+      lastDecayedAt: Math.max(now, anchor),
+    };
   });
 }
 
-export function applyJokeDecay(jokes: InsideJoke[], halfLifeDays: number): InsideJoke[] {
-  const now = Date.now();
+export function applyJokeDecay(jokes: InsideJoke[], halfLifeDays: number, now = Date.now()): InsideJoke[] {
   return jokes.map((j) => {
-    const daysSinceUse = (now - j.lastUsedAt) / 86400000;
-    const decayFactor = Math.pow(0.5, daysSinceUse / halfLifeDays);
-    const newStrength = j.strength * decayFactor;
+    const anchor = Math.max(j.lastUsedAt, j.lastDecayedAt ?? j.lastUsedAt);
+    const newStrength = Math.max(0, j.strength * decayFactor(anchor, halfLifeDays, now));
     let status = j.status;
     if (newStrength < 0.1 && status === "active") status = "fading";
     if (newStrength < 0.03 && status !== "retired") status = "retired";
-    return { ...j, strength: Math.max(0, newStrength), status };
+    return { ...j, strength: newStrength, status, lastDecayedAt: Math.max(now, anchor) };
   });
 }
 
