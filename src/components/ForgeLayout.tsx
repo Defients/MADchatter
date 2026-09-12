@@ -15,7 +15,7 @@ import { buttonVariants } from "./ui/button";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
-import { MultiBotPanel, MultiBotButton, MultiBotModeBadge, FirstMessageToggle } from "./MultiBotPanel";
+import { MultiBotPanel, MultiBotButton, MultiBotModeBadge } from "./MultiBotPanel";
 import { FirstMessageWatcher } from "./FirstMessageWatcher";
 import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useDeepgramTranscription } from "../hooks/useDeepgramTranscription";
@@ -3021,8 +3021,8 @@ export function ForgeLayout() {
                     )}
                   </div>
 
-                  {/* First Message Mode toggle — only relevant in multi-bot mode */}
-                  {multiBotEnabled && <FirstMessageToggle />}
+                  {/* First Message Mode toggle is now rendered inside the
+                      MultiBotPanel header (compact "1st" button). */}
 
                   {/* Mode indicator: appears only when multi-bot is actually engaged */}
                   <MultiBotModeBadge />

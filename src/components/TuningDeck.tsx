@@ -267,6 +267,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
   }, []);
 
   const platform = useAppStore((s) => s.platform);
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
   const twitchAuth = useTwitchAuth();
   const kickAuth = useKickAuth();
   const joystickAuth = useJoystickAuth();
@@ -1681,8 +1682,11 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         </div>
       </div>
 
-      {/* Scrollable middle section */}
-      <div className="flex-1 overflow-y-auto flex flex-col gap-3 min-h-0 forge-scroll pb-3">
+      {/* Scrollable middle section — dimmed when multi-bot is enabled (per-bot
+          persona controls live in the MultiBotPanel), but stays interactive on
+          hover so global tuning is still adjustable. The header above stays
+          fully visible at all times. */}
+      <div className={cn("flex-1 overflow-y-auto flex flex-col gap-3 min-h-0 forge-scroll pb-3 transition-opacity duration-500", multiBotEnabled && "opacity-50 hover:opacity-100")}>
 
       {/* 0. Bot Identity — AI denial / custom persona story */}
       <div className="space-y-1.5 shrink-0">

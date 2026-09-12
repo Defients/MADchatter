@@ -31,12 +31,13 @@ function TooltipContent({
   alignOffset = 0,
   hideArrow = false,
   zIndex,
+  collisionAvoidance,
   children,
   ...props
 }: TooltipPrimitive.Popup.Props &
   Pick<
     TooltipPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset"
+    "align" | "alignOffset" | "side" | "sideOffset" | "collisionAvoidance"
   > & { hideArrow?: boolean; zIndex?: number }) {
   return (
     <TooltipPrimitive.Portal>
@@ -45,6 +46,7 @@ function TooltipContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        collisionAvoidance={collisionAvoidance}
         className="isolate"
         style={{ zIndex: zIndex ?? 50 }}
       >
@@ -84,6 +86,7 @@ function ThemedTooltip({
   hideArrow = false,
   className,
   zIndex,
+  collisionAvoidance,
 }: {
   children: ReactElement;
   content: ReactNode;
@@ -93,6 +96,7 @@ function ThemedTooltip({
   hideArrow?: boolean;
   className?: string;
   zIndex?: number;
+  collisionAvoidance?: TooltipPrimitive.Positioner.Props["collisionAvoidance"];
 }) {
   return (
     <Tooltip>
@@ -103,6 +107,7 @@ function ThemedTooltip({
         sideOffset={sideOffset}
         hideArrow={hideArrow}
         zIndex={zIndex}
+        collisionAvoidance={collisionAvoidance}
         className={cn(
           "bg-[#1a1a22] border border-white/10 text-gray-200 rounded-lg shadow-2xl px-3 py-1.5 text-xs font-medium",
           className

@@ -278,7 +278,9 @@
   .forge-panel-handle,
   .forge-header-aura,
   .forge-logo-glow,
-  .first-message-ring {
+  .first-message-ring,
+  .multibot-icon-active,
+  .multibot-btn-active {
     animation: none !important;
     transition: none !important;
   }
@@ -693,6 +695,30 @@
   top: -21%;
   bottom: auto;
   height: 142%;
+}
+
+/* Animated border for the Multi-Bot Users icon when multi-bot is active.
+   A slow purple conic-gradient rotation signals the panel is "live" without
+   being distracting. Respects prefers-reduced-motion (disabled above). */
+@keyframes multibot-icon-border {
+  0%   { box-shadow: 0 0 0 1px rgba(145,70,255,0.4) inset, 0 0 6px 0 rgba(145,70,255,0.15); }
+  50%  { box-shadow: 0 0 0 1px rgba(145,70,255,0.7) inset, 0 0 10px 1px rgba(145,70,255,0.3); }
+  100% { box-shadow: 0 0 0 1px rgba(145,70,255,0.4) inset, 0 0 6px 0 rgba(145,70,255,0.15); }
+}
+.multibot-icon-active {
+  animation: multibot-icon-border 2.4s ease-in-out infinite;
+  border-radius: 9999px;
+}
+
+/* Lightly animated border for the "Bots" header button when multi-bot is
+   active. A subtle purple border glow that breathes — enough to signal the
+   panel is live without being distracting. Respects prefers-reduced-motion. */
+@keyframes multibot-btn-border {
+  0%, 100% { border-color: rgba(145,70,255,0.4); box-shadow: 0 0 4px 0 rgba(145,70,255,0.1); }
+  50%      { border-color: rgba(145,70,255,0.75); box-shadow: 0 0 8px 1px rgba(145,70,255,0.25); }
+}
+.multibot-btn-active {
+  animation: multibot-btn-border 2.8s ease-in-out infinite;
 }
 
 @keyframes chat-spark {

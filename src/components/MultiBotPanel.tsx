@@ -255,10 +255,29 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
         className="flex items-center justify-between p-3 border-b border-white/10 cursor-grab active:cursor-grabbing select-none"
       >
         <div className="flex items-center gap-2">
-          <Users className="w-4 h-4 text-[#9146FF]" />
-          <span className="text-xs font-bold uppercase tracking-wider text-white">Multi-Bot</span>
+          <ThemedTooltip
+            zIndex={70}
+            content={
+              <div className="flex flex-col gap-0.5 max-w-[220px]">
+                <span className="font-bold text-[11px] flex items-center gap-1.5">
+                  <Users className="w-3 h-3 text-[#9146FF]" />
+                  Multi-Bot {multiBotEnabled ? "· Active" : "· Off"}
+                </span>
+                <span className="text-gray-400 font-normal text-[10px] leading-snug">
+                  {multiBotEnabled
+                    ? "Multiple bot identities are running in this channel, each with its own persona and brain."
+                    : "Off — single-bot mode (the original experience). Turn on to run multiple bot identities."}
+                </span>
+              </div>
+            }
+          >
+            <div className={cn("p-1", multiBotEnabled && "multibot-icon-active")}>
+              <Users className={cn("w-4 h-4 transition-colors", multiBotEnabled ? "text-[#9146FF]" : "text-gray-500")} />
+            </div>
+          </ThemedTooltip>
         </div>
         <div className="flex items-center gap-2">
+          <FirstMessageInlineToggle />
           <Toggle on={multiBotEnabled} onChange={(v) => (v ? enableMultiBot() : disableMultiBot())} label="Multi-bot mode" />
           <ThemedTooltip content={collapsed ? "Expand" : "Collapse"} zIndex={61}>
             <button
@@ -726,7 +745,7 @@ export function MultiBotButton({ onClick, active }: { onClick: () => void; activ
       className={cn(
         "h-7 px-2 flex items-center gap-1.5 rounded-md border text-[10px] font-bold uppercase tracking-wider transition-colors",
         active
-          ? "bg-[#9146FF]/20 border-[#9146FF]/50 text-[#c79bff]"
+          ? "bg-[#9146FF]/20 border-[#9146FF]/50 text-[#c79bff] multibot-btn-active"
           : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
       )}
     >
@@ -758,6 +777,7 @@ export function FirstMessageToggle() {
 
   return (
     <ThemedTooltip
+      zIndex={70}
       content={
         <div className="flex flex-col gap-0.5 max-w-[220px]">
           <span className="font-bold text-[11px]">
@@ -787,7 +807,66 @@ export function FirstMessageToggle() {
             enabled ? "bg-amber-400" : "bg-gray-500",
           )}
         />
-        <span>First Msg</span>
+        <span>1st</span>
+      </button>
+    </ThemedTooltip>
+  );
+}
+
+/**
+ * FirstMessageInlineToggle — compact version of FirstMessageToggle rendered
+ * inside the MultiBotPanel header (next to the Multi-Bot mode toggle). Uses
+ * the same tooltip + state, but a tighter "1st" label so it fits the header
+ * row. Only renders when multi-bot mode is enabled.
+ */
+function FirstMessageInlineToggle() {
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+  const enabled = useAppStore((s) => s.firstMessageModeEnabled);
+  const cohort = useAppStore((s) => s.firstMessageCohort);
+  const setFirstMessageMode = useAppStore((s) => s.setFirstMessageMode);
+
+  if (!multiBotEnabled) return null;
+
+  const total = cohort?.botIds.length ?? 0;
+  const sent = cohort
+    ? cohort.botIds.filter((id) => cohort.status[id] === "complete").length
+    : 0;
+  const progress = total > 0 ? `First Messages: ${sent} / ${total} sent` : "No armed bots yet";
+
+  return (
+    <ThemedTooltip
+      zIndex={70}
+      collisionAvoidance={{ side: "none", align: "shift", fallbackAxisSide: "none" }}
+      content={
+        <div className="flex flex-col gap-0.5 max-w-[220px]">
+          <span className="font-bold text-[11px]">
+            {enabled ? progress : "First Message Mode"}
+          </span>
+          <span className="text-gray-400 font-normal text-[10px] leading-snug">
+            Makes each Multi-Bot's next first message feel like a natural introduction, then automatically marks that bot complete.
+          </span>
+        </div>
+      }
+    >
+      <button
+        type="button"
+        onClick={() => setFirstMessageMode(!enabled)}
+        aria-pressed={enabled}
+        aria-label="Toggle First Message Mode"
+        className={cn(
+          "h-6 px-1.5 flex items-center gap-1 rounded-md border text-[9px] font-bold uppercase tracking-wider transition-colors",
+          enabled
+            ? "bg-amber-400/15 border-amber-400/50 text-amber-300 shadow-[0_0_10px_rgba(234,179,8,0.15)]"
+            : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10",
+        )}
+      >
+        <span
+          className={cn(
+            "w-1.5 h-1.5 rounded-full transition-colors",
+            enabled ? "bg-amber-400" : "bg-gray-500",
+          )}
+        />
+        <span>1st</span>
       </button>
     </ThemedTooltip>
   );
