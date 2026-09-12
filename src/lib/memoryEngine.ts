@@ -25,6 +25,7 @@ import type {
 import { formatChatLog } from "./chatUtils";
 import { generateId } from "./ids";
 import * as memoryStore from "./memoryStore";
+import { useAppStore } from "../store";
 
 function normalizeProvider(rawProvider: string): string {
   if (rawProvider === "gemini-pro" || rawProvider === "gemini-env") return "gemini";
@@ -169,8 +170,19 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
   let generatedJsonStr = "";
   let usage: TokenUsage | undefined;
   const memTimeout = getOperationTimeout("memory_extraction", provider);
-  const memPriority: AIRequestPriority = "background";
+  // When AutoForge is off, there's no autonomous competition for the Ollama
+  // slot — boost memory extraction to `autonomous` so it takes the free slot
+  // immediately instead of waiting behind the aging mechanism. When AutoForge
+  // is on, stay at `background` so realtime-first decisions keep priority.
+  const memPriority: AIRequestPriority = useAppStore.getState().autoForgeEnabled
+    ? "background"
+    : "autonomous";
   const memMaxTokens = getOperationTokenBudget("memory_extraction");
+  // Ollama: the single inference slot is often contended by AutoForge/vision
+  // for stretches longer than the 25s execution timeout. Give the extraction
+  // a longer queue-wait budget so it isn't queue-timed-out every cycle;
+  // combined with the scheduler's priority aging it will eventually land.
+  const memQueueTimeout = provider === "ollama" ? 120_000 : undefined;
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
@@ -187,7 +199,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
           abortSignal: signal,
         },
       }),
-      { operation: `extractMemories/${provider}`, provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+      { operation: `extractMemories/${provider}`, provider, model, priority: memPriority, timeoutMs: memTimeout, queueTimeoutMs: memQueueTimeout, channel: params.streamMetadata.channelName },
     );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
@@ -213,7 +225,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         ],
         ...ollamaOpts,
       }, { signal }),
-      { operation: `extractMemories/${provider}`, provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+      { operation: `extractMemories/${provider}`, provider, model, priority: memPriority, timeoutMs: memTimeout, queueTimeoutMs: memQueueTimeout, channel: params.streamMetadata.channelName },
     );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
@@ -233,7 +245,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
         messages: [{ role: "user", content: userMessage }],
       }, { signal }),
-      { operation: `extractMemories/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+      { operation: `extractMemories/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: memPriority, timeoutMs: memTimeout, queueTimeoutMs: memQueueTimeout, channel: params.streamMetadata.channelName },
     );
     generatedJsonStr = (response.content[0] as any).text || "{}";
     if (response.usage) {

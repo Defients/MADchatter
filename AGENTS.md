@@ -41,7 +41,9 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Centralized orchestrator: priority, preemption, real cancellation, telemetry, error taxonomy.
 - Priority: `critical` (manual Forge) > `interactive` (refine/vision/briefing) > `autonomous` (AutoForge/Smart Replies) > `background` (AutoMemory).
 - Ollama: single active slot with priority-based preemption. Cloud providers run concurrently.
-- Queued Ollama requests have a wait deadline (`enqueuedAt + timeoutMs`) — a hung active request cannot block the slot forever.
+- Queued Ollama requests have a wait deadline (`enqueuedAt + (queueTimeoutMs ?? timeoutMs)`) — a hung active request cannot block the slot forever. `queueTimeoutMs` lets background ops wait out contention longer than their execution timeout.
+- Priority aging: a queued request is promoted one rank per 30s of wait when picking the next free slot (ties → oldest first). Prevents background ops (AutoMemory) from starving behind a steady stream of autonomous/interactive requests. Aging never preempts in-flight work.
+- AutoForge-off priority boost: when `autoForgeEnabled` is false, AutoMemory extraction runs at `autonomous` instead of `background` (no autonomous competition = take the free slot immediately). When AutoForge is on, it stays at `background` so realtime-first decisions keep priority.
 - Real cancellation via `AbortSignal` passed to all SDKs. Timeout = `abortController.abort()`.
 - `buildProviderRequestOptions("ollama")` adds `reasoning_effort: "none"` to prevent hidden GPU deliberation.
 - `getOperationTokenBudget()` scales output budgets by operation type and card count.
@@ -60,12 +62,13 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Per-bot: `useAutoForgeBot(botId)` — 15s interval per bot, requests speaker floor from `botCoordinator`. Intervals are staggered by bot index across the 15s window so they don't all fire at once and flood the single Ollama slot.
 - Orchestrator: `useMultiBotOrchestrator()` — returns JSX with `<BotLoopHost>` that mounts per-bot hooks. Must be rendered in App.tsx.
 - Both loops run a `vibeCheck()` pre-filter before the expensive `autoforgeDecide` AI call — skips dead-chat/offline/user-forging cycles without spending tokens. Never skips mentions or spikes.
+- When AutoForge is OFF but smart replies are enabled, both loops fall back to a lightweight mention-only check on the same 15s interval — detects mentions and generates smart reply suggestions without the AutoForge decision loop, so the user still gets reply suggestions while AutoForge is disabled.
 - Both loops track `consecutiveSilenceRef` and apply `computeAdaptiveBackoff()` to lengthen the check interval during dead periods (resets on any action; mentions/spikes bypass).
 - Watchdogs (120s): the in-flight check guard and global `isForging` self-heal if a hung await wedges them. Force bypasses a live `isForging` gate; scheduler cancellations and queue timeouts reschedule quietly (+20s) without error toasts.
 - Queue timeouts (`isQueueTimeout()`) are capacity issues (too many bots queued for the single Ollama slot), NOT provider failures — they don't poison provider health or trigger cooldown.
 - NEXT CHECK toggle (`autoForgeAutoCheckEnabled`, schema v19, default true): HUD-local clock button in the header pauses the 15s auto-scheduling tick in both loops. Force ignores it (only the master `autoForgeEnabled` gates force). When paused, the HUD shows "Paused" and Force buttons switch to an amber accent.
 - NEXT CHECK display has three visual states: **Processing** (cyan, animated brain + sweeping bar — an AI check is in-flight, derived from `isAutoForgeThinking` / per-bot `runtime.isAutoForgeThinking`), **Waiting** (dimmed gray pulse — timer hit 0 but the 15s interval hasn't fired yet), and the normal color-coded countdown. The header Brain icon also turns cyan with a processing pulse when a check is active.
-- **Multi-bot parity (v1.0.3):** Per-bot rate limiters (`getBotRateLimiter(botId)` in `actionRateLimiter.ts`) — each bot gets its own `ActionRateLimiter` so quotas are independent. The legacy loop uses the shared `actionRateLimiter` singleton. Rule Engine `force_autoforge_check` dispatches a targeted event (`detail: { botId }`) in multi-bot mode so only the firing bot checks. AutoForge Sequences overlay includes a bot identity selector in multi-bot mode; sends use the selected bot's identity and `full_forge` steps target the selected bot.
+- **Multi-bot parity (v1.0.4):** Per-bot rate limiters (`getBotRateLimiter(botId)` in `actionRateLimiter.ts`) — each bot gets its own `ActionRateLimiter` so quotas are independent. The legacy loop uses the shared `actionRateLimiter` singleton. Rule Engine `force_autoforge_check` dispatches a targeted event (`detail: { botId }`) in multi-bot mode so only the firing bot checks. AutoForge Sequences overlay includes a bot identity selector in multi-bot mode; sends use the selected bot's identity and `full_forge` steps target the selected bot.
 
 ### Speaker Coordinator (`src/lib/botCoordinator.ts`)
 - Singleton `botCoordinator`. `requestFloor(botId, candidate)` opens a 2.5s bid window; highest `confidence + personaFit * 0.001 + (isMentioned ? 0.15 : 0)` wins. 15s floor gap between speaks. Manual sends bypass the coordinator.
@@ -75,10 +78,17 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `getPlatformSendFn(platform, botId?)` — returns a send function. `botId` omitted = legacy singleton; provided = per-bot identity with independent rate limiter.
 
 ### Memory (`src/lib/memoryEngine.ts`, `memoryStore.ts`, `memoryRetrieval.ts`)
-- IndexedDB stores: `memories`, `profiles`, `jokes`, `personality`, `extractionLog`.
+- IndexedDB stores: `memories`, `profiles`, `jokes`, `personality`, `extractionLog` — all channel-scoped (channel index / composite keys).
 - `extractMemories()` calls AI to extract structured memories from chat context.
 - `retrieveRelevantMemories()` scores by strength, user match, keyword overlap, recency.
-- `useAutoMemory()` hook runs extraction every N seconds + decay cycles.
+- `useAutoMemory()` hook runs extraction every N seconds + decay cycles, and re-hydrates the Zustand cache (`autoMemories`/`userProfiles`/`insideJokes`/`personalityState`) from IndexedDB whenever `streamMetadata.channelName` changes (with a stale-load guard).
+
+### Channel Snapshots (`src/lib/channelStore.ts`)
+- IndexedDB `madchatter-channels` / `snapshots`, keyed by lowercase channel name — the per-channel session archive (LTM, pinned/golden, AutoForge events + decision history, analytics/stats, goals, sentiment, chatter stats, token usage, sent log, and per-bot `botSessions`).
+- Switch flow (`ForgeLayout.commitChannel`): `saveCurrentChannelSnapshot` → `clearAllContext` (wipes ALL session-scoped global + per-bot runtime state, incl. the auto-memory cache and retry queue) → `updateStreamMetadata` → `restoreChannelSnapshot`.
+- All `ChannelSnapshot` fields beyond the original four are optional — old snapshots load as fresh starts. Keep new session fields optional; the IndexedDB object store needs no version bump for field additions.
+- Autosave every 60s + on `beforeunload`, guarded by `isSwitchingRef` during a switch.
+- Per-bot session restore is gated on `multiBotEnabled` — in single-bot mode the global fields are the source of truth (restoring per-bot events would duplicate them in the report's merge).
 
 ### R34L Mode (`src/lib/prompts.ts`, `src/lib/chatStyle.ts`)
 - `R34L_TYPING_PROMPT` — fixed typing texture overlay (lowercase, punctuation, rhythm).
@@ -135,6 +145,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/lib/botCoordinator.ts` | Multi-bot speaker floor (mention-priority bidding) |
 | `src/lib/autoForgeCore.ts` | Shared AutoForge computation (activity, engagement, health, goals, vibe check, adaptive backoff, dedup) |
 | `src/lib/antiRepetition.ts` | Repetition analysis + Jaccard semantic dedup (`isNearDuplicate`) |
+| `src/lib/channelStore.ts` | Per-channel session snapshots in IndexedDB (save/restore on channel switch) |
 | `src/lib/platformSend.ts` | Platform send functions (Twitch/Kick/Joystick) |
 | `src/lib/providerFallback.ts` | Provider health + failover |
 | `src/hooks/useAutoForge.ts` | Legacy AutoForge loop |

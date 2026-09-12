@@ -686,6 +686,11 @@ export default function App() {
       <main id="main-content" tabIndex={-1} className="flex-1 min-h-0 min-w-0 outline-none">
       <ForgeLayout />
       </main>
+      {/* Portal layer for floating panels (Multi-Bot, HUD). Lives inside the
+          app's z-0 stacking context so full-screen overlays (z-50+) cover
+          them like the rest of the UI. No transform/filter on ancestors, so
+          children keep viewport-fixed positioning. */}
+      <div id="forge-float-layer" />
       {/* Per-bot AutoForge loops (renders null; mounts the useAutoForgeBot
           instances that drive multi-bot AutoForge). */}
       {multiBotLoops}

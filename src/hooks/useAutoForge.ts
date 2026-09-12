@@ -112,9 +112,9 @@ export function useAutoForge() {
   const forgingStartedAtRef = useRef(0);
   // Track engagement-check timers for cleanup on unmount
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes });
+  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled });
 
-  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes };
+  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled };
 
   // Sync rate limiter config
   actionRateLimiter.updateConfig(rateLimitConfig);
@@ -1026,11 +1026,57 @@ export function useAutoForge() {
     }
   };
 
+  // Lightweight mention watcher — runs when AutoForge is OFF but smart
+  // replies are enabled. Detects mentions and generates smart replies
+  // without the expensive AutoForge decision loop, so the user still gets
+  // reply suggestions while AutoForge is disabled.
+  const checkMentionsOnly = async () => {
+    const state = useAppStore.getState();
+    if (!state.smartRepliesEnabled || !canGenerateSmartReplies()) return;
+
+    const botUsername = state.platform === "kick"
+      ? (getKickSession()?.username || "").toLowerCase()
+      : state.platform === "joystick"
+        ? (getJoystickSession()?.username || "").toLowerCase()
+        : (getTwitchSession()?.username || "").toLowerCase();
+    if (!botUsername) return;
+
+    const mentionPatterns = [botUsername, botUsername.replace(/[^a-z0-9]/g, "")];
+    const recentMessages = state.chatLog.slice(-15).filter(m => !m.marker);
+    const mentionedLines: string[] = [];
+    for (const msg of recentMessages) {
+      const lower = msg.text.toLowerCase();
+      if (mentionPatterns.some(p => p && lower.includes(p))) {
+        mentionedLines.push(`${msg.user}: ${msg.text}`);
+      }
+      if (botUsername && lower.includes(`@${botUsername}`)) {
+        if (!mentionedLines.includes(`${msg.user}: ${msg.text}`)) mentionedLines.push(`${msg.user}: ${msg.text}`);
+      }
+    }
+    if (mentionedLines.length === 0) return;
+
+    setSmartRepliesLoading(true);
+    generateSmartReplies(mentionedLines)
+      .then((replies) => {
+        if (replies.length > 0) setSmartReplies(replies);
+        setSmartRepliesLoading(false);
+      })
+      .catch((e) => {
+        if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
+          console.error("[AutoForge] Smart reply generation failed:", e);
+        }
+        setSmartRepliesLoading(false);
+      });
+  };
+
   useEffect(() => {
     // Run the check every 15 seconds to see if it's time to act
     const interval = setInterval(() => {
       if (storeRef.current.autoForgeEnabled && storeRef.current.autoForgeAutoCheckEnabled) {
         checkAutoForge();
+      } else if (!storeRef.current.autoForgeEnabled && storeRef.current.smartRepliesEnabled) {
+        // AutoForge off — still detect mentions for smart replies
+        checkMentionsOnly();
       }
     }, 15000);
     

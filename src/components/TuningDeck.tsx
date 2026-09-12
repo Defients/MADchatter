@@ -66,6 +66,7 @@ import { speakMessage, stopSpeaking, testVoice, getWebSpeechVoices, onVoicesChan
 import { Mic2, AudioLines, Square, Mic, Radio } from "lucide-react";
 import { usePushToTalk } from "../hooks/usePushToTalk";
 import { VOICE_COMMAND_REFERENCE } from "../lib/voiceCommands";
+import { motion, AnimatePresence } from "motion/react";
 import { AutoForgeSequencesOverlay } from "./AutoForgeSequencesOverlay";
 import { RuleBuilderOverlay } from "./RuleBuilder";
 
@@ -2444,7 +2445,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           in multi-bot mode: templates and mood locks are global, not per-bot,
           so they remain useful when multi-bot is active.
           Collapsible — default collapsed, header persists with a chevron. */}
-      <Card className={cn("bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0", !creativeToolsOpen && "py-0.5")}>
+      <Card className={cn("bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0 transition-[padding] duration-200", !creativeToolsOpen && "py-0.5")}>
         <CardHeader className={cn("flex flex-col space-y-0 gap-0", creativeToolsOpen ? "px-1.5 py-1 pb-1" : "px-1.5 py-1")}>
           <button
             type="button"
@@ -2456,7 +2457,16 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             <ChevronDown className={cn("w-3 h-3 text-gray-500 transition-transform", creativeToolsOpen && "rotate-180")} />
           </button>
         </CardHeader>
+        <AnimatePresence initial={false}>
         {creativeToolsOpen && (
+        <motion.div
+          key="creative-tools-body"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+          className="overflow-hidden"
+        >
         <CardContent className="p-1.5 pt-0.5 grid grid-cols-2 gap-x-2 gap-y-3">
           {/* E1: Templates */}
           <div className="space-y-1.5">
@@ -2905,7 +2915,9 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               )}
             </div>
         </CardContent>
+        </motion.div>
         )}
+        </AnimatePresence>
       </Card>
 
       {/* 4. Big Forge Button — locked to bottom */}

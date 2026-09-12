@@ -1,8 +1,57 @@
-import type { PinnedMemory, AutoForgeEvent } from "../types";
+import type {
+  PinnedMemory,
+  AutoForgeEvent,
+  SessionStats,
+  EnhancedSessionStats,
+  ActionHistoryEntry,
+  SentimentReading,
+  SentimentSummary,
+  ActionAccuracyEntry,
+  SentMessage,
+  DecisionLogEntry,
+  SessionGoal,
+  GoalEvaluationResult,
+  StreamHealthScore,
+  ChatActivityBucket,
+  ChatterStats,
+  TokenFeatureKey,
+  FeatureTokenStats,
+  AutoMemory,
+  UserProfile,
+  InsideJoke,
+  PersonalityState,
+} from "../types";
+import type { AutoForgeDecision } from "./ai";
 
 const DB_NAME = "madchatter-channels";
 const DB_VERSION = 1;
 const STORE_NAME = "snapshots";
+
+/** Per-bot session-scoped runtime state, archived per channel so a bot's
+ *  recent context is fresh on switch and restored on switch-back. */
+export interface BotSessionSnapshot {
+  botId: string;
+  sentMessages: SentMessage[];
+  actionHistory: ActionHistoryEntry[];
+  decisionLog: DecisionLogEntry[];
+  sessionStats: SessionStats;
+  enhancedStats: EnhancedSessionStats;
+  sentimentHistory: SentimentReading[];
+  sentimentSummary: SentimentSummary | null;
+  actionAccuracy: ActionAccuracyEntry[];
+  autoForgeEvents: AutoForgeEvent[];
+  lastAutoForgeDecision: AutoForgeDecision | null;
+  autoForgeDecisionHistory: AutoForgeDecision[];
+  // Channel-derived memory injected into per-bot prompts — archived so the
+  // bot's brain for this channel survives a switch-away/switch-back.
+  longTermMemory: string;
+  pinnedMemories: PinnedMemory[];
+  goldenMemoryId: string | null;
+  autoMemories: AutoMemory[];
+  userProfiles: UserProfile[];
+  insideJokes: InsideJoke[];
+  personalityState: PersonalityState | null;
+}
 
 export interface ChannelSnapshot {
   channel: string;
@@ -13,6 +62,25 @@ export interface ChannelSnapshot {
   goldenMemoryId: string | null;
   // AutoForge Report (Zustand-sourced, merged global + per-bot)
   autoForgeEvents: AutoForgeEvent[];
+  // Session analytics + recent context — all optional so snapshots written
+  // before these fields existed still load (missing = fresh start).
+  sessionStats?: SessionStats;
+  enhancedStats?: EnhancedSessionStats;
+  actionHistory?: ActionHistoryEntry[];
+  sentimentHistory?: SentimentReading[];
+  sentimentSummary?: SentimentSummary | null;
+  actionAccuracy?: ActionAccuracyEntry[];
+  sentMessages?: SentMessage[];
+  decisionLog?: DecisionLogEntry[];
+  sessionGoals?: SessionGoal[];
+  goalEvaluationResults?: GoalEvaluationResult[];
+  streamHealth?: StreamHealthScore | null;
+  chatActivityBuckets?: ChatActivityBucket[];
+  chatterStats?: Record<string, ChatterStats>;
+  tokenUsageByFeature?: Record<TokenFeatureKey, FeatureTokenStats>;
+  lastAutoForgeDecision?: AutoForgeDecision | null;
+  autoForgeDecisionHistory?: AutoForgeDecision[];
+  botSessions?: BotSessionSnapshot[];
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

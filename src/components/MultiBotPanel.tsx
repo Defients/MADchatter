@@ -59,12 +59,12 @@ function BotCard({
 
   // Derive the spectrum color + intensity from elapsed time.
   const spectrum = (() => {
-    if (!lastSent) return { color: "rgba(255,255,255,0.06)", glow: "transparent", label: "No messages sent yet" };
-    if (elapsedSec < 10) return { color: "rgba(16,185,129,0.55)", glow: "rgba(16,185,129,0.35)", label: "just now" };
-    if (elapsedSec < 30) return { color: "rgba(34,211,238,0.50)", glow: "rgba(34,211,238,0.28)", label: "active" };
-    if (elapsedSec < 120) return { color: "rgba(96,165,250,0.45)", glow: "rgba(96,165,250,0.22)", label: "cooling" };
-    if (elapsedSec < 300) return { color: "rgba(168,85,247,0.40)", glow: "rgba(168,85,247,0.18)", label: "idle" };
-    return { color: "rgba(255,255,255,0.08)", glow: "transparent", label: "dormant" };
+    if (!lastSent) return { color: "rgba(255,255,255,0.06)", glow: "transparent", solid: "rgba(156,163,175,0.5)", label: "No messages sent yet" };
+    if (elapsedSec < 10) return { color: "rgba(16,185,129,0.55)", glow: "rgba(16,185,129,0.35)", solid: "#34d399", label: "just now" };
+    if (elapsedSec < 30) return { color: "rgba(34,211,238,0.50)", glow: "rgba(34,211,238,0.28)", solid: "#22d3ee", label: "active" };
+    if (elapsedSec < 120) return { color: "rgba(96,165,250,0.45)", glow: "rgba(96,165,250,0.22)", solid: "#60a5fa", label: "cooling" };
+    if (elapsedSec < 300) return { color: "rgba(168,85,247,0.40)", glow: "rgba(168,85,247,0.18)", solid: "#a855f7", label: "idle" };
+    return { color: "rgba(255,255,255,0.08)", glow: "transparent", solid: "rgba(156,163,175,0.55)", label: "dormant" };
   })();
 
   // Human-readable "time ago" for the tooltip.
@@ -142,7 +142,10 @@ function BotCard({
             </div>
           }
         >
-        <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
+        <BotIcon
+          className="w-3.5 h-3.5 shrink-0 transition-colors duration-1000"
+          style={{ color: bot.active ? spectrum.solid : "rgba(107,114,128,0.6)" }}
+        />
         </ThemedTooltip>
         {idx < 9 && (
           <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`} zIndex={61}>

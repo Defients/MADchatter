@@ -231,6 +231,48 @@ function createDefaultBotRuntime(): BotRuntime {
   };
 }
 
+/** Fresh session-scoped counters — used for initial state and for wiping
+ *  per-channel session data on channel switch. */
+function createDefaultSessionStats(): SessionStats {
+  return { sessionStart: Date.now(), messagesReceived: 0, messagesSent: 0, forgeCount: 0 };
+}
+
+function createDefaultEnhancedStats(): EnhancedSessionStats {
+  return {
+    sessionStart: Date.now(),
+    messagesReceived: 0,
+    messagesSent: 0,
+    forgeCount: 0,
+    autoForgeActions: 0,
+    manualActions: 0,
+    followupActions: 0,
+    silenceDecisions: 0,
+    mentionsDetected: 0,
+    spikesDetected: 0,
+    providerFallbacks: 0,
+    avgResponseTimeMs: 0,
+    totalTokensUsed: 0,
+    estimatedCost: 0,
+    actionDistribution: {},
+    peakChatVelocity: 0,
+    uniqueChatters: 0,
+  };
+}
+
+function createDefaultTokenUsage(): Record<TokenFeatureKey, FeatureTokenStats> {
+  const zero = (): FeatureTokenStats => ({
+    totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null,
+  });
+  return {
+    forge: zero(),
+    refine: zero(),
+    autoforge_decide: zero(),
+    vision: zero(),
+    briefing: zero(),
+    memory_extraction: zero(),
+  };
+}
+
 interface AppState {
   platform: Platform;
   setPlatform: (platform: Platform) => void;
@@ -894,11 +936,69 @@ export const useAppStore = create<AppState>()(
           pinnedMemories: [],
           goldenMemoryId: null,
           lastTokenUsage: null,
-          // Keep per-bot sent history in sync with the global sent log so
-          // marker-tracking refs don't re-insert stale markers after a clear.
+          // Session analytics + AutoForge report/decision state — the previous
+          // channel's data was snapshotted to IndexedDB before this wipe, so
+          // the new channel starts fresh (or gets restored from its own
+          // snapshot by restoreChannelSnapshot).
+          autoForgeEventLog: [],
+          sessionStats: createDefaultSessionStats(),
+          enhancedStats: createDefaultEnhancedStats(),
+          actionHistory: [],
+          sentimentHistory: [],
+          sentimentSummary: null,
+          actionAccuracy: [],
+          decisionLog: [],
+          sessionGoals: [],
+          goalEvaluationResults: [],
+          streamHealth: null,
+          chatActivityBuckets: [],
+          chatterStats: {},
+          tokenUsageByFeature: createDefaultTokenUsage(),
+          lastAutoForgeDecision: null,
+          autoForgeDecisionHistory: [],
+          autoForgeLastActionMs: null,
+          autoForgeNextActionMs: 0,
+          autoForgeFollowup: null,
+          isAutoForgeThinking: false,
+          smartReplies: [],
+          // Auto-memory Zustand cache — the source of truth is the
+          // channel-scoped memoryStore in IndexedDB, and useAutoMemory
+          // re-hydrates for the new channel. Wiping here closes the window
+          // where the old channel's memories could leak into new prompts.
+          autoMemories: [],
+          userProfiles: [],
+          insideJokes: [],
+          personalityState: null,
+          // Wipe per-bot session runtime too — residual chat/decision history
+          // must not leak into the new channel's prompts or HUD.
           bots: state.bots.map((b) => ({
             ...b,
-            runtime: { ...b.runtime, sentMessages: [] },
+            runtime: {
+              ...b.runtime,
+              sentMessages: [],
+              actionHistory: [],
+              decisionLog: [],
+              sessionStats: createDefaultSessionStats(),
+              enhancedStats: createDefaultEnhancedStats(),
+              sentimentHistory: [],
+              sentimentSummary: null,
+              actionAccuracy: [],
+              autoForgeEvents: [],
+              lastAutoForgeDecision: null,
+              autoForgeDecisionHistory: [],
+              autoForgeLastActionMs: null,
+              autoForgeNextActionMs: 0,
+              autoForgeFollowup: null,
+              isAutoForgeThinking: false,
+              smartReplies: [],
+              longTermMemory: "",
+              pinnedMemories: [],
+              goldenMemoryId: null,
+              autoMemories: [],
+              userProfiles: [],
+              insideJokes: [],
+              personalityState: null,
+            },
           })),
         })),
 
@@ -924,6 +1024,45 @@ export const useAppStore = create<AppState>()(
           pinnedMemories: state.pinnedMemories,
           goldenMemoryId: state.goldenMemoryId,
           autoForgeEvents: merged,
+          // Session analytics + recent context — archived per channel so a
+          // switch shows a fresh view and switching back restores it.
+          sessionStats: state.sessionStats,
+          enhancedStats: state.enhancedStats,
+          actionHistory: state.actionHistory,
+          sentimentHistory: state.sentimentHistory,
+          sentimentSummary: state.sentimentSummary,
+          actionAccuracy: state.actionAccuracy,
+          sentMessages: state.sentMessages,
+          decisionLog: state.decisionLog,
+          sessionGoals: state.sessionGoals,
+          goalEvaluationResults: state.goalEvaluationResults,
+          streamHealth: state.streamHealth,
+          chatActivityBuckets: state.chatActivityBuckets,
+          chatterStats: state.chatterStats,
+          tokenUsageByFeature: state.tokenUsageByFeature,
+          lastAutoForgeDecision: state.lastAutoForgeDecision,
+          autoForgeDecisionHistory: state.autoForgeDecisionHistory,
+          botSessions: state.bots.map((b) => ({
+            botId: b.id,
+            sentMessages: b.runtime.sentMessages,
+            actionHistory: b.runtime.actionHistory,
+            decisionLog: b.runtime.decisionLog,
+            sessionStats: b.runtime.sessionStats,
+            enhancedStats: b.runtime.enhancedStats,
+            sentimentHistory: b.runtime.sentimentHistory,
+            sentimentSummary: b.runtime.sentimentSummary,
+            actionAccuracy: b.runtime.actionAccuracy,
+            autoForgeEvents: b.runtime.autoForgeEvents,
+            lastAutoForgeDecision: b.runtime.lastAutoForgeDecision,
+            autoForgeDecisionHistory: b.runtime.autoForgeDecisionHistory,
+            longTermMemory: b.runtime.longTermMemory,
+            pinnedMemories: b.runtime.pinnedMemories,
+            goldenMemoryId: b.runtime.goldenMemoryId,
+            autoMemories: b.runtime.autoMemories,
+            userProfiles: b.runtime.userProfiles,
+            insideJokes: b.runtime.insideJokes,
+            personalityState: b.runtime.personalityState,
+          })),
         });
       },
 
@@ -942,21 +1081,73 @@ export const useAppStore = create<AppState>()(
           autoForgeEventLog: state.multiBotEnabled
             ? snapshot.autoForgeEvents.filter((e) => !e.botName)
             : snapshot.autoForgeEvents,
-          bots: state.multiBotEnabled && state.bots[0]
-            ? state.bots.map((b, i) =>
-                i === 0
-                  ? {
-                      ...b,
-                      runtime: {
-                        ...b.runtime,
-                        autoForgeEvents: snapshot.autoForgeEvents.filter(
-                          (e) => e.botName === b.session?.username || (!e.botName && i === 0),
-                        ),
-                      },
-                    }
-                  : b,
-              )
-            : state.bots,
+          // Session analytics + recent context. Fields absent in snapshots
+          // written before this schema keep the freshly-cleared defaults.
+          sessionStats: snapshot.sessionStats ?? createDefaultSessionStats(),
+          enhancedStats: snapshot.enhancedStats ?? createDefaultEnhancedStats(),
+          actionHistory: snapshot.actionHistory ?? [],
+          sentimentHistory: snapshot.sentimentHistory ?? [],
+          sentimentSummary: snapshot.sentimentSummary ?? null,
+          actionAccuracy: snapshot.actionAccuracy ?? [],
+          sentMessages: snapshot.sentMessages ?? [],
+          decisionLog: snapshot.decisionLog ?? [],
+          sessionGoals: snapshot.sessionGoals ?? [],
+          goalEvaluationResults: snapshot.goalEvaluationResults ?? [],
+          streamHealth: snapshot.streamHealth ?? null,
+          chatActivityBuckets: snapshot.chatActivityBuckets ?? [],
+          chatterStats: snapshot.chatterStats ?? {},
+          tokenUsageByFeature: snapshot.tokenUsageByFeature ?? createDefaultTokenUsage(),
+          lastAutoForgeDecision: snapshot.lastAutoForgeDecision ?? null,
+          autoForgeDecisionHistory: snapshot.autoForgeDecisionHistory ?? [],
+          bots: state.bots.map((b, i) => {
+            // Preferred path: per-bot session archive (new snapshots). Only
+            // applies in multi-bot mode — in single-bot mode the global fields
+            // are the source of truth and restoring per-bot events here would
+            // duplicate them in the report's global+per-bot merge.
+            const bs = state.multiBotEnabled
+              ? snapshot.botSessions?.find((s) => s.botId === b.id)
+              : undefined;
+            if (bs) {
+              return {
+                ...b,
+                runtime: {
+                  ...b.runtime,
+                  sentMessages: bs.sentMessages,
+                  actionHistory: bs.actionHistory,
+                  decisionLog: bs.decisionLog,
+                  sessionStats: bs.sessionStats,
+                  enhancedStats: bs.enhancedStats,
+                  sentimentHistory: bs.sentimentHistory,
+                  sentimentSummary: bs.sentimentSummary,
+                  actionAccuracy: bs.actionAccuracy,
+                  autoForgeEvents: bs.autoForgeEvents,
+                  lastAutoForgeDecision: bs.lastAutoForgeDecision,
+                  autoForgeDecisionHistory: bs.autoForgeDecisionHistory,
+                  longTermMemory: bs.longTermMemory,
+                  pinnedMemories: bs.pinnedMemories,
+                  goldenMemoryId: bs.goldenMemoryId,
+                  autoMemories: bs.autoMemories,
+                  userProfiles: bs.userProfiles,
+                  insideJokes: bs.insideJokes,
+                  personalityState: bs.personalityState,
+                },
+              };
+            }
+            // Fallback for snapshots written before botSessions existed:
+            // primary bot reclaims the merged event slice by username.
+            if (state.multiBotEnabled && i === 0) {
+              return {
+                ...b,
+                runtime: {
+                  ...b.runtime,
+                  autoForgeEvents: snapshot.autoForgeEvents.filter(
+                    (e) => e.botName === b.session?.username || !e.botName,
+                  ),
+                },
+              };
+            }
+            return b;
+          }),
         }));
       },
 

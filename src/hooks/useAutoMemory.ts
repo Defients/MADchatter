@@ -74,6 +74,11 @@ export function useAutoMemory() {
           memoryStore.getAllProfiles(channel),
           memoryStore.getAllJokes(channel),
         ]);
+        // Stale-load guard: the channel may have changed again while the
+        // IndexedDB reads were in flight — discard instead of writing the
+        // wrong channel's memories into state.
+        const nowChannel = (useAppStore.getState().streamMetadata?.channelName || "default").toLowerCase();
+        if (nowChannel !== channel) return;
         setAutoMemories(memories);
         setUserProfiles(profiles);
         setInsideJokes(jokes);

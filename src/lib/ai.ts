@@ -930,17 +930,26 @@ export async function generateAutoForgeBriefing(params: AutoForgeBriefingParams)
 
   const keys = getKeys();
 
-  const eventsText = params.events.map((e) => {
+  // Bound the event log: local models can't afford an unbounded prompt.
+  // Cap to the most recent 150 events / ~10k chars so Ollama finishes within
+  // its timeout instead of choking on a multi-hour event history.
+  const boundedEvents = params.events.slice(-150);
+  let eventsText = boundedEvents.map((e) => {
     const time = new Date(e.timestamp).toLocaleTimeString();
     return `[${time}] [${e.type.toUpperCase()}] [${e.severity.toUpperCase()}] ${e.summary}`;
   }).join("\n");
+  if (eventsText.length > 10_000) {
+    eventsText = eventsText.slice(-10_000);
+    eventsText = eventsText.slice(eventsText.indexOf("\n") + 1); // drop partial first line
+  }
+  const omittedCount = params.events.length - boundedEvents.length;
 
   const userMessageContent = `You are AutoForge's after-action reporter. The user has returned to their stream and wants a natural-language briefing of what happened while they were away.
 
 STREAM: ${params.streamMetadata?.channelName || "Unknown"} — ${params.streamMetadata?.category || "Unknown"}
 TITLE: ${params.streamMetadata?.title || "Unknown"}
 
-EVENT LOG (${params.events.length} events):
+EVENT LOG (${params.events.length} events${omittedCount > 0 ? `, showing most recent ${boundedEvents.length}` : ""}):
 ${eventsText}
 
 Write a concise, engaging briefing (3-6 paragraphs) that covers:
@@ -1007,7 +1016,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         total_tokens: response.usage.total_tokens,
       };
     }
-    return { text: response.choices[0].message.content || "Unable to generate briefing.", tokenUsage: usage };
+    return { text: response.choices?.[0]?.message?.content || "Unable to generate briefing.", tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await aiScheduler.execute(

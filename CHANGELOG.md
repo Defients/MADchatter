@@ -2,6 +2,20 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
+## [1.0.4] — 2026-09-12
+
+### Fixed — Per-Channel Session Isolation
+- **Channel switch now archives and wipes the full session** — Switching streamers previously only saved/restored long-term memory and the merged AutoForge event log, and `clearAllContext` only cleared chat/transcript/visual context — so the AutoForge Report, Analytics Dashboard, and bot memory carried over from the previous streamer. `ChannelSnapshot` now archives the full session to IndexedDB per channel: AutoForge events, decision history, action/decision logs, session + enhanced stats, sentiment, action accuracy, goals, stream health, chat activity, chatter stats, token usage, sent-message history, and a per-bot session archive (`botSessions`) covering each bot's events, stats, sent log, and channel-derived memory (LTM, pinned/golden, auto-memories, profiles, inside jokes, personality). `clearAllContext` now wipes all of it (global + per-bot) before the new channel activates, and `restoreChannelSnapshot` rehydrates it on switch-back. Snapshots written before this version load cleanly (missing fields = fresh start).
+- **Auto-memory no longer leaks across channel switches** — `autoMemories`, `userProfiles`, `insideJokes`, and `personalityState` are now wiped in `clearAllContext` (the channel-scoped `memoryStore` IndexedDB remains the source of truth and `useAutoMemory` re-hydrates for the new channel). Added a stale-load guard so an in-flight IndexedDB rehydration can't write the wrong channel's data if the user switches again mid-load.
+- **Retry queue no longer resurrects the old channel** — `messageQueue` retries carried the previous channel's name, and `tmiSendManager` reconnects to whatever channel it's asked to send to — a queued retry after a switch would have reconnected back to the old streamer. The queue is now cleared on channel switch.
+
+### Fixed — Tools Operating Without AutoForge
+- **Other tools stall when AutoForge is off** — When AutoForge was disabled, the 15s loop interval fired but did nothing, so mention detection and smart replies never ran; AutoMemory ran but at `background` priority (the lowest), relying on the 30s aging mechanism to get a slot. Two fixes: (1) AutoMemory extraction boosts to `autonomous` priority when AutoForge is off (no autonomous competition = take the free slot immediately; only manual Forge preempts); (2) the existing 15s interval now runs a lightweight mention-only check when AutoForge is off but smart replies are enabled — detects mentions and generates smart reply suggestions without the expensive AutoForge decision loop. Both the legacy and per-bot loops got the mention-only path.
+
+### Fixed — AutoForge Briefing & AutoMemory Reliability
+- **Auto-Memory starving on Ollama** — Memory extraction runs at `background` priority on Ollama's single slot and could never preempt; its queue-wait deadline was its own 25s timeout, so with AutoForge firing every 15s it queued, timed out, and retried forever without ever running. The scheduler now applies **priority aging** (a queued request promotes one rank per 30s of wait, so background work eventually wins a free slot — aging never preempts in-flight work) and a decoupled `queueTimeoutMs` (memory extraction waits up to 120s in queue while keeping its 25s execution timeout).
+- **GENERATE BRIEFING failing on Ollama** — The briefing prompt included the entire unbounded event log (a long session produced a massive prompt that blew past the 30s Ollama timeout mid-generation), and `response.choices[0]` threw on empty/malformed responses. The event log is now bounded to the last 150 events / ~10k chars (prompt notes when older events were omitted), the Ollama briefing timeout is now 60s, and the response is accessed defensively.
+
 ## [1.0.3] — 2026-09-12
 
 ### Fixed — Multi-Bot Parity

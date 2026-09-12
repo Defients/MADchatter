@@ -1113,6 +1113,51 @@ export function useAutoForgeBot(botId: string) {
     }
   };
 
+  // Lightweight mention watcher — runs when AutoForge is OFF but smart
+  // replies are enabled. Detects this bot's mentions and generates smart
+  // replies without the expensive AutoForge decision loop.
+  const checkBotMentionsOnly = async () => {
+    const store = useAppStore.getState();
+    if (!store.smartRepliesEnabled || !canGenerateSmartReplies()) return;
+    const bot = store.bots.find((b) => b.id === botId);
+    if (!bot || !bot.active || !bot.session) return;
+
+    const botUsername = (bot.session.username || "").toLowerCase();
+    if (!botUsername) return;
+
+    const recentMessages = store.chatLog.slice(-15).filter((m) => !m.marker);
+    const mentionedLines: string[] = [];
+    for (const msg of recentMessages) {
+      if (isNameMentioned(msg.text, botUsername)) {
+        mentionedLines.push(`${msg.user}: ${msg.text}`);
+      }
+    }
+    const audioMentionLines: string[] = [];
+    if (store.audioTranscript) {
+      const audioLines = store.audioTranscript.split("\n").slice(-15);
+      for (const line of audioLines) {
+        if (isNameMentioned(line, botUsername)) {
+          audioMentionLines.push(`[AUDIO] ${line}`);
+        }
+      }
+    }
+    const allMentionLines = [...mentionedLines, ...audioMentionLines];
+    if (allMentionLines.length === 0) return;
+
+    store.setSmartRepliesLoading(true);
+    generateSmartReplies(allMentionLines, { botId })
+      .then((replies) => {
+        if (replies.length > 0) useAppStore.getState().setSmartReplies(replies);
+        useAppStore.getState().setSmartRepliesLoading(false);
+      })
+      .catch((e) => {
+        if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
+          console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
+        }
+        useAppStore.getState().setSmartRepliesLoading(false);
+      });
+  };
+
   useEffect(() => {
     // Stagger bot check intervals so they don't all fire at once and flood
     // the single Ollama slot. Each bot's tick is offset by its index in the
@@ -1131,6 +1176,9 @@ export function useAutoForgeBot(botId: string) {
       if (store.multiBotEnabled && store.autoForgeEnabled && store.autoForgeAutoCheckEnabled) {
         const bot = store.bots.find((b) => b.id === botId);
         if (bot && bot.active && bot.session) checkBot();
+      } else if (store.multiBotEnabled && !store.autoForgeEnabled && store.smartRepliesEnabled) {
+        // AutoForge off — still detect mentions for smart replies
+        checkBotMentionsOnly();
       }
     };
 

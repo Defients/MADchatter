@@ -63,6 +63,7 @@ import { SENTIMENT_DOT_COLORS } from "../lib/sentiment";
 import type { SentimentLabel } from "../types";
 import { visionRequest } from "../lib/ai";
 import { isQueueTimeout } from "../lib/aiScheduler";
+import { messageQueue } from "../lib/messageQueue";
 import { getActiveProvider } from "../lib/keys";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
@@ -547,6 +548,13 @@ export function ForgeLayout() {
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [memoryClearConfirm, setMemoryClearConfirm] = useState(false);
   const [multiBotPanelOpen, setMultiBotPanelOpen] = useState(false);
+  // Portal host inside the app's z-0 stacking context (see App.tsx). Floating
+  // panels portaled here sit at their own z-index within the app layer, so
+  // full-screen overlays (z-50+) cover them. Falls back to document.body.
+  const [floatLayer, setFloatLayer] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setFloatLayer(document.getElementById("forge-float-layer") ?? document.body);
+  }, []);
   const memoryClearTimerRef = useRef<number | null>(null);
   const iconRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const iconDragStartRef = useRef<{ x: number; y: number; widget: WidgetType } | null>(null);
@@ -812,10 +820,12 @@ export function ForgeLayout() {
       return;
     }
     // Non-destructive channel switch:
-    // 1) Save current channel's LTM + AutoForge events to channelStore
-    // 2) Clear ephemeral context (chat/transcript/visual)
-    // 3) Restore target channel's LTM + AutoForge events from channelStore
-    // 4) Update stream metadata (triggers useAutoMemory to reload auto-memory)
+    // 1) Save current channel's session (LTM, memory, AutoForge report,
+    //    analytics, per-bot runtime) to channelStore
+    // 2) Wipe all session-scoped state so nothing residual leaks into the
+    //    new channel's prompts, report, or dashboard
+    // 3) Update stream metadata (triggers useAutoMemory to reload auto-memory)
+    // 4) Restore target channel's session from channelStore
     // No warning popup — switching is no longer destructive.
     isSwitchingRef.current = true;
     try {
@@ -824,6 +834,9 @@ export function ForgeLayout() {
       }
       clearAllContext();
       setVariants([]);
+      // Queued retries carry the old channel name — sending one would
+      // reconnect the client back to the previous streamer.
+      messageQueue.clear();
       updateStreamMetadata({ channelName: trimmed });
       await restoreChannelSnapshot(trimmed.toLowerCase());
     } finally {
@@ -3010,7 +3023,7 @@ export function ForgeLayout() {
                   {/* Multi-Bot launcher + panel */}
                   <div className="relative shrink-0" data-tutorial="multibot-button">
                     <MultiBotButton active={multiBotPanelOpen} onClick={() => setMultiBotPanelOpen((v) => !v)} />
-                    {createPortal(
+                    {floatLayer && createPortal(
                       <AnimatePresence>
                         {multiBotPanelOpen && (
                           <motion.div
@@ -3025,7 +3038,7 @@ export function ForgeLayout() {
                           </motion.div>
                         )}
                       </AnimatePresence>,
-                      document.body
+                      floatLayer
                     )}
                   </div>
 

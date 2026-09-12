@@ -84,6 +84,10 @@ export interface AIRequestMeta {
   startedAt?: number;
   completedAt?: number;
   timeoutMs: number;
+  /** Max time to wait for the Ollama slot before queue-timeout. Defaults to
+      timeoutMs. Background ops can pass a larger budget so they survive a
+      contended slot without extending their execution timeout. */
+  queueTimeoutMs?: number;
   abortController: AbortController;
   dedupeKey?: string;
   botId?: string;
@@ -179,6 +183,9 @@ export interface AIRequestOptions {
   dedupeKey?: string;
   botId?: string;
   channel?: string;
+  /** Max time to wait for the Ollama slot before queue-timeout. Defaults to
+      timeoutMs. See AIRequestMeta.queueTimeoutMs. */
+  queueTimeoutMs?: number;
 }
 
 /**
@@ -233,6 +240,7 @@ class AIScheduler {
       preemptible: options.preemptible ?? (options.priority === "autonomous" || options.priority === "background"),
       enqueuedAt: Date.now(),
       timeoutMs: options.timeoutMs,
+      queueTimeoutMs: options.queueTimeoutMs,
       abortController,
       dedupeKey: options.dedupeKey,
       botId: options.botId,
@@ -352,10 +360,13 @@ class AIScheduler {
       this.ollamaPending.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
       this.slotResolvers.set(meta.id, { resolve, reject });
 
-      // Queue-wait deadline: don't wait longer than the request's own timeout
-      // budget. Protects callers from an unbounded wait if the active request
-      // never settles (e.g. an SDK call that ignores the abort signal).
-      const waitBudgetMs = Math.max(1, meta.enqueuedAt + meta.timeoutMs - Date.now());
+      // Queue-wait deadline: don't wait longer than the request's queue
+      // budget (defaults to its own timeout). Protects callers from an
+      // unbounded wait if the active request never settles (e.g. an SDK call
+      // that ignores the abort signal). Background ops may pass a larger
+      // queueTimeoutMs so they survive contention without extending their
+      // execution timeout.
+      const waitBudgetMs = Math.max(1, meta.enqueuedAt + (meta.queueTimeoutMs ?? meta.timeoutMs) - Date.now());
       const timer = setTimeout(() => {
         const idx = this.ollamaPending.findIndex((m) => m.id === meta.id);
         if (idx < 0) return; // Already started or removed.
@@ -367,7 +378,7 @@ class AIScheduler {
           `[AIQueue] queue-timeout ${meta.operation} waited=${meta.queueWaitMs}ms timeoutMs=${meta.timeoutMs}` +
           `${meta.botId ? ` bot=${meta.botId}` : ""}`,
         );
-        reject(new AIRequestTimeoutError(meta.operation, meta.timeoutMs, true));
+        reject(new AIRequestTimeoutError(meta.operation, meta.queueTimeoutMs ?? meta.timeoutMs, true));
       }, waitBudgetMs);
 
       // Cancel the deadline once the slot resolves or is rejected.
@@ -381,6 +392,15 @@ class AIScheduler {
 
   private startNextOllama() {
     if (this.ollamaActive || this.ollamaPending.length === 0) return;
+    // Priority aging: a queued request is promoted one rank per 30s of wait
+    // (critical-equivalent after ~90s for background work). Aging only picks
+    // who gets the NEXT free slot — it never preempts in-flight work — so a
+    // steady stream of autonomous/interactive requests can't starve
+    // background ops (e.g. memory extraction) forever.
+    const now = Date.now();
+    const effRank = (m: AIRequestMeta) =>
+      PRIORITY_RANK[m.priority] - Math.floor((now - m.enqueuedAt) / 30_000);
+    this.ollamaPending.sort((a, b) => effRank(a) - effRank(b) || a.enqueuedAt - b.enqueuedAt);
     const next = this.ollamaPending.shift()!;
     const resolver = this.slotResolvers.get(next.id);
     this.slotResolvers.delete(next.id);
@@ -628,7 +648,10 @@ export function getOperationTimeout(
       // queue 2-3 bots. 45s gives ~3 × 10s execution slots of slack.
       return isOllama ? 45_000 : 30_000;
     case "autoforge_briefing":
-      return isOllama ? 30_000 : 30_000;
+      // Ollama: the prompt carries the event log, so prompt processing +
+      // 1024-token generation needs more than 30s on local models. Give it
+      // the same budget as forge (user is waiting on it).
+      return isOllama ? 60_000 : 30_000;
     case "memory_extraction":
       return isOllama ? 25_000 : 30_000; // Background — shorter for Ollama so it yields faster.
     case "smart_reply":
