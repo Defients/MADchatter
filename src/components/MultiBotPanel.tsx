@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { motion, AnimatePresence, useDragControls, useAnimationControls } from "framer-motion";
-import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone, Clock, XCircle } from "lucide-react";
+import { motion, AnimatePresence, useDragControls, useAnimationControls, Reorder } from "framer-motion";
+import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
@@ -12,6 +12,7 @@ import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { ThemedTooltip } from "./ui/tooltip";
+import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from "./directorNoteShared";
 
 /** Bot card with a pulse effect when the bot sends a message. */
 function BotCard({
@@ -604,31 +605,16 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
  *
  * Notes can be timed (auto-expire after a set duration) or last until manually
  * canceled. Active notes are shown as dismissible chips below the input.
+ * Shared primitives (durations, expiry formatter, chip component) live in
+ * directorNoteShared.tsx and are also used by SingleBotDirectorNoteInput.
  */
-const DIRECTOR_NOTE_DURATIONS: { label: string; ms: number | null }[] = [
-  { label: "Until canceled", ms: null },
-  { label: "5 min", ms: 5 * 60_000 },
-  { label: "15 min", ms: 15 * 60_000 },
-  { label: "30 min", ms: 30 * 60_000 },
-  { label: "1 hour", ms: 60 * 60_000 },
-];
-
-function formatExpiry(expiresAt: number | null | undefined): string {
-  if (expiresAt == null) return "until canceled";
-  const remaining = expiresAt - Date.now();
-  if (remaining <= 0) return "expired";
-  const mins = Math.ceil(remaining / 60_000);
-  if (mins < 60) return `${mins}m left`;
-  const hrs = Math.floor(mins / 60);
-  const remMin = mins % 60;
-  return `${hrs}h ${remMin}m left`;
-}
 
 function DirectorNoteInput() {
   const bots = useAppStore((s) => s.bots);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
   const addBotDirectorNote = useAppStore((s) => s.addBotDirectorNote);
   const removeBotDirectorNote = useAppStore((s) => s.removeBotDirectorNote);
+  const reorderBotDirectorNotes = useAppStore((s) => s.reorderBotDirectorNotes);
   const addBotAutoForgeEvent = useAppStore((s) => s.addBotAutoForgeEvent);
   const [text, setText] = useState("");
   const [target, setTarget] = useState<string>("all"); // "all" | botId
@@ -679,6 +665,18 @@ function DirectorNoteInput() {
     isAllBots: target === "all" && g.copies.length >= targetBots.length,
   })).slice(-8);
 
+  // When a specific bot is selected, we also compute the ungrouped note list
+  // for drag-to-reorder. Reordering is per-bot — each bot has its own priority
+  // order. The "all bots" grouped view is read-only (groups span multiple
+  // bots, so reordering a group doesn't map to a single bot's array).
+  const canReorder = target !== "all" && targetBots.length === 1;
+  const singleBotActiveNotes = canReorder
+    ? (targetBots[0].runtime.directorNotes || [])
+        .filter((n) => n.expiresAt == null || n.expiresAt > now)
+        .slice(-8)
+    : [];
+  const singleBotNoteIds = singleBotActiveNotes.map((n) => n.id);
+
   const handleSend = () => {
     const message = text.trim();
     if (!message || activeBots.length === 0) return;
@@ -692,7 +690,7 @@ function DirectorNoteInput() {
         timestamp: Date.now(),
         type: "director_note",
         severity: "high",
-        summary: `Director note: "${message.substring(0, 80)}${message.length > 80 ? "..." : ""}"${durationMs ? ` (${formatExpiry(Date.now() + durationMs)})` : ""}`,
+        summary: directorNoteSummary(message, durationMs),
         details: { source: "director", message, botId: bot.id, durationMs },
       });
     }
@@ -789,39 +787,58 @@ function DirectorNoteInput() {
           </ThemedTooltip>
         </div>
       </div>
-      {/* Active notes — dismissible chips (grouped by text across bots) */}
+      {/* Active notes — dismissible chips. When a specific bot is selected,
+          notes are reorderable via drag (priority = array position). When
+          "all bots" is selected, notes are grouped by text (read-only). */}
       {showActive && (
-        <div className="flex flex-col gap-1 max-h-32 overflow-y-auto forge-scroll">
-          {activeNotes.length === 0 ? (
-            <div className="text-[10px] text-gray-600 italic px-1 py-0.5">No active notes for this target.</div>
+        canReorder ? (
+          singleBotActiveNotes.length === 0 ? (
+            <div className="text-[10px] text-gray-600 italic px-1 py-0.5">No active notes for this bot.</div>
           ) : (
-            activeNotes.map((g, i) => {
-              const scopeLabel = g.isAllBots
-                ? "All bots"
-                : g.copies.length === 1
-                  ? `@${g.copies[0].botName}`
-                  : g.copies.map((c) => `@${c.botName}`).join(", ");
-              return (
-                <div key={`${g.text}-${i}`} className="flex items-start gap-1.5 bg-purple-950/30 border border-purple-500/20 rounded px-1.5 py-1">
-                  <Clock className="w-2.5 h-2.5 text-purple-400 shrink-0 mt-0.5" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[10px] text-gray-300 leading-snug truncate">{g.text}</div>
-                    <div className="text-[8px] text-gray-500 mt-0.5">
-                      {scopeLabel} · {formatExpiry(g.expiresAt)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleRemoveNote(g.copies)}
-                    className="shrink-0 text-gray-500 hover:text-red-400 transition-colors p-0.5"
-                    title={g.copies.length > 1 ? `Cancel this note for all ${g.copies.length} bots` : "Cancel this note"}
-                  >
-                    <XCircle className="w-3 h-3" />
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
+            <Reorder.Group
+              axis="y"
+              values={singleBotNoteIds}
+              onReorder={(newOrder) => reorderBotDirectorNotes(target, newOrder)}
+              className="flex flex-col gap-1 max-h-32 overflow-y-auto forge-scroll"
+            >
+              {singleBotActiveNotes.map((n, i) => (
+                <Reorder.Item key={n.id} value={n.id} className="list-none cursor-grab active:cursor-grabbing">
+                  <DirectorNoteChip
+                    text={n.text}
+                    expiresAt={n.expiresAt}
+                    onRemove={() => removeBotDirectorNote(target, n.id)}
+                    priority={priorityBadge(i)}
+                    draggable
+                  />
+                </Reorder.Item>
+              ))}
+            </Reorder.Group>
+          )
+        ) : (
+          <div className="flex flex-col gap-1 max-h-32 overflow-y-auto forge-scroll">
+            {activeNotes.length === 0 ? (
+              <div className="text-[10px] text-gray-600 italic px-1 py-0.5">No active notes for this target.</div>
+            ) : (
+              activeNotes.map((g, i) => {
+                const scopeLabel = g.isAllBots
+                  ? "All bots"
+                  : g.copies.length === 1
+                    ? `@${g.copies[0].botName}`
+                    : g.copies.map((c) => `@${c.botName}`).join(", ");
+                return (
+                  <DirectorNoteChip
+                    key={`${g.text}-${i}`}
+                    text={g.text}
+                    expiresAt={g.expiresAt}
+                    scopeLabel={scopeLabel}
+                    onRemove={() => handleRemoveNote(g.copies)}
+                    removeTitle={g.copies.length > 1 ? `Cancel this note for all ${g.copies.length} bots` : "Cancel this note"}
+                  />
+                );
+              })
+            )}
+          </div>
+        )
       )}
     </div>
   );

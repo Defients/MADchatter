@@ -74,6 +74,7 @@ import { createMarker } from "../lib/chatUtils";
 import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
 import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
+import { clearTwitchMessageIdCache } from "../lib/twitchReplyCache";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
@@ -833,6 +834,7 @@ export function ForgeLayout() {
         await saveCurrentChannelSnapshot();
       }
       clearAllContext();
+      clearTwitchMessageIdCache();
       setVariants([]);
       // Queued retries carry the old channel name — sending one would
       // reconnect the client back to the previous streamer.

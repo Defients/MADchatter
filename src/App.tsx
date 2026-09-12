@@ -23,6 +23,7 @@ import { MobileAdvisory } from './components/MobileAdvisory';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { getKeys } from './lib/keys';
 import { tmiSendManager } from './lib/twitch';
+import { recordTwitchMessageId, clearTwitchMessageIdCache } from './lib/twitchReplyCache';
 import { KickChatClient, kickSendManager, fetchKickMetadata } from './lib/kick';
 import { JoystickChatClient, joystickSendManager, getJoystickBasicAuthKey, getJoystickSession, getJoystickBotUsername } from './lib/joystick';
 import { sendManualMessage } from './lib/manualSend';
@@ -374,6 +375,12 @@ export default function App() {
     client.on('message', (channel, tags, message, self) => {
       if (self) return;
       const username = tags['display-name'] || tags.username || 'user';
+      // Capture the Twitch message ID so we can send reply-tagged messages
+      // later. This makes @username mentions render as clickable/special text
+      // in Twitch's web chat (via the @reply-parent-msg-id IRC tag).
+      if (tags.id && username) {
+        recordTwitchMessageId(username, tags.id);
+      }
       queueChatMessage(createChatMessage(username, message, 'twitch'));
       incrementMessagesReceived();
       processIncomingMessage(username, message, 'twitch');

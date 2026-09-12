@@ -1,14 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useAppStore, selectMultiBotActive } from '../store';
 import type { Bot } from '../types';
-import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle, ChevronDown, Send } from 'lucide-react';
+import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle, ChevronDown, Send, Megaphone } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx, playForceBurstSfx } from '../lib/sfx';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
 import { sendManualMessage } from '../lib/manualSend';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
+import { Reorder } from 'framer-motion';
 import { ThemedTooltip } from './ui/tooltip';
+import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from './directorNoteShared';
 
 // ─── Next Check color thresholds ───────────────────────────────────────────
 // Short = hot/green (about to fire), long = cool/red (calm wait).
@@ -1074,9 +1076,151 @@ export function AutoForgeHUD() {
               )}
             </AnimatePresence>
 
+            {/* Single-bot Director Note input — only shown when multi-bot is
+                OFF (multi-bot mode has its own DirectorNoteInput in the
+                MultiBotPanel). Lets the streamer send private directives that
+                are injected into the bot's next AutoForge decision. */}
+            {!multiBotActive && <SingleBotDirectorNoteInput />}
+
           </motion.div>
         )}
       </AnimatePresence>
     </motion.div>
+  );
+}
+
+// ─── Single-bot Director Note Input ─────────────────────────────────────────
+// Mirrors the multi-bot DirectorNoteInput but targets the legacy single-bot
+// store actions. Shown at the bottom of the expanded AutoForgeHUD when multi-
+// bot mode is disabled. Notes are private — never sent to chat.
+// Shared primitives (durations, expiry formatter, chip component) live in
+// directorNoteShared.tsx.
+
+function SingleBotDirectorNoteInput() {
+  const directorNotes = useAppStore((s) => s.directorNotes);
+  const addDirectorNote = useAppStore((s) => s.addDirectorNote);
+  const removeDirectorNote = useAppStore((s) => s.removeDirectorNote);
+  const reorderDirectorNotes = useAppStore((s) => s.reorderDirectorNotes);
+  const addAutoForgeEvent = useAppStore((s) => s.addAutoForgeEvent);
+  const [text, setText] = useState("");
+  const [durationMs, setDurationMs] = useState<number | null>(null);
+  const [showActive, setShowActive] = useState(false);
+
+  const now = Date.now();
+  const activeNotes = (directorNotes || [])
+    .filter((n) => n.expiresAt == null || n.expiresAt > now)
+    .slice(-8);
+  const activeNoteIds = activeNotes.map((n) => n.id);
+
+  const handleSend = () => {
+    const message = text.trim();
+    if (!message) return;
+    addDirectorNote(message, durationMs);
+    addAutoForgeEvent({
+      timestamp: Date.now(),
+      type: "director_note",
+      severity: "high",
+      summary: directorNoteSummary(message, durationMs),
+      details: { source: "director", message, durationMs },
+    });
+    toast.success("Director note sent", {
+      description: durationMs
+        ? `Active for ${DIRECTOR_NOTE_DURATIONS.find((d) => d.ms === durationMs)?.label}.`
+        : "Active until manually canceled.",
+    });
+    setText("");
+  };
+
+  return (
+    <div className="shrink-0 border-t border-white/10 bg-gradient-to-b from-purple-950/20 to-black/30 p-2 flex flex-col gap-1.5 mt-1">
+      <div className="flex items-center gap-1.5">
+        <Megaphone className="w-3 h-3 text-purple-400 shrink-0" />
+        <span className="text-[9px] uppercase tracking-wider text-purple-400 font-bold shrink-0">Director Note</span>
+        <ThemedTooltip
+          side="top"
+          content={
+            <div className="max-w-[220px] space-y-1">
+              <div className="font-bold text-purple-300">Director Notes</div>
+              <div>Private directives to your bot. <span className="text-purple-300 font-semibold">Never sent to chat</span> — injected into the bot's next AutoForge decision as a high-priority directive.</div>
+              <div className="text-gray-400">Use for feedback, status updates, or things you want the bot to remember mid-stream. Timed notes auto-expire; "Until canceled" notes persist until you dismiss them.</div>
+            </div>
+          }
+        >
+          <span className="text-gray-600 hover:text-purple-400 transition-colors cursor-help text-[10px]">?</span>
+        </ThemedTooltip>
+        <button
+          onClick={() => setShowActive((v) => !v)}
+          className="ml-auto shrink-0 text-[9px] px-1.5 py-1 rounded border border-white/10 text-purple-300 hover:bg-purple-500/10 hover:border-purple-500/40 transition-colors"
+          title={showActive ? "Hide active notes" : "Show active notes"}
+        >
+          {activeNotes.length > 0 ? `${activeNotes.length} active` : "none active"}
+        </button>
+      </div>
+      <div className="flex items-stretch gap-1.5">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          placeholder="Direct your bot — e.g. 'tone it down', 'the raid is starting soon', 'remember this user likes X'…"
+          rows={2}
+          className="flex-1 min-w-0 resize-none text-[11px] leading-snug bg-black/40 border border-white/10 rounded px-2 py-1.5 text-white outline-none focus:border-purple-500/50 placeholder:text-gray-600 forge-scroll"
+        />
+        <div className="flex flex-col gap-1 shrink-0">
+          <select
+            value={durationMs ?? "null"}
+            onChange={(e) => setDurationMs(e.target.value === "null" ? null : Number(e.target.value))}
+            className="text-[9px] bg-black/40 border border-white/10 rounded px-1 py-1 text-purple-300 outline-none focus:border-purple-500/50 w-[72px]"
+            title="How long the note stays active"
+          >
+            {DIRECTOR_NOTE_DURATIONS.map((d) => (
+              <option key={d.label} value={d.ms ?? "null"} className="bg-[#0F0F12] text-white">{d.label}</option>
+            ))}
+          </select>
+          <ThemedTooltip content="Send director note (Enter)">
+            <button
+              onClick={handleSend}
+              disabled={text.trim().length === 0}
+              className={cn(
+                "flex-1 flex items-center justify-center rounded-md border transition-colors",
+                text.trim().length === 0
+                  ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
+                  : "bg-purple-600 border-purple-500/60 text-white hover:bg-purple-500",
+              )}
+            >
+              <Send className="w-3.5 h-3.5" />
+            </button>
+          </ThemedTooltip>
+        </div>
+      </div>
+      {showActive && (
+        activeNotes.length === 0 ? (
+          <div className="text-[10px] text-gray-600 italic px-1 py-0.5">No active notes.</div>
+        ) : (
+          <Reorder.Group
+            axis="y"
+            values={activeNoteIds}
+            onReorder={(newOrder) => reorderDirectorNotes(newOrder)}
+            className="flex flex-col gap-1 max-h-32 overflow-y-auto forge-scroll"
+          >
+            {activeNotes.map((n, i) => (
+              <Reorder.Item key={n.id} value={n.id} className="list-none cursor-grab active:cursor-grabbing">
+                <DirectorNoteChip
+                  text={n.text}
+                  expiresAt={n.expiresAt}
+                  onRemove={() => removeDirectorNote(n.id)}
+                  priority={priorityBadge(i)}
+                  draggable
+                />
+              </Reorder.Item>
+            ))}
+          </Reorder.Group>
+        )
+      )}
+    </div>
   );
 }

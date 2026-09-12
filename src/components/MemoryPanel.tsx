@@ -259,7 +259,7 @@ export function MemoryPanel() {
 
   // ── Streamer Data section ───────────────────────────────────────
   const [showStreamerData, setShowStreamerData] = useState(false);
-  const [streamerList, setStreamerList] = useState<{ channel: string; updatedAt: number | null }[]>([]);
+  const [streamerList, setStreamerList] = useState<{ channel: string; updatedAt: number | null; memoryCount: number }[]>([]);
 
   const refreshStreamerData = useCallback(async () => {
     try {
@@ -270,8 +270,14 @@ export function MemoryPanel() {
       const map = new Map<string, number | null>();
       for (const s of snapshots) map.set(s.channel, s.updatedAt);
       for (const c of memoryChannels) if (!map.has(c)) map.set(c, null);
-      const list = [...map.entries()]
-        .map(([ch, updatedAt]) => ({ channel: ch, updatedAt }))
+      const channels = [...map.keys()];
+      // Fetch memory counts in parallel — countByChannel uses the cheap
+      // IndexedDB index.count() path so this is one round-trip per channel.
+      const counts = await Promise.all(
+        channels.map((ch) => memoryStore.countAllMemories(ch).catch(() => 0)),
+      );
+      const list = channels
+        .map((ch, i) => ({ channel: ch, updatedAt: map.get(ch) ?? null, memoryCount: counts[i] }))
         .sort((a, b) => a.channel.localeCompare(b.channel));
       setStreamerList(list);
     } catch (e) {
@@ -462,6 +468,7 @@ export function MemoryPanel() {
                     @{row.channel}
                   </span>
                   {row.channel === channel && <span className="text-[9px] text-purple-400">(active)</span>}
+                  <span className="text-purple-400 font-bold">({row.memoryCount})</span>
                   <span className="text-gray-600 ml-1">
                     {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "no snapshot"}
                   </span>

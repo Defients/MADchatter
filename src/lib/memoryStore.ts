@@ -189,6 +189,32 @@ export async function getAllMemories(channel: string): Promise<AutoMemory[]> {
   return getAllByChannel<AutoMemory>(STORES.memories, channel);
 }
 
+/** Count records in a store scoped by channel (via the channel index). Cheaper
+ *  than getAllByChannel when only the count is needed. */
+function countByChannel(storeName: string, channel: string): Promise<number> {
+  return openDB().then(
+    (db) =>
+      new Promise<number>((resolve, reject) => {
+        const transaction = db.transaction(storeName, "readonly");
+        const store = transaction.objectStore(storeName);
+        const index = store.index("channel");
+        const request = index.count(channel);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      }),
+  );
+}
+
+/** Total memory record count for a channel (memories + profiles + jokes). */
+export async function countAllMemories(channel: string): Promise<number> {
+  const [mem, prof, jok] = await Promise.all([
+    countByChannel(STORES.memories, channel),
+    countByChannel(STORES.profiles, channel),
+    countByChannel(STORES.jokes, channel),
+  ]);
+  return mem + prof + jok;
+}
+
 export async function addMemory(channel: string, memory: AutoMemory): Promise<void> {
   await tx(STORES.memories, "readwrite", (store) => store.put({ ...memory, channel }));
 }

@@ -165,15 +165,21 @@ export function retrieveRelevantMemories(
  * Build the [DIRECTOR NOTES] context block from a list of notes. Filters out
  * expired notes (expiresAt < now) so the AI never sees stale directives.
  * Returns an empty string when there are no active notes.
+ *
+ * Priority: the first 3 active notes are labeled PRIORITY 1/2/3 (highest →
+ * lowest of the top tier). Notes 4+ are labeled STANDARD. The array order is
+ * the priority order — the streamer reorders notes via drag in the UI.
  */
 export function formatDirectorNotesContext(directorNotes?: DirectorNote[] | null): string {
   if (!directorNotes || directorNotes.length === 0) return "";
   const now = Date.now();
   const active = directorNotes.filter((n) => n.expiresAt == null || n.expiresAt > now);
   if (active.length === 0) return "";
-  const parts: string[] = [`[DIRECTOR NOTES — from the streamer, follow these directives]`];
-  for (const note of active.slice(-10)) {
-    parts.push(`- ${note.text}`);
+  const parts: string[] = [`[DIRECTOR NOTES — from the streamer, follow these directives in priority order]`];
+  for (let i = 0; i < active.length && i < 10; i++) {
+    const note = active[i];
+    const label = i < 3 ? `PRIORITY ${i + 1}` : `STANDARD`;
+    parts.push(`- [${label}] ${note.text}`);
   }
   return parts.join("\n");
 }

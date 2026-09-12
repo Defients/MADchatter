@@ -511,6 +511,10 @@ interface AppState {
   addDirectorNote: (text: string, durationMs?: number | null) => void;
   removeDirectorNote: (noteId: string) => void;
   clearDirectorNotes: () => void;
+  /** Reorder director notes to match the given note ID order. Active notes
+   *  are placed first in the specified order; expired notes keep their
+   *  relative order at the end. */
+  reorderDirectorNotes: (noteIds: string[]) => void;
 
   userProfiles: UserProfile[];
   setUserProfiles: (profiles: UserProfile[]) => void;
@@ -716,6 +720,8 @@ interface AppState {
   addBotDirectorNote: (id: string, text: string, durationMs?: number | null) => void;
   removeBotDirectorNote: (id: string, noteId: string) => void;
   clearBotDirectorNotes: (id: string) => void;
+  /** Reorder a specific bot's director notes to match the given note ID order. */
+  reorderBotDirectorNotes: (id: string, noteIds: string[]) => void;
 
   // ─── First Message Mode (multi-bot) ────────────────────────────
   // User preference (persisted). When true, the next successful outbound
@@ -1363,6 +1369,20 @@ export const useAppStore = create<AppState>()(
         directorNotes: state.directorNotes.filter((n) => n.id !== noteId),
       })),
       clearDirectorNotes: () => set({ directorNotes: [] }),
+      reorderDirectorNotes: (noteIds) => set((state) => {
+        // Reorder so active notes match the given ID order; expired notes
+        // keep their relative order at the end.
+        const now = Date.now();
+        const active = state.directorNotes.filter((n) => n.expiresAt == null || n.expiresAt > now);
+        const expired = state.directorNotes.filter((n) => n.expiresAt != null && n.expiresAt <= now);
+        const orderMap = new Map(noteIds.map((id, i) => [id, i]));
+        const sortedActive = active.slice().sort((a, b) => {
+          const ai = orderMap.get(a.id) ?? Infinity;
+          const bi = orderMap.get(b.id) ?? Infinity;
+          return ai - bi;
+        });
+        return { directorNotes: [...sortedActive, ...expired] };
+      }),
 
       userProfiles: [],
       setUserProfiles: (profiles) => set({ userProfiles: profiles }),
@@ -2362,6 +2382,22 @@ export const useAppStore = create<AppState>()(
           bots: state.bots.map((b) =>
             b.id === id ? { ...b, runtime: { ...b.runtime, directorNotes: [] } } : b
           ),
+        })),
+      reorderBotDirectorNotes: (id, noteIds) =>
+        set((state) => ({
+          bots: state.bots.map((b) => {
+            if (b.id !== id) return b;
+            const now = Date.now();
+            const active = b.runtime.directorNotes.filter((n) => n.expiresAt == null || n.expiresAt > now);
+            const expired = b.runtime.directorNotes.filter((n) => n.expiresAt != null && n.expiresAt <= now);
+            const orderMap = new Map(noteIds.map((nid, i) => [nid, i]));
+            const sortedActive = active.slice().sort((a, c) => {
+              const ai = orderMap.get(a.id) ?? Infinity;
+              const ci = orderMap.get(c.id) ?? Infinity;
+              return ai - ci;
+            });
+            return { ...b, runtime: { ...b.runtime, directorNotes: [...sortedActive, ...expired] } };
+          }),
         })),
 
       exportSettings: () => {

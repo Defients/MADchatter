@@ -2,6 +2,7 @@ import tmi from "tmi.js";
 import { toast } from "sonner";
 import { SendRateLimiter } from "./rateLimiter";
 import { useAppStore } from "../store";
+import { findReplyTargetFromMentions } from "./twitchReplyCache";
 
 export interface TwitchSession {
   accessToken: string;
@@ -155,8 +156,35 @@ class TmiSendManager {
     return this.connectingPromise;
   }
 
-  async send(channel: string, message: string): Promise<void> {
+  /**
+   * Send a message to a Twitch channel.
+   *
+   * If `replyToMessageId` is provided, the message is sent as a Twitch reply
+   * (using the `@reply-parent-msg-id` IRC tag). This makes the `@username`
+   * mention render as a clickable, highlighted mention in Twitch's web chat
+   * — even if the mentioned user isn't currently in the channel.
+   *
+   * Falls back to a regular `client.say()` if the reply tag fails (e.g. the
+   * message ID is too old or invalid), so the message still goes through.
+   */
+  async send(channel: string, message: string, replyToMessageId?: string): Promise<void> {
     const client = await this.getClient(channel);
+    if (replyToMessageId) {
+      try {
+        // Send a raw IRC PRIVMSG with the reply tag. tmi.js 1.8.5 doesn't
+        // have a built-in reply method, so we use raw() to send the tagged
+        // command directly. The `@reply-parent-msg-id` tag tells Twitch to
+        // render this as a threaded reply to the parent message, which
+        // forces the parent user's name to render as a clickable mention.
+        const chan = channel.startsWith("#") ? channel : `#${channel}`;
+        await client.raw(`@reply-parent-msg-id=${replyToMessageId} PRIVMSG ${chan} :${message}`);
+        return;
+      } catch (e) {
+        // Reply tag can fail if the message ID is stale/invalid. Fall back
+        // to a regular say() so the message still goes through.
+        console.warn(`[twitch] reply tag failed (falling back to regular send):`, e);
+      }
+    }
     await client.say(channel, message);
   }
 
@@ -209,9 +237,9 @@ export function disposeTmiSendManagerForBot(botId: string): void {
 // same message was sent within the last 60s, we block it.
 
 class SendGuard extends SendRateLimiter {
-  private doSend: (channel: string, message: string) => Promise<void>;
+  private doSend: (channel: string, message: string, replyToMessageId?: string) => Promise<void>;
 
-  constructor(doSend: (channel: string, message: string) => Promise<void> = (ch, msg) => tmiSendManager.send(ch, msg)) {
+  constructor(doSend: (channel: string, message: string, replyToMessageId?: string) => Promise<void> = (ch, msg, rid) => tmiSendManager.send(ch, msg, rid)) {
     super();
     this.doSend = doSend;
   }
@@ -233,7 +261,11 @@ class SendGuard extends SendRateLimiter {
     }
 
     this.recordSend(message);
-    await this.doSend(channel, message);
+    // Auto-detect @username mentions and attach a reply tag if we have a
+    // recent message ID from the mentioned user. This forces Twitch to
+    // render the mention as clickable/special text instead of plain text.
+    const replyId = findReplyTargetFromMentions(message);
+    await this.doSend(channel, message, replyId ?? undefined);
   }
 }
 
@@ -247,7 +279,7 @@ function getSendGuardForBot(botId: string): SendGuard {
   let guard = botSendGuardRegistry.get(botId);
   if (!guard) {
     const mgr = getTmiSendManagerForBot(botId);
-    guard = new SendGuard((ch, msg) => mgr.send(ch, msg));
+    guard = new SendGuard((ch, msg, rid) => mgr.send(ch, msg, rid));
     botSendGuardRegistry.set(botId, guard);
   }
   return guard;
