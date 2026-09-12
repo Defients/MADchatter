@@ -144,6 +144,9 @@ export function AutoForgeHUD() {
   // Dry Run section expand state — Confidence Threshold slider is hidden by
   // default to save space for a lesser-used feature.
   const [dryRunExpanded, setDryRunExpanded] = useState(false);
+  // Send Now button state for the decision card. Declared with the other
+  // hooks (before the early return) to respect the Rules of Hooks.
+  const [sendingPayload, setSendingPayload] = useState(false);
 
   useEffect(() => {
     if (!isAutoForgeHUDOpen) return;
@@ -372,8 +375,6 @@ export function AutoForgeHUD() {
   );
   const showSendButton = decisionWasSent && !wasActuallySent;
 
-  const [sendingPayload, setSendingPayload] = useState(false);
-  
   return (
     <motion.div
       drag
