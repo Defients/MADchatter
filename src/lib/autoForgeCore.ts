@@ -8,6 +8,7 @@
  */
 
 import type { ChatMessage, RuleEngineContext, SessionGoal, SentimentReading, EnhancedSessionStats, PinnedMemory, StreamHealthScore, GoalEvaluationResult } from "../types";
+import { isNearDuplicate } from "./antiRepetition";
 
 // ─── Chat Activity ───────────────────────────────────────────────────────────
 
@@ -258,6 +259,51 @@ export function computeNextActionMinutes(
   return nextMinutes;
 }
 
+// ─── Vibe Check (pre-AI-call heuristic) ───────────────────────────────────────
+
+export interface VibeCheckResult {
+  shouldSkip: boolean;
+  reason: string;
+  nextCheckDelayMs: number;
+}
+
+/**
+ * Cheap local heuristic run before the expensive `autoforgeDecide` AI call.
+ * If the moment is clearly not worth an AI round-trip (dead chat, offline
+ * stream, user is forging), this returns shouldSkip=true so the caller can
+ * short-circuit without spending tokens or GPU cycles.
+ *
+ * Never skips when the bot is mentioned or an activity spike is detected —
+ * those are the highest-priority signals to act.
+ */
+export function vibeCheck(opts: {
+  isMentioned: boolean;
+  activitySpike: boolean;
+  chatVelocity: number;
+  activityLevel: number;
+  timeSinceLastActionMs: number;
+  viewerCount: number;
+  isForging: boolean;
+}): VibeCheckResult {
+  // Mentions and spikes are always worth checking — never skip.
+  if (opts.isMentioned || opts.activitySpike) {
+    return { shouldSkip: false, reason: "", nextCheckDelayMs: 0 };
+  }
+  // User is actively forging — don't compete with manual work.
+  if (opts.isForging) {
+    return { shouldSkip: true, reason: "user is forging", nextCheckDelayMs: 15_000 };
+  }
+  // Stream likely offline: no viewers AND no chat movement.
+  if (opts.viewerCount === 0 && opts.chatVelocity === 0 && opts.timeSinceLastActionMs > 120_000) {
+    return { shouldSkip: true, reason: "stream likely offline (0 viewers, no chat for 2+ min)", nextCheckDelayMs: 120_000 };
+  }
+  // Dead chat: no activity, no velocity, and been a while since last action.
+  if (opts.activityLevel === 0 && opts.chatVelocity === 0 && opts.timeSinceLastActionMs > 300_000) {
+    return { shouldSkip: true, reason: "dead chat — no signal to act", nextCheckDelayMs: 30_000 };
+  }
+  return { shouldSkip: false, reason: "", nextCheckDelayMs: 0 };
+}
+
 // ─── Confidence Threshold ────────────────────────────────────────────────────
 
 export function normalizeConfidence(raw: unknown): number {
@@ -273,7 +319,38 @@ export function isDuplicateMessage(
 ): boolean {
   const payloadLower = payload.toLowerCase().trim();
   if (!payloadLower) return false;
-  return recentSentMessages.includes(payloadLower);
+  // Fast path: exact match.
+  if (recentSentMessages.includes(payloadLower)) return true;
+  // Semantic path: Jaccard similarity on word sets catches reworded duplicates.
+  return isNearDuplicate(payloadLower, recentSentMessages.map(m => m.toLowerCase().trim()));
+}
+
+// ─── Adaptive Check-Interval Backoff ──────────────────────────────────────────
+
+/**
+ * Progressively lengthen the check interval when AutoForge repeatedly chooses
+ * silence during dead periods, reducing unnecessary AI calls. Resets to normal
+ * pacing when activity resumes (mention or spike bypasses backoff entirely).
+ *
+ * consecutiveSilences 0-2  → baseMinutes (normal)
+ * consecutiveSilences 3-5  → baseMinutes * 1.5
+ * consecutiveSilences 6-10 → baseMinutes * 2
+ * consecutiveSilences 10+  → baseMinutes * 3 (capped at 5 minutes max)
+ */
+export function computeAdaptiveBackoff(
+  consecutiveSilences: number,
+  baseMinutes: number,
+  isMentioned: boolean,
+  activitySpike: boolean,
+): number {
+  // Active moments always use the base interval — no backoff.
+  if (isMentioned || activitySpike) return baseMinutes;
+  if (consecutiveSilences <= 2) return baseMinutes;
+  let multiplier = 1;
+  if (consecutiveSilences <= 5) multiplier = 1.5;
+  else if (consecutiveSilences <= 10) multiplier = 2;
+  else multiplier = 3;
+  return Math.min(5, baseMinutes * multiplier);
 }
 
 // ─── Engagement Check Label ──────────────────────────────────────────────────

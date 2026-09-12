@@ -29,10 +29,10 @@ The Forge setup checklist includes authentication, channel, provider, and captur
 
 ## Ollama / local models
 
-Install [Ollama](https://ollama.com/) and download a model suitable for your hardware. The app currently prefills `llama3.1:8b`; to use that tag:
+Install [Ollama](https://ollama.com/) and download a model suitable for your hardware. The app currently prefills `qwen3.5:9b`; to use that tag:
 
 ```sh
-ollama pull llama3.1:8b
+ollama pull qwen3.5:9b
 ```
 
 In **Settings → API Config**, select **Ollama**, then set:
@@ -40,7 +40,7 @@ In **Settings → API Config**, select **Ollama**, then set:
 | Setting | Value |
 | --- | --- |
 | Custom API Base URL | `http://localhost:11434/v1` |
-| Custom Model Name | The exact downloaded tag, such as `llama3.1:8b`. |
+| Custom Model Name | The exact downloaded tag, such as `qwen3.5:9b`. |
 
 Click **Save Keys**. The green Ollama indicator means no key is required; it is not a successful connection or model-health test.
 

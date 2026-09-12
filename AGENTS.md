@@ -37,13 +37,33 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `openAiCompatEndpoint(provider, keys)` in `keys.ts` centralizes OpenRouter + Ollama defaults.
 - JSON repair: `repairTruncatedJson()` closes unterminated strings and balances brackets.
 
+### AI Request Scheduler (`src/lib/aiScheduler.ts`)
+- Centralized orchestrator: priority, preemption, real cancellation, telemetry, error taxonomy.
+- Priority: `critical` (manual Forge) > `interactive` (refine/vision/briefing) > `autonomous` (AutoForge/Smart Replies) > `background` (AutoMemory).
+- Ollama: single active slot with priority-based preemption. Cloud providers run concurrently.
+- Real cancellation via `AbortSignal` passed to all SDKs. Timeout = `abortController.abort()`.
+- `buildProviderRequestOptions("ollama")` adds `reasoning_effort: "none"` to prevent hidden GPU deliberation.
+- `getOperationTokenBudget()` scales output budgets by operation type and card count.
+- `getOperationTimeout()` gives each operation+provider pair an appropriate timeout.
+- Error taxonomy: `AIRequestTimeoutError`, `AIRequestPreemptedError`, `AIRequestCancelledError`. Use `isSchedulerCancellation()` to avoid poisoning provider health on intentional preemption.
+- `getMetricsSummary()` / `getMetricsHistory()` for diagnostics.
+- Tests: `npx tsx src/lib/aiScheduler.test.ts` (31 deterministic tests).
+
+### Ollama Health Check (`src/lib/ollamaHealth.ts`)
+- `checkOllamaHealth(baseUrl, model)` — lightweight `/v1/models` check with 30s cache.
+- States: `configured`, `connecting`, `ready`, `model_unavailable`, `endpoint_unreachable`.
+- `invalidateOllamaHealthCache()` — call when endpoint/model changes.
+
 ### AutoForge Loops
 - Legacy: `useAutoForge()` — 15s interval, self-disables when `selectMultiBotActive` is true.
 - Per-bot: `useAutoForgeBot(botId)` — 15s interval per bot, requests speaker floor from `botCoordinator`.
 - Orchestrator: `useMultiBotOrchestrator()` — returns JSX with `<BotLoopHost>` that mounts per-bot hooks. Must be rendered in App.tsx.
+- Both loops run a `vibeCheck()` pre-filter before the expensive `autoforgeDecide` AI call — skips dead-chat/offline/user-forging cycles without spending tokens. Never skips mentions or spikes.
+- Both loops track `consecutiveSilenceRef` and apply `computeAdaptiveBackoff()` to lengthen the check interval during dead periods (resets on any action; mentions/spikes bypass).
 
 ### Speaker Coordinator (`src/lib/botCoordinator.ts`)
-- Singleton `botCoordinator`. `requestFloor(botId, candidate)` opens a 2.5s bid window; highest `confidence + personaFit * 0.001` wins. 15s floor gap between speaks. Manual sends bypass the coordinator.
+- Singleton `botCoordinator`. `requestFloor(botId, candidate)` opens a 2.5s bid window; highest `confidence + personaFit * 0.001 + (isMentioned ? 0.15 : 0)` wins. 15s floor gap between speaks. Manual sends bypass the coordinator.
+- `BotCandidate.isMentioned` gives mentioned bots a 0.15 bidding bonus so they win the floor over slightly-higher-confidence non-mentioned competitors.
 
 ### Send Path (`src/lib/platformSend.ts`)
 - `getPlatformSendFn(platform, botId?)` — returns a send function. `botId` omitted = legacy singleton; provided = per-bot identity with independent rate limiter.
@@ -89,11 +109,15 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/types.ts` | All domain types (55+ exports) |
 | `src/App.tsx` | App shell, chat clients, shortcuts, hook mounting |
 | `src/lib/ai.ts` | All AI generation + dispatch + JSON repair |
+| `src/lib/aiScheduler.ts` | AI request orchestrator (priority, preemption, cancellation, telemetry) |
+| `src/lib/aiScheduler.test.ts` | Scheduler test suite (run: `npx tsx src/lib/aiScheduler.test.ts`) |
+| `src/lib/ollamaHealth.ts` | Ollama endpoint/model reachability check |
 | `src/lib/prompts.ts` | System prompts (Forge, AutoForge, R34L, memory) |
 | `src/lib/keys.ts` | Provider keys, `openAiCompatEndpoint()` |
 | `src/lib/chatStyle.ts` | Chat style analysis for R34L adaptation |
-| `src/lib/botCoordinator.ts` | Multi-bot speaker floor |
-| `src/lib/autoForgeCore.ts` | Shared AutoForge computation (activity, engagement, health, goals, etc.) |
+| `src/lib/botCoordinator.ts` | Multi-bot speaker floor (mention-priority bidding) |
+| `src/lib/autoForgeCore.ts` | Shared AutoForge computation (activity, engagement, health, goals, vibe check, adaptive backoff, dedup) |
+| `src/lib/antiRepetition.ts` | Repetition analysis + Jaccard semantic dedup (`isNearDuplicate`) |
 | `src/lib/platformSend.ts` | Platform send functions (Twitch/Kick/Joystick) |
 | `src/lib/providerFallback.ts` | Provider health + failover |
 | `src/hooks/useAutoForge.ts` | Legacy AutoForge loop |

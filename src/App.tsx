@@ -808,6 +808,9 @@ export default function App() {
                   </CommandItem>
                 </CommandGroup>
                 <CommandGroup heading="Help" className="text-gray-400 border-t border-white/[0.04] pt-2">
+                  <CommandItem onSelect={() => { setOpenCommand(false); playSfx('palette_select'); window.dispatchEvent(new CustomEvent('welcome-open')); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
+                    Reopen Welcome Screen
+                  </CommandItem>
                   {!isMobile && (
                   <CommandItem onSelect={() => { setOpenCommand(false); playSfx('palette_select'); window.dispatchEvent(new CustomEvent('tutorial-start')); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
                     Start Tutorial Walkthrough

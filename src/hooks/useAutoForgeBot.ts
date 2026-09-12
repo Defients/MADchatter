@@ -28,8 +28,10 @@ import {
   evaluateSessionGoals,
   computeManualCooldown,
   computeNextActionMinutes,
+  computeAdaptiveBackoff,
   normalizeConfidence,
   isDuplicateMessage,
+  vibeCheck,
   labelEngagement,
   countPostSendEngagement,
 } from "../lib/autoForgeCore";
@@ -52,17 +54,18 @@ const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
  * The legacy useAutoForge() is untouched and self-disables via its own guard
  * when multiBotEnabled === true.
  *
- * v1 scope: core decide → coordinate → send → record cycle. full_forge
- * decisions now generate + rank variants via generateChat/rankVariants (parity
- * with the legacy loop). Other advanced features from the legacy loop (rule
- * engine, smart replies, post-send engagement correlation, session goals) are
- * deferred for per-bot mode and can be layered onto this loop later.
+ * Scope: core decide → coordinate → send → record cycle. full_forge
+ * decisions generate + rank variants via generateChat/rankVariants (parity
+ * with the legacy loop). Advanced features mirrored from the legacy loop:
+ * rule engine, smart replies, post-send engagement correlation, session
+ * goals, manual cooldown, and stale-channel guards.
  */
 export function useAutoForgeBot(botId: string) {
   const isForgingRef = useRef(false);
   const lastChatLengthRef = useRef(0);
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
+  const consecutiveSilenceRef = useRef(0);
   const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
@@ -318,6 +321,32 @@ export function useAutoForgeBot(botId: string) {
         return;
       }
 
+      // ── Vibe check: skip the AI call entirely when the moment is dead ────
+      // Cheap local heuristic — never skips mentions or spikes. Saves tokens
+      // and GPU cycles during dead/offline periods.
+      if (!force) {
+        const vibe = vibeCheck({
+          isMentioned,
+          activitySpike,
+          chatVelocity,
+          activityLevel,
+          timeSinceLastActionMs: runtime.autoForgeLastActionMs ? now - runtime.autoForgeLastActionMs : Infinity,
+          viewerCount: store.streamMetadata?.viewerCount || 0,
+          isForging: store.isForging,
+        });
+        if (vibe.shouldSkip) {
+          store.addBotAutoForgeEvent(botId, {
+            timestamp: Date.now(),
+            type: "silence",
+            severity: "low",
+            summary: `[${bot.session.username}] Vibe check skip: ${vibe.reason}`,
+            details: { reason: vibe.reason, chatVelocity, activityLevel },
+          });
+          store.setBotAutoForgeNextActionMs(botId, Date.now() + vibe.nextCheckDelayMs);
+          return;
+        }
+      }
+
       // ── Decide ───────────────────────────────────────────────────────────
       const decisionStartTime = Date.now();
       const decision = await autoforgeDecide({
@@ -476,6 +505,9 @@ export function useAutoForgeBot(botId: string) {
           // is a draft; we replace it with a fully generated + ranked variant
           // so multi-bot full_forge matches single-bot quality.
           try {
+            // Stale channel guard: capture channel before the async generation
+            // so we can discard results if the user switched streamers mid-Forge.
+            const forgeChannel = store.streamMetadata.channelName;
             const chatResult = await generateChat({
               streamMetadata: store.streamMetadata,
               visualContext: store.visualContextTags.join(" "),
@@ -493,7 +525,16 @@ export function useAutoForgeBot(botId: string) {
               availableEmotes: store.emoteAwarenessEnabled
                 ? getAvailableEmoteNames(store.streamMetadata.channelName, 50)
                 : undefined,
+              // AutoForge full_forge is background — must yield to manual Forge.
+              priority: "autonomous",
             });
+
+            // Stale channel guard: discard if the user switched streamers.
+            const currentChannel = useAppStore.getState().streamMetadata.channelName;
+            if (currentChannel !== forgeChannel) {
+              console.log(`[AutoForgeBot:${botId}] Discarding stale full_forge result (channel changed: ${forgeChannel} → ${currentChannel})`);
+              return;
+            }
 
             if (chatResult.tokenUsage) {
               useAppStore.getState().recordTokenUsage("forge", chatResult.tokenUsage);
@@ -530,6 +571,7 @@ export function useAutoForgeBot(botId: string) {
                 confidence: conf,
                 payload: messageToSend,
                 personaFit,
+                isMentioned,
               };
               const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
               if (!granted) {
@@ -659,6 +701,7 @@ export function useAutoForgeBot(botId: string) {
             confidence: conf,
             payload: decision.action_payload,
             personaFit,
+            isMentioned,
           };
           const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
           if (!granted) {
@@ -802,6 +845,7 @@ export function useAutoForgeBot(botId: string) {
             confidence: conf,
             payload: decision.action_payload,
             personaFit,
+            isMentioned,
           };
           const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
           if (!granted) {
@@ -890,6 +934,7 @@ export function useAutoForgeBot(botId: string) {
       } else if (decision.decision === "deliberate_silence") {
         store.incrementBotStat(botId, "silenceDecisions");
         store.incrementStat("silenceDecisions");
+        consecutiveSilenceRef.current++;
         store.addBotAutoForgeEvent(botId, {
           timestamp: Date.now(),
           type: "silence",
@@ -897,6 +942,9 @@ export function useAutoForgeBot(botId: string) {
           summary: `[${bot.session.username}] Silence: ${decision.reason}`,
           details: { decision: decision.decision, confidence: conf, reason: decision.reason },
         });
+      } else {
+        // Any non-silence action resets the consecutive silence counter.
+        consecutiveSilenceRef.current = 0;
       }
 
       // ── Evaluate session goals ──────────────────────────────────────────
@@ -911,6 +959,9 @@ export function useAutoForgeBot(botId: string) {
 
       // ── Schedule next check ──────────────────────────────────────────────
       let nextMin = computeNextActionMinutes(decision.estimated_next_action_minutes, activitySpike, decision.decision);
+      // Adaptive backoff: lengthen the check interval during consecutive
+      // silences to reduce unnecessary AI calls during dead periods.
+      nextMin = computeAdaptiveBackoff(consecutiveSilenceRef.current, nextMin, isMentioned, activitySpike);
 
       // A8: Manual activity awareness — delay next AutoForge action if user
       // recently acted or is typing. Mirrors the legacy useAutoForge manual

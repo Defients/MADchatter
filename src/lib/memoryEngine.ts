@@ -3,6 +3,14 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey, getKeys, getActiveProvider, openAiCompatEndpoint } from "./keys";
 import { withAiTimeout } from "./ai";
+import {
+  aiScheduler,
+  buildProviderRequestOptions,
+  getOperationTokenBudget,
+  getOperationTimeout,
+  isSchedulerCancellation,
+  type AIRequestPriority,
+} from "./aiScheduler";
 import { MEMORY_EXTRACTION_PROMPT } from "./prompts";
 import type { TokenUsage } from "./ai";
 import type {
@@ -122,14 +130,18 @@ export async function extractMemories(params: ExtractionParams): Promise<MemoryE
   if (!apiKey) throw new Error(`No API key configured for ${rawProvider}.`);
 
   const keys = getKeys();
-  const chatText = formatChatLog(params.chatLog);
+  // Bound input context: only send the most recent chat window (last 50 msgs)
+  // and a bounded audio transcript slice. Avoid resending the entire history.
+  const recentChat = params.chatLog.slice(-50);
+  const chatText = formatChatLog(recentChat);
+  // Bound existing-memory summary to top 20 (was 30) to reduce prompt bloat.
   const existingSummary = params.existingMemories
-    .slice(0, 30)
+    .slice(0, 20)
     .map((m) => `- [${m.type}] ${m.content}`)
     .join("\n");
   const existingJokesSummary = params.existingJokes
     .filter((j) => j.status === "active")
-    .slice(0, 10)
+    .slice(0, 8)
     .map((j) => `- "${j.punchline}" (origin: ${j.origin})`)
     .join("\n");
 
@@ -139,11 +151,11 @@ Category: ${params.streamMetadata.category}
 Title: ${params.streamMetadata.title}
 Viewers: ${params.streamMetadata.viewerCount}
 
-RECENT CHAT LOG:
+RECENT CHAT LOG (last ${recentChat.length} messages):
 ${chatText || "None"}
 
-STREAMER AUDIO TRANSCRIPT:
-${params.audioTranscript?.slice(-2000) || "None"}
+STREAMER AUDIO TRANSCRIPT (recent):
+${params.audioTranscript?.slice(-1500) || "None"}
 
 ALREADY KNOWN MEMORIES (avoid duplicates):
 ${existingSummary || "None"}
@@ -156,19 +168,27 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
   const systemPrompt = MEMORY_EXTRACTION_PROMPT;
   let generatedJsonStr = "";
   let usage: TokenUsage | undefined;
+  const memTimeout = getOperationTimeout("memory_extraction", provider);
+  const memPriority: AIRequestPriority = "background";
+  const memMaxTokens = getOperationTokenBudget("memory_extraction");
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await withAiTimeout(ai.models.generateContent({
-      model,
-      contents: [{ role: "user", parts: [{ text: userMessage }] }],
-      config: {
-        systemInstruction: systemPrompt,
-        responseMimeType: "application/json",
-        temperature: 0.5,
-      },
-    }), 45_000, `extractMemories/gemini`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: "application/json",
+          temperature: 0.5,
+          maxOutputTokens: memMaxTokens,
+          abortSignal: signal,
+        },
+      }),
+      { operation: "extractMemories/gemini", provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+    );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
       usage = {
@@ -180,15 +200,21 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.chat.completions.create({
-      model,
-      temperature: 0.5,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-    }), 45_000, `extractMemories/openai`);
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        temperature: 0.5,
+        max_tokens: memMaxTokens,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: "extractMemories/openai", provider, model, priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+    );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
@@ -199,13 +225,16 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
     }
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 2048,
-      temperature: 0.5,
-      system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
-      messages: [{ role: "user", content: userMessage }],
-    }), 45_000, `extractMemories/claude`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: memMaxTokens,
+        temperature: 0.5,
+        system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
+        messages: [{ role: "user", content: userMessage }],
+      }, { signal }),
+      { operation: "extractMemories/claude", provider, model: "claude-haiku-4-5-20251001", priority: memPriority, timeoutMs: memTimeout, channel: params.streamMetadata.channelName },
+    );
     generatedJsonStr = (response.content[0] as any).text || "{}";
     if (response.usage) {
       usage = {

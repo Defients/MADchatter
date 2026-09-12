@@ -104,7 +104,7 @@ export function SettingsPanel({
       setKeys((k) => ({
         ...k,
         customBaseUrl: k.customBaseUrl || "http://localhost:11434/v1",
-        customModel: k.customModel || "llama3.1:8b",
+        customModel: k.customModel || "qwen3.5:9b",
       }));
     }
   };
@@ -224,7 +224,7 @@ export function SettingsPanel({
                   Ollama / Local — no API key required
                 </span>
                 <p className="text-[10px] text-gray-400 leading-relaxed">
-                  Set your <span className="text-emerald-300 font-semibold">Custom API Base URL</span> to your Ollama endpoint (default <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">http://localhost:11434/v1</code>) and <span className="text-emerald-300 font-semibold">Custom Model Name</span> to a pulled model tag (e.g. <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">llama3.1:8b</code>). Start Ollama with <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">OLLAMA_ORIGINS=* ollama serve</code> so the browser can reach it.
+                  Set your <span className="text-emerald-300 font-semibold">Custom API Base URL</span> to your Ollama endpoint (default <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">http://localhost:11434/v1</code>) and <span className="text-emerald-300 font-semibold">Custom Model Name</span> to a pulled model tag (e.g. <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">qwen3.5:9b</code>). Start Ollama with <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">OLLAMA_ORIGINS=* ollama serve</code> so the browser can reach it.
                 </p>
               </div>
             )}

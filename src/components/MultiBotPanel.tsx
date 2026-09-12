@@ -60,12 +60,16 @@ function BotCard({
       <div className="flex items-center gap-2 p-2">
         <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
         {idx < 9 && (
-          <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`}>
-            <kbd
-              className="text-[9px] font-mono font-bold bg-white/10 border border-white/15 rounded px-1 py-0.5 text-gray-300 shrink-0"
+          <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`} zIndex={61}>
+            <button
+              onClick={() => {
+                useAppStore.getState().toggleBotActive(bot.id);
+                toast(`${bot.label} ${bot.active ? "paused" : "active"}`, { duration: 1800 });
+              }}
+              className="text-[9px] font-mono font-bold bg-white/10 border border-white/15 rounded px-1.5 py-0.5 text-gray-300 shrink-0 hover:bg-white/20 hover:text-white transition-colors cursor-pointer"
             >
               {idx + 1}
-            </kbd>
+            </button>
           </ThemedTooltip>
         )}
         <div className="flex-1 min-w-0">
@@ -83,7 +87,7 @@ function BotCard({
           {expandedId === bot.id ? "Hide" : "Edit"}
         </button>
         {!bot.session && platform !== "joystick" && (
-          <ThemedTooltip content={`Authenticate this bot with ${platform === "kick" ? "Kick" : "Twitch"}`}>
+          <ThemedTooltip content={`Authenticate this bot with ${platform === "kick" ? "Kick" : "Twitch"}`} zIndex={61}>
             <button
               onClick={() => handleAuthBot(bot.id)}
               className="text-[10px] px-2 py-0.5 rounded bg-[#9146FF] hover:bg-[#772ce8] text-white font-bold uppercase tracking-wider transition-colors"
@@ -93,7 +97,7 @@ function BotCard({
           </ThemedTooltip>
         )}
         {bot.session && (
-          <ThemedTooltip content="Log off (keep the bot slot & memory)">
+          <ThemedTooltip content="Log off (keep the bot slot & memory)" zIndex={61}>
             <button
               onClick={() => handleLogoffBot(bot.id)}
               className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
@@ -103,7 +107,7 @@ function BotCard({
           </ThemedTooltip>
         )}
         {idx !== 0 && (
-          <ThemedTooltip content="Remove bot">
+          <ThemedTooltip content="Remove bot" zIndex={61}>
             <button
               onClick={() => removeBot(bot.id)}
               className="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
@@ -236,8 +240,8 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
           <span className="text-xs font-bold uppercase tracking-wider text-white">Multi-Bot</span>
         </div>
         <div className="flex items-center gap-2">
-          <Toggle on={multiBotEnabled} onChange={(v) => (v ? enableMultiBot() : disableMultiBot())} />
-          <ThemedTooltip content={collapsed ? "Expand" : "Collapse"}>
+          <Toggle on={multiBotEnabled} onChange={(v) => (v ? enableMultiBot() : disableMultiBot())} label="Multi-bot mode" />
+          <ThemedTooltip content={collapsed ? "Expand" : "Collapse"} zIndex={61}>
             <button
               onClick={() => setCollapsed((c) => !c)}
               className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
@@ -318,7 +322,8 @@ function PersonaControls({ botId }: { botId: string }) {
           {PROFILES.map((p) => (
             <button
               key={p.id}
-              onClick={() => setConfig({ primaryProfile: p.id })}
+              onClick={() => setConfig({ primaryProfile: c.primaryProfile === p.id ? "" : p.id })}
+              aria-pressed={c.primaryProfile === p.id}
               className={cn(
                 "text-[10px] py-1 rounded border transition-colors",
                 c.primaryProfile === p.id
@@ -344,14 +349,16 @@ function PersonaControls({ botId }: { botId: string }) {
       <Segmented
         label="Length"
         value={c.lengthPreference}
-        options={[["short", "Short"], ["medium", "Medium"], ["long", "Long"]]}
+        options={[["adaptive", "Adaptive"], ["short", "Short"], ["medium", "Medium"], ["long", "Long"]]}
         onChange={(v) => setConfig({ lengthPreference: v })}
+        cols={2}
       />
       <Segmented
         label="Effort"
         value={c.effortLevel || "medium"}
         options={[["smart", "Smart"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]}
         onChange={(v) => setConfig({ effortLevel: v as "low" | "medium" | "high" | "smart" })}
+        cols={2}
       />
 
       {/* System Directive — free-form per-bot instructions */}
@@ -394,12 +401,12 @@ function PersonaControls({ botId }: { botId: string }) {
 }
 
 const PROFILES: { id: string; label: string }[] = [
-  { id: "hype", label: "Hype" },
-  { id: "analyst", label: "Analyst" },
-  { id: "gremlin", label: "Gremlin" },
+  { id: "Hype", label: "Hype" },
+  { id: "Analyst", label: "Analyst" },
+  { id: "Gremlin", label: "Gremlin" },
   { id: "Support", label: "Support" },
-  { id: "Chill", label: "Chill" },
-  { id: "translator", label: "Translator" },
+  { id: "Short", label: "One-Worder" },
+  { id: "Questioner", label: "Questioner" },
 ];
 
 /** A small segmented control (single-select pill group). */
@@ -408,20 +415,23 @@ function Segmented({
   value,
   options,
   onChange,
+  cols = 3,
 }: {
   label: string;
   value: string;
   options: [string, string][];
   onChange: (v: string) => void;
+  cols?: number;
 }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[10px] uppercase tracking-wider text-gray-400">{label}</span>
-      <div className="grid grid-cols-3 gap-1">
+      <div className={cn("grid gap-1", cols === 2 ? "grid-cols-2" : "grid-cols-3")} role="group" aria-label={label}>
         {options.map(([val, lbl]) => (
           <button
             key={val}
             onClick={() => onChange(val)}
+            aria-pressed={value === val}
             className={cn(
               "text-[10px] py-1 rounded border transition-colors",
               value === val
@@ -450,13 +460,14 @@ function Slider({ label, value, onChange }: { label: string; value: number; onCh
         max={100}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={label}
         className="accent-[#9146FF] h-1"
       />
     </label>
   );
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
     <button
       onClick={() => onChange(!on)}
@@ -465,6 +476,7 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
         on ? "bg-[#9146FF]" : "bg-white/15",
       )}
       aria-pressed={on}
+      aria-label={label || "Toggle"}
     >
       <span
         className={cn(

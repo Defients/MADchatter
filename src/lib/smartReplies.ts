@@ -89,6 +89,8 @@ Rules:
       r34lEnabled: state.r34lEnabled,
       botUsername,
       sentimentContext,
+      // Smart replies are background/autonomous — must not block manual Forge.
+      priority: "autonomous",
     });
 
     if (result?.tokenUsage) {

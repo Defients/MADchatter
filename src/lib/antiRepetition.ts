@@ -127,3 +127,63 @@ export function formatRepetitionContext(analysis: RepetitionAnalysis): string {
 
   return parts.length > 0 ? parts.join("\n") : "";
 }
+
+// ─── Jaccard Semantic Dedup ──────────────────────────────────────────────────
+
+/**
+ * Tokenize a message into a set of lowercase words with punctuation stripped.
+ */
+function tokenize(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 0),
+  );
+}
+
+/**
+ * Compute Jaccard similarity between two word sets: |intersection| / |union|.
+ * Returns 0 if both sets are empty.
+ */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let intersection = 0;
+  const smaller = a.size <= b.size ? a : b;
+  const larger = a.size <= b.size ? b : a;
+  for (const word of smaller) {
+    if (larger.has(word)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * Check if a payload is a near-duplicate of any recently sent message using
+ * Jaccard similarity on word sets. Catches reworded duplicates (same words,
+ * different order) that exact-match misses.
+ *
+ * @param payload - The candidate message (already lowercased + trimmed by caller)
+ * @param recentSentMessages - Recent sent messages (already lowercased + trimmed)
+ * @param threshold - Jaccard similarity threshold (default 0.6 = 60% word overlap)
+ * @returns true if any recent message exceeds the similarity threshold
+ */
+export function isNearDuplicate(
+  payload: string,
+  recentSentMessages: string[],
+  threshold: number = 0.6,
+): boolean {
+  if (!payload || recentSentMessages.length === 0) return false;
+  const payloadTokens = tokenize(payload);
+  // Skip short messages — too few words for meaningful similarity.
+  if (payloadTokens.size < 3) return false;
+  for (const recent of recentSentMessages) {
+    if (!recent) continue;
+    const recentTokens = tokenize(recent);
+    if (recentTokens.size < 3) continue;
+    const similarity = jaccardSimilarity(payloadTokens, recentTokens);
+    if (similarity >= threshold) return true;
+  }
+  return false;
+}

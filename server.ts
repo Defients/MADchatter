@@ -108,7 +108,7 @@ function openAiCompatEndpoint(
   if (provider === 'ollama') {
     return {
       baseUrl: session?.customBaseUrl || 'http://localhost:11434/v1',
-      model: session?.customModel || 'llama3.1:8b',
+      model: session?.customModel || 'qwen3.5:9b',
     };
   }
   return { baseUrl: undefined, model: 'gpt-5.6-luna' };

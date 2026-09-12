@@ -8,6 +8,7 @@ import {
   runDecayCycle,
   type ExtractionParams,
 } from "../lib/memoryEngine";
+import { isSchedulerCancellation, isSchedulerTimeout } from "../lib/aiScheduler";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { startNewSession, saveSessionEnd, detectMoodWithLock, evolveTraits, updateComfortLevel, addRelationshipMilestone } from "../lib/personalityEngine";
 import * as memoryStore from "../lib/memoryStore";
@@ -43,6 +44,18 @@ export function useAutoMemory() {
   const lastComfortMessagesReceivedRef = useRef<number>(0);
   const chatLogRef = useRef(chatLog);
   chatLogRef.current = chatLog;
+
+  // ── AutoMemory hardening: extraction cursor, dedup, backoff ──────────────
+  // Watermark: the chatLog length at the last SUCCESSFUL extraction. We only
+  // extract when there's enough new chat since the last extraction.
+  const extractionCursorRef = useRef<number>(0);
+  // Backoff: after a real failure (timeout or provider error), wait longer
+  // before retrying. Preemption does NOT trigger backoff.
+  const backoffUntilRef = useRef<number>(0);
+  const consecutiveFailuresRef = useRef<number>(0);
+  // Stale channel guard: capture the channel at extraction start so we can
+  // discard results if the user switches streamers mid-extraction.
+  const extractionChannelRef = useRef<string>("");
 
   const channel = (streamMetadata?.channelName || "default").toLowerCase();
 
@@ -130,9 +143,23 @@ export function useAutoMemory() {
 
       if (timeSinceExtraction >= extractionInterval) {
         const recentChat = chatLogRef.current;
-        const hasEnoughData = recentChat.filter((m) => !m.marker).length >= 10 || state.audioTranscript.length > 100;
+        const nonMarkerCount = recentChat.filter((m) => !m.marker).length;
+        const hasEnoughData = nonMarkerCount >= 10 || state.audioTranscript.length > 100;
 
-        if (hasEnoughData) {
+        // ── Extraction cursor: only extract if there's enough NEW chat since
+        // the last successful extraction. Prevents reprocessing the same
+        // chat window repeatedly.
+        const newMessagesSinceCursor = nonMarkerCount - extractionCursorRef.current;
+        const minNewMessages = 5; // minimum new signal to justify extraction
+
+        // ── Backoff: after real failures, wait before retrying.
+        // Preemption does NOT trigger backoff (it's intentional, not a failure).
+        const inBackoff = now < backoffUntilRef.current;
+
+        if (hasEnoughData && !inBackoff && newMessagesSinceCursor >= minNewMessages) {
+          // Capture channel at extraction start for stale-result guard.
+          const extractionChannel = channel;
+          extractionChannelRef.current = extractionChannel;
           try {
             const params: ExtractionParams = {
               chatLog: recentChat,
@@ -145,17 +172,29 @@ export function useAutoMemory() {
             };
 
             const result = await extractMemories(params);
+
+            // ── Stale channel guard: discard results if the user switched
+            // streamers while extraction was in flight.
+            const currentChannel = (useAppStore.getState().streamMetadata?.channelName || "default").toLowerCase();
+            if (currentChannel !== extractionChannel) {
+              console.log(`[AutoMemory] Discarding stale extraction result (channel changed: ${extractionChannel} → ${currentChannel})`);
+              lastExtractionRef.current = now;
+              extractionCursorRef.current = nonMarkerCount;
+              consecutiveFailuresRef.current = 0;
+              return;
+            }
+
             if (result.tokenUsage) {
               useAppStore.getState().recordTokenUsage("memory_extraction", result.tokenUsage);
             }
-            const stats = await applyExtractionResults(result, state.autoMemoryConfig, channel);
+            const stats = await applyExtractionResults(result, state.autoMemoryConfig, extractionChannel);
 
             if (stats.memoriesAdded > 0 || stats.profilesUpdated > 0 || stats.jokesCreated > 0) {
               // Reload from IndexedDB
               const [memories, profiles, jokes] = await Promise.all([
-                memoryStore.getAllMemories(channel),
-                memoryStore.getAllProfiles(channel),
-                memoryStore.getAllJokes(channel),
+                memoryStore.getAllMemories(extractionChannel),
+                memoryStore.getAllProfiles(extractionChannel),
+                memoryStore.getAllJokes(extractionChannel),
               ]);
               setAutoMemories(memories);
               setUserProfiles(profiles);
@@ -169,7 +208,7 @@ export function useAutoMemory() {
                   sessionJokesCreated: state.personalityState.sessionJokesCreated + stats.jokesCreated,
                 };
                 setPersonalityState(updated);
-                await memoryStore.savePersonality(channel, updated);
+                await memoryStore.savePersonality(extractionChannel, updated);
               }
 
               console.log("[AutoMemory] Extraction complete:", stats, result.summary);
@@ -183,8 +222,33 @@ export function useAutoMemory() {
             }
 
             lastExtractionRef.current = now;
+            extractionCursorRef.current = nonMarkerCount;
+            consecutiveFailuresRef.current = 0;
           } catch (e) {
-            console.error("[AutoMemory] Extraction failed:", e);
+            // ── Preemption-aware error handling ────────────────────────────
+            // Intentional preemption/cancellation: NOT a failure. No backoff.
+            // The scheduler cancelled us because a higher-priority request
+            // (e.g. manual Forge) needed the GPU. We'll try again next cycle.
+            if (isSchedulerCancellation(e)) {
+              console.log(`[AutoMemory] Extraction cancelled (preempted) — will retry next cycle`);
+              // Reset the extraction timer so we retry soon, but don't backoff.
+              lastExtractionRef.current = now;
+              // Don't update the cursor — we didn't process anything.
+            } else if (isSchedulerTimeout(e)) {
+              // Timeout: real failure. Backoff with exponential delay.
+              consecutiveFailuresRef.current++;
+              const backoffMs = Math.min(300_000, 30_000 * Math.pow(2, consecutiveFailuresRef.current - 1));
+              backoffUntilRef.current = Date.now() + backoffMs;
+              console.error(`[AutoMemory] Extraction timed out — backing off for ${backoffMs / 1000}s (failure #${consecutiveFailuresRef.current})`);
+              lastExtractionRef.current = now;
+            } else {
+              // Genuine provider error: backoff but less aggressively.
+              consecutiveFailuresRef.current++;
+              const backoffMs = Math.min(120_000, 15_000 * consecutiveFailuresRef.current);
+              backoffUntilRef.current = Date.now() + backoffMs;
+              console.error(`[AutoMemory] Extraction failed — backing off for ${backoffMs / 1000}s:`, e);
+              lastExtractionRef.current = now;
+            }
           }
         }
       }

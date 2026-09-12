@@ -114,7 +114,9 @@ export function openAiCompatEndpoint(
   if (provider === "ollama") {
     return {
       baseUrl: keys.customBaseUrl || "http://localhost:11434/v1",
-      model: keys.customModel || "llama3.1:8b",
+      // Recommended local model: qwen3.5:9b (balanced quality/speed on 16GB GPUs).
+      // Fast alternative: qwen3.5:4b. Users can override via customModel.
+      model: keys.customModel || "qwen3.5:9b",
     };
   }
   // plain OpenAI
@@ -122,6 +124,16 @@ export function openAiCompatEndpoint(
 }
 
 export function setActiveProvider(provider: string): void {
+  // Cancel any active AI requests for the old provider to prevent stale
+  // results from applying after the switch.
+  const oldProvider = localStorage.getItem("active_api_provider");
+  if (oldProvider && oldProvider !== provider) {
+    try {
+      import("./aiScheduler").then(({ aiScheduler }) => {
+        aiScheduler.cancelProvider(oldProvider, "provider changed");
+      });
+    } catch {}
+  }
   localStorage.setItem("active_api_provider", provider);
   try {
     import("../store").then(({ useAppStore }) => useAppStore.getState().bumpAuthTick());

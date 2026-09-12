@@ -23,17 +23,28 @@ import {
   isProviderAvailable,
   recordFallback,
 } from "./providerFallback";
+import {
+  aiScheduler,
+  buildProviderRequestOptions,
+  getOperationTokenBudget,
+  getOperationTimeout,
+  isSchedulerCancellation,
+  type AIRequestPriority,
+} from "./aiScheduler";
 
-// ─── AI Request Timeout ──────────────────────────────────────────────────────
-// Default timeout for AI provider calls. Prevents the AutoForge loop from
-// hanging indefinitely when a provider is slow or unresponsive.
+// ─── AI Request Timeout & Cancellation ────────────────────────────────────────
+// The scheduler owns AbortControllers and enforces real cancellation on timeout
+// or preemption. `withAiTimeout` is kept for backward compatibility (memoryEngine
+// imports it) but now delegates to the scheduler for cancellation.
 const AI_REQUEST_TIMEOUT_MS = 45_000;
 
 /**
  * Wraps a promise with a timeout. If the promise doesn't resolve within
- * `timeoutMs`, rejects with a timeout error. The underlying request is NOT
- * cancelled (use SDK-level timeout/abort for that) but the caller is unblocked
- * so the AutoForge loop can back off and retry.
+ * `timeoutMs`, rejects with a timeout error.
+ *
+ * @deprecated Use `aiScheduler.execute()` for real cancellation support.
+ * This helper is retained for backward compatibility but does NOT cancel
+ * the underlying request.
  */
 export function withAiTimeout<T>(promise: Promise<T>, timeoutMs: number = AI_REQUEST_TIMEOUT_MS, operation: string = "AI request"): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -233,6 +244,9 @@ export interface GenerateChatParams {
   availableEmotes?: string[];
   botIdentityMode?: "admit" | "custom";
   botIdentityStory?: string;
+  /** Scheduler priority override. Defaults to "critical" (manual Forge).
+   *  Smart Replies and AutoForge full_forge should pass "autonomous" or "background". */
+  priority?: AIRequestPriority;
 }
 
 /**
@@ -320,15 +334,13 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
     effort = resolveSmartEffort(params);
   }
   let effortDirective = "";
-  let maxTokensToUse = 3072;
+  const maxTokensToUse = getOperationTokenBudget("forge", effort, params.count);
   let temp = 0.7;
 
   if (effort === "low") {
-    maxTokensToUse = 1024;
     temp = 0.5;
     effortDirective = "\nEFFORT LEVEL REQUIRED: MINIMAL. Generate fast, extremely snappy, and lightweight suggestions. Keep analysis brief and concise. Minimize computation.";
   } else if (effort === "high") {
-    maxTokensToUse = 4096;
     temp = 0.9;
     effortDirective = "\nEFFORT LEVEL REQUIRED: MAXIMUM. Dive extremely deep. Perform comprehensive, ultra-detailed analysis of the stream context, latest events, and audio. Craft suggestions with advanced wordplay, perfect contextual inside jokes, and high emotional/strategic value.";
   } else {
@@ -364,7 +376,7 @@ ACTIVE CONFIGURATION:
 - Active Profiles: ${params.config.activeProfiles && params.config.activeProfiles.length > 0 ? params.config.activeProfiles.join(", ") : "None"}
 - Humor Level: ${params.config.humorLevel}/100
 - Chaos Level: ${params.config.chaosLevel}/100
-- Length: ${params.config.lengthPreference && params.config.lengthPreference !== "none" ? params.config.lengthPreference : "Unconstrained (No length mask. Let the word/sentence count vary naturally based on what's contextually appropriate)"}
+- Length: ${params.config.lengthPreference && params.config.lengthPreference !== "none" && params.config.lengthPreference !== "adaptive" ? params.config.lengthPreference : "Adaptive (No length mask. Let the word/sentence count vary naturally based on what's contextually appropriate)"}
 - Emote Density: ${params.config.emoteDensity}
 - Toxicity Filter: ${params.config.toxicityFilter || "standard"}
 - Voice Context Enabled: ${params.config.voiceContextEnabled}
@@ -378,6 +390,9 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : "") + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "");
   let generatedJsonStr = "";
 
+  const forgeTimeout = getOperationTimeout("forge", provider);
+  const forgePriority: AIRequestPriority = params.priority ?? "critical";
+
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const parts: any[] = [{ text: userMessageContent }];
@@ -387,17 +402,21 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       parts.push({ inlineData: { data: base64Data, mimeType } });
     }
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await withAiTimeout(ai.models.generateContent({
-      model,
-      contents: [{ role: "user", parts }],
-      config: {
-        systemInstruction: systemPrompt,
-        responseMimeType: "application/json",
-        responseSchema: responseSchema as any,
-        temperature: temp,
-        maxOutputTokens: maxTokensToUse,
-      },
-    }), AI_REQUEST_TIMEOUT_MS, `generateChat/gemini`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts }],
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: "application/json",
+          responseSchema: responseSchema as any,
+          temperature: temp,
+          maxOutputTokens: maxTokensToUse,
+          abortSignal: signal,
+        },
+      }),
+      { operation: "generateChat/gemini", provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+    );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
       usage = {
@@ -413,16 +432,21 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     if (params.screenshot) {
       content.push({ type: "image_url", image_url: { url: params.screenshot } });
     }
-    const response = await withAiTimeout(ai.chat.completions.create({
-      model,
-      temperature: temp,
-      max_tokens: maxTokensToUse,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content },
-      ],
-    }), AI_REQUEST_TIMEOUT_MS, `generateChat/openai`);
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        temperature: temp,
+        max_tokens: maxTokensToUse,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content },
+        ],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: "generateChat/openai", provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+    );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
@@ -440,13 +464,16 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       content.push({ type: "image", source: { type: "base64", media_type: mimeType as any, data: base64Data } });
     }
     content.push({ type: "text", text: userMessageContent });
-    const response = await withAiTimeout(ai.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: maxTokensToUse,
-      temperature: temp,
-      system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
-      messages: [{ role: "user", content }],
-    }), AI_REQUEST_TIMEOUT_MS, `generateChat/claude`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: maxTokensToUse,
+        temperature: temp,
+        system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
+        messages: [{ role: "user", content }],
+      }, { signal }),
+      { operation: "generateChat/claude", provider, model: "claude-haiku-4-5-20251001", priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+    );
     generatedJsonStr = (response.content.find((c: any) => c.type === "text") as any)?.text || "";
     if (response.usage) {
       usage = {
@@ -619,22 +646,32 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     : structuredBase;
 
   let usage: TokenUsage | undefined;
+  const visionTimeout = getOperationTimeout("vision", provider);
+  const visionPriority: AIRequestPriority = "interactive";
+  const visionMaxTokens = getOperationTokenBudget("vision");
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, "");
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await withAiTimeout(ai.models.generateContent({
-      model,
-      contents: [{
-        role: "user",
-        parts: [
-          { text: prompt },
-          { inlineData: { data: base64Data, mimeType } },
-        ],
-      }],
-    }), AI_REQUEST_TIMEOUT_MS, `generateVisionContext/gemini`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: [{
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: { data: base64Data, mimeType } },
+          ],
+        }],
+        config: {
+          maxOutputTokens: visionMaxTokens,
+          abortSignal: signal,
+        },
+      }),
+      { operation: "generateVisionContext/gemini", provider, model, priority: visionPriority, timeoutMs: visionTimeout },
+    );
     if (response.usageMetadata) {
       usage = {
         prompt_tokens: response.usageMetadata.promptTokenCount,
@@ -646,17 +683,22 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.chat.completions.create({
-      model,
-      max_tokens: 1024,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "text", text: prompt },
-          { type: "image_url", image_url: { url: screenshot } },
-        ],
-      }],
-    }), AI_REQUEST_TIMEOUT_MS, `generateVisionContext/openai`);
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        max_tokens: visionMaxTokens,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: screenshot } },
+          ],
+        }],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: "generateVisionContext/openai", provider, model, priority: visionPriority, timeoutMs: visionTimeout },
+    );
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.prompt_tokens,
@@ -669,17 +711,20 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
     const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, "");
-    const response = await withAiTimeout(ai.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: mimeType as any, data: base64Data } },
-          { type: "text", text: prompt },
-        ],
-      }],
-    }), AI_REQUEST_TIMEOUT_MS, `generateVisionContext/claude`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: visionMaxTokens,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mimeType as any, data: base64Data } },
+            { type: "text", text: prompt },
+          ],
+        }],
+      }, { signal }),
+      { operation: "generateVisionContext/claude", provider, model: "claude-haiku-4-5-20251001", priority: visionPriority, timeoutMs: visionTimeout },
+    );
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.input_tokens,
@@ -733,20 +778,28 @@ Custom Instruction: ${params.customInstruction || "None"}
 
   let generatedJsonStr = "";
   let usage: any = undefined;
+  const refineTimeout = getOperationTimeout("refine", provider);
+  const refinePriority: AIRequestPriority = "interactive";
+  const refineMaxTokens = getOperationTokenBudget("refine");
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await withAiTimeout(ai.models.generateContent({
-      model,
-      contents: userMessageContent,
-      config: {
-        systemInstruction: REFINE_SYSTEM_PROMPT,
-        responseMimeType: "application/json",
-        responseSchema: refineResponseSchema as any,
-        temperature: 0.8,
-      },
-    }), AI_REQUEST_TIMEOUT_MS, `refineSuggestion/gemini`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: userMessageContent,
+        config: {
+          systemInstruction: REFINE_SYSTEM_PROMPT,
+          responseMimeType: "application/json",
+          responseSchema: refineResponseSchema as any,
+          temperature: 0.8,
+          maxOutputTokens: refineMaxTokens,
+          abortSignal: signal,
+        },
+      }),
+      { operation: "refineSuggestion/gemini", provider, model, priority: refinePriority, timeoutMs: refineTimeout },
+    );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
       usage = {
@@ -758,16 +811,21 @@ Custom Instruction: ${params.customInstruction || "None"}
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.chat.completions.create({
-      model,
-      temperature: 0.8,
-      max_tokens: 1024,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: REFINE_SYSTEM_PROMPT },
-        { role: "user", content: userMessageContent },
-      ],
-    }), AI_REQUEST_TIMEOUT_MS, `refineSuggestion/openai`);
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        temperature: 0.8,
+        max_tokens: refineMaxTokens,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: REFINE_SYSTEM_PROMPT },
+          { role: "user", content: userMessageContent },
+        ],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: "refineSuggestion/openai", provider, model, priority: refinePriority, timeoutMs: refineTimeout },
+    );
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
@@ -778,13 +836,16 @@ Custom Instruction: ${params.customInstruction || "None"}
     }
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      temperature: 0.8,
-      system: REFINE_SYSTEM_PROMPT + "\n\nYou must output ONLY valid JSON matching the schema format.",
-      messages: [{ role: "user", content: userMessageContent }],
-    }), AI_REQUEST_TIMEOUT_MS, `refineSuggestion/claude`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: refineMaxTokens,
+        temperature: 0.8,
+        system: REFINE_SYSTEM_PROMPT + "\n\nYou must output ONLY valid JSON matching the schema format.",
+        messages: [{ role: "user", content: userMessageContent }],
+      }, { signal }),
+      { operation: "refineSuggestion/claude", provider, model: "claude-haiku-4-5-20251001", priority: refinePriority, timeoutMs: refineTimeout },
+    );
     generatedJsonStr = (response.content[0] as any).text;
     if (response.usage) {
       usage = {
@@ -874,19 +935,26 @@ Write it like a friend catching you up — casual but informative. Don't just li
   const systemPrompt = "You are a concise, engaging narrator. Write a natural-language briefing of AutoForge events. Be specific about what happened, who was involved, and what the bot did. Keep it readable and human — not robotic or listy. Output plain text, no JSON.";
 
   let usage: TokenUsage | undefined;
+  const briefingTimeout = getOperationTimeout("autoforge_briefing", provider);
+  const briefingPriority: AIRequestPriority = "interactive";
+  const briefingMaxTokens = getOperationTokenBudget("autoforge_briefing");
 
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-    const response = await withAiTimeout(ai.models.generateContent({
-      model,
-      contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.7,
-        maxOutputTokens: 1024,
-      },
-    }), AI_REQUEST_TIMEOUT_MS, `generateAutoForgeBriefing/gemini`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.7,
+          maxOutputTokens: briefingMaxTokens,
+          abortSignal: signal,
+        },
+      }),
+      { operation: "generateAutoForgeBriefing/gemini", provider, model, priority: briefingPriority, timeoutMs: briefingTimeout },
+    );
     if (response.usageMetadata) {
       usage = {
         prompt_tokens: response.usageMetadata.promptTokenCount,
@@ -898,15 +966,20 @@ Write it like a friend catching you up — casual but informative. Don't just li
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.chat.completions.create({
-      model,
-      temperature: 0.7,
-      max_tokens: 1024,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessageContent },
-      ],
-    }), AI_REQUEST_TIMEOUT_MS, `generateAutoForgeBriefing/openai`);
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        temperature: 0.7,
+        max_tokens: briefingMaxTokens,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessageContent },
+        ],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: "generateAutoForgeBriefing/openai", provider, model, priority: briefingPriority, timeoutMs: briefingTimeout },
+    );
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.prompt_tokens,
@@ -917,13 +990,16 @@ Write it like a friend catching you up — casual but informative. Don't just li
     return { text: response.choices[0].message.content || "Unable to generate briefing.", tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-    const response = await withAiTimeout(ai.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      temperature: 0.7,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessageContent }],
-    }), AI_REQUEST_TIMEOUT_MS, `generateAutoForgeBriefing/claude`);
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: briefingMaxTokens,
+        temperature: 0.7,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMessageContent }],
+      }, { signal }),
+      { operation: "generateAutoForgeBriefing/claude", provider, model: "claude-haiku-4-5-20251001", priority: briefingPriority, timeoutMs: briefingTimeout },
+    );
     if (response.usage) {
       usage = {
         prompt_tokens: response.usage.input_tokens,
@@ -1007,6 +1083,9 @@ DECIDE NOW.`;
 
   let lastError: Error | null = null;
   let usedFallback = false;
+  const decideTimeout = getOperationTimeout("autoforge_decide", normalizeProvider(rawProvider));
+  const decidePriority: AIRequestPriority = "autonomous";
+  const decideMaxTokens = getOperationTokenBudget("autoforge_decide");
 
   for (const currentProvider of fallbackChain) {
     const provider = normalizeProvider(currentProvider);
@@ -1020,16 +1099,21 @@ DECIDE NOW.`;
       if (provider === "gemini") {
         const ai = new GoogleGenAI({ apiKey });
         const model = currentProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
-        const response = await withAiTimeout(ai.models.generateContent({
-          model,
-          contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
-          config: {
-            systemInstruction: systemPrompt,
-            responseMimeType: "application/json",
-            responseSchema: autoforgeResponseSchema as any,
-            temperature: 0.8,
-          },
-        }), AI_REQUEST_TIMEOUT_MS, `autoforgeDecide/gemini`);
+        const response = await aiScheduler.execute(
+          (signal) => ai.models.generateContent({
+            model,
+            contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
+            config: {
+              systemInstruction: systemPrompt,
+              responseMimeType: "application/json",
+              responseSchema: autoforgeResponseSchema as any,
+              temperature: 0.8,
+              maxOutputTokens: decideMaxTokens,
+              abortSignal: signal,
+            },
+          }),
+          { operation: "autoforgeDecide/gemini", provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+        );
         generatedJsonStr = response.text || "{}";
         if (response.usageMetadata) {
           usage = {
@@ -1041,15 +1125,21 @@ DECIDE NOW.`;
       } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
         const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
         const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
-        const response = await withAiTimeout(ai.chat.completions.create({
-          model,
-          temperature: 0.8,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMessageContent },
-          ],
-        }), AI_REQUEST_TIMEOUT_MS, `autoforgeDecide/openai`);
+        const ollamaOpts = buildProviderRequestOptions(provider);
+        const response = await aiScheduler.execute(
+          (signal) => ai.chat.completions.create({
+            model,
+            temperature: 0.8,
+            max_tokens: decideMaxTokens,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userMessageContent },
+            ],
+            ...ollamaOpts,
+          }, { signal }),
+          { operation: "autoforgeDecide/openai", provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+        );
         generatedJsonStr = response.choices[0].message.content || "{}";
         if (response.usage) {
           usage = {
@@ -1060,13 +1150,16 @@ DECIDE NOW.`;
         }
       } else if (provider === "claude") {
         const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-        const response = await withAiTimeout(ai.messages.create({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 1024,
-          temperature: 0.8,
-          system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
-          messages: [{ role: "user", content: userMessageContent }],
-        }), AI_REQUEST_TIMEOUT_MS, `autoforgeDecide/claude`);
+        const response = await aiScheduler.execute(
+          (signal) => ai.messages.create({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: decideMaxTokens,
+            temperature: 0.8,
+            system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
+            messages: [{ role: "user", content: userMessageContent }],
+          }, { signal }),
+          { operation: "autoforgeDecide/claude", provider: currentProvider, model: "claude-haiku-4-5-20251001", priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+        );
         generatedJsonStr = (response.content[0] as any).text;
         if (response.usage) {
           usage = {
@@ -1089,14 +1182,20 @@ DECIDE NOW.`;
       }
       return result;
     } catch (e: any) {
-      recordProviderFailure(currentProvider);
+      // Intentional scheduler cancellation/preemption is NOT a provider failure.
+      // Only record genuine provider errors as failures.
+      if (!isSchedulerCancellation(e)) {
+        recordProviderFailure(currentProvider);
+      }
       lastError = e;
       usedFallback = true;
       console.warn(`[AutoForge] Provider ${currentProvider} failed: ${e.message}. Trying fallback...`);
-      // D3: Record fallback for analytics
-      const nextProvider = fallbackChain[fallbackChain.indexOf(currentProvider) + 1];
-      if (nextProvider) {
-        recordFallback(currentProvider, nextProvider, e.message || "Provider error");
+      // D3: Record fallback for analytics (only for genuine failures, not preemption)
+      if (!isSchedulerCancellation(e)) {
+        const nextProvider = fallbackChain[fallbackChain.indexOf(currentProvider) + 1];
+        if (nextProvider) {
+          recordFallback(currentProvider, nextProvider, e.message || "Provider error");
+        }
       }
       continue;
     }

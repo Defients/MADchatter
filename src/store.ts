@@ -8,7 +8,7 @@ import type { AutoForgeDecision } from "./lib/ai";
 import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 16;
+const SETTINGS_VERSION = 17;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -62,8 +62,8 @@ function createDefaultBotPersona(): BotPersona {
       humorLevel: 50,
       chaosLevel: 50,
       customDirectives: "",
-      activeProfiles: ["hype", "analyst", "gremlin"],
-      primaryProfile: "hype",
+      activeProfiles: ["Hype", "Analyst", "Gremlin"],
+      primaryProfile: "Hype",
       emoteDensity: "moderate",
       toxicityFilter: "standard",
       lengthPreference: "short",
@@ -718,8 +718,8 @@ export const useAppStore = create<AppState>()(
         humorLevel: 50,
         chaosLevel: 50,
         customDirectives: "",
-        activeProfiles: ["hype", "analyst", "gremlin"],
-        primaryProfile: "hype",
+        activeProfiles: ["Hype", "Analyst", "Gremlin"],
+        primaryProfile: "Hype",
         emoteDensity: "moderate",
         toxicityFilter: "standard",
         lengthPreference: "short",
@@ -1624,8 +1624,70 @@ export const useAppStore = create<AppState>()(
       enableMultiBot: () => {
         const state = get();
         if (state.multiBotEnabled) return;
-        // Seed bots[0] (primary) from the current global single-bot state — COPY, not move.
-        // The legacy global fields remain intact for when the toggle is turned off.
+
+        // Re-enable path: a saved roster already exists — preserve all bots.
+        // Refresh the primary bot's runtime/persona from the global single-bot
+        // state (which received the sync-back on disable plus any changes the
+        // user made while disabled). Secondary bots are untouched.
+        if (state.bots.length > 0) {
+          const existing = state.bots[0];
+          const refreshed: Bot = {
+            ...existing,
+            platform: state.platform as BotPlatform,
+            // Keep the bot's saved session; fall back to the legacy session if
+            // it somehow lost one while disabled.
+            session: existing.session ?? readLegacySession(state.platform as BotPlatform),
+            persona: {
+              ...existing.persona,
+              // Pick up global config changes made while disabled, but keep the
+              // bot's persona-specific customDirectives and identity story.
+              config: { ...state.config, customDirectives: existing.persona.config.customDirectives },
+              activePersonaId: state.activePersonaId,
+            },
+            runtime: {
+              ...createDefaultBotRuntime(),
+              longTermMemory: state.longTermMemory,
+              pinnedMemories: [...state.pinnedMemories],
+              goldenMemoryId: state.goldenMemoryId,
+              autoMemories: [...state.autoMemories],
+              userProfiles: [...state.userProfiles],
+              insideJokes: [...state.insideJokes],
+              personalityState: state.personalityState,
+              autoMemoryConfig: { ...state.autoMemoryConfig },
+              directorNotes: [...state.directorNotes],
+              sentMessages: [...state.sentMessages],
+              actionHistory: [...state.actionHistory],
+              decisionLog: [...state.decisionLog],
+              sessionStats: { ...state.sessionStats },
+              enhancedStats: { ...state.enhancedStats, actionDistribution: { ...state.enhancedStats.actionDistribution } },
+              sentimentHistory: [...state.sentimentHistory],
+              sentimentSummary: state.sentimentSummary,
+              actionAccuracy: [...state.actionAccuracy],
+              autoForgeEvents: [...state.autoForgeEventLog],
+              lastAutoForgeDecision: state.lastAutoForgeDecision,
+              autoForgeLastActionMs: state.autoForgeLastActionMs,
+              autoForgeNextActionMs: state.autoForgeNextActionMs,
+              autoForgeFollowup: state.autoForgeFollowup,
+              smartReplies: [...state.smartReplies],
+            },
+          };
+          set({
+            multiBotEnabled: true,
+            bots: [refreshed, ...state.bots.slice(1)],
+            // Restore the saved selections, sanitizing against stale bot ids.
+            activeBotId: state.activeBotId && state.bots.some((b) => b.id === state.activeBotId)
+              ? state.activeBotId
+              : existing.id,
+            manualSendBotId: state.manualSendBotId && state.bots.some((b) => b.id === state.manualSendBotId)
+              ? state.manualSendBotId
+              : null,
+          });
+          return;
+        }
+
+        // First-time enable — seed bots[0] (primary) from the current global
+        // single-bot state. COPY, not move. The legacy global fields remain
+        // intact for when the toggle is turned off.
         const primaryId = generateId();
         const persona: BotPersona = {
           config: { ...state.config, customDirectives: PRIMARY_BOT_PERSONA.customDirectives },
@@ -1732,7 +1794,11 @@ export const useAppStore = create<AppState>()(
             }
           }
         }
-        set({ multiBotEnabled: false, bots: [], activeBotId: null, manualSendBotId: null });
+        // Keep the bots roster, activeBotId, and manualSendBotId intact so
+        // re-enabling multi-bot restores the user's configured bots instead
+        // of wiping them. All consumers gate on multiBotEnabled, so the saved
+        // data is inert while disabled and persists via partialize.
+        set({ multiBotEnabled: false });
       },
       bots: [],
       activeBotId: null,
@@ -1951,11 +2017,10 @@ export const useAppStore = create<AppState>()(
           perActionRateLimits: state.perActionRateLimits,
           directorNotes: state.directorNotes,
           // Multi-bot: export personas + memory but NEVER sessions (tokens stay local).
+          // Bots persist across disable toggles, so export them whenever they exist.
           multiBotEnabled: state.multiBotEnabled,
           activeBotId: state.activeBotId,
-          bots: state.multiBotEnabled
-            ? state.bots.map((b) => ({ ...b, session: null }))
-            : [],
+          bots: state.bots.map((b) => ({ ...b, session: null })),
           exportedAt: new Date().toISOString(),
           version: SETTINGS_VERSION,
         };
@@ -2225,6 +2290,30 @@ export const useAppStore = create<AppState>()(
         // Existing LTM/pinnedMemories/autoForgeEventLog stay in Zustand as before;
         // they'll be saved to channelStore on the first channel switch or
         // debounced auto-save.
+        // v17: Normalize primaryProfile / activeProfiles from lowercase to
+        // capitalized to match the canonical TuningDeck profile IDs. Older
+        // defaults used "hype"/"analyst"/"gremlin"; the UI (TuningDeck,
+        // RageCursor, MultiBotPanel) expects "Hype"/"Analyst"/"Gremlin".
+        if (version < 17 && persistedState) {
+          const profileMap: Record<string, string> = {
+            hype: "Hype", analyst: "Analyst", gremlin: "Gremlin",
+          };
+          const normalizeProfile = (v: string) => profileMap[v] || v;
+          const normalizeList = (arr: string[] | undefined) =>
+            Array.isArray(arr) ? arr.map(normalizeProfile) : arr;
+          if (persistedState.config) {
+            persistedState.config.primaryProfile = normalizeProfile(persistedState.config.primaryProfile);
+            persistedState.config.activeProfiles = normalizeList(persistedState.config.activeProfiles);
+          }
+          if (Array.isArray(persistedState.bots)) {
+            persistedState.bots.forEach((b: any) => {
+              if (b?.persona?.config) {
+                b.persona.config.primaryProfile = normalizeProfile(b.persona.config.primaryProfile);
+                b.persona.config.activeProfiles = normalizeList(b.persona.config.activeProfiles);
+              }
+            });
+          }
+        }
         return persistedState;
       },
     }

@@ -385,7 +385,7 @@ export interface DecisionLogEntry {
   isMentioned: boolean;
   activitySpike: boolean;
   provider: string;
-  outcome?: "sent" | "failed" | "queued";
+  outcome?: "sent" | "failed" | "queued" | "stale";
   responseTimeMs?: number;
 }
 

@@ -2056,7 +2056,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             <div className="flex justify-between text-xs font-bold text-gray-300 items-center px-0.5">
               <span>Message Length</span>
               <span className="text-[9px] font-mono uppercase bg-white/5 px-1.5 py-0.5 rounded text-gray-400">
-                {config.lengthPreference && config.lengthPreference !== "none" ? config.lengthPreference : "Unconstrained"}
+                {config.lengthPreference && config.lengthPreference !== "none" ? config.lengthPreference.charAt(0).toUpperCase() + config.lengthPreference.slice(1) : "Unconstrained"}
               </span>
             </div>
             <div className="flex gap-1.5 mt-1">

@@ -136,6 +136,19 @@ export function WelcomeOverlay() {
     return () => clearInterval(interval);
   }, []);
 
+  // Reopen via Command Palette ("Reopen Welcome Screen"). Countdowns start
+  // expired — the first-run acknowledge friction doesn't apply to a manual
+  // revisit.
+  useEffect(() => {
+    const onOpen = () => {
+      setCountdown(0);
+      setTourCountdown(0);
+      setVisible(true);
+    };
+    window.addEventListener("welcome-open", onOpen);
+    return () => window.removeEventListener("welcome-open", onOpen);
+  }, []);
+
   const dismiss = () => {
     localStorage.setItem(STORAGE_KEY, "1");
     setVisible(false);
@@ -436,9 +449,18 @@ export function WelcomeOverlay() {
                       You can run a model on your own machine with <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="text-emerald-300 font-semibold underline decoration-emerald-500/40 hover:decoration-emerald-400 inline-flex items-center gap-0.5">Ollama <ExternalLink className="w-2.5 h-2.5" /></a> — no API key, no per-token cost. <span className="text-gray-400">This takes more technical experience.</span> Pick the <span className="text-emerald-300 font-semibold">Ollama / Local</span> provider in Settings, then follow these steps:
                     </p>
                     <ol className="text-[10px] text-gray-400 leading-relaxed space-y-1 pl-1">
-                      <li><span className="text-emerald-300 font-mono font-bold">1.</span> Install Ollama from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="text-emerald-300 underline decoration-emerald-500/40 hover:decoration-emerald-400">ollama.com</a>, then pull a model: <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">ollama pull llama3.1:8b</code></li>
+                      <li><span className="text-emerald-300 font-mono font-bold">1.</span> Install Ollama from <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="text-emerald-300 underline decoration-emerald-500/40 hover:decoration-emerald-400">ollama.com</a>, then pull a model: <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">ollama pull qwen3.5:9b</code></li>
                       <li><span className="text-emerald-300 font-mono font-bold">2.</span> <span className="text-gray-300">Quit the Ollama tray app</span> (system tray → right-click → Quit), then in a <span className="text-gray-300">terminal</span> (not the chat prompt) run:</li>
-                      <li className="pl-4"><code className="font-mono bg-black/40 px-1.5 py-1 rounded text-emerald-200 block">set OLLAMA_ORIGINS=* &amp;&amp; ollama serve</code><span className="text-gray-600"> (cmd)</span> &nbsp;or&nbsp; <code className="font-mono bg-black/40 px-1.5 py-1 rounded text-emerald-200">$env:OLLAMA_ORIGINS="*"; ollama serve</code><span className="text-gray-600"> (PowerShell)</span></li>
+                      <li className="pl-4 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <code className="font-mono bg-black/40 px-1.5 py-1 rounded text-emerald-200">set OLLAMA_ORIGINS=* &amp;&amp; ollama serve</code>
+                          <span className="text-gray-600 shrink-0">(cmd)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <code className="font-mono bg-black/40 px-1.5 py-1 rounded text-emerald-200">$env:OLLAMA_ORIGINS="*"; ollama serve</code>
+                          <span className="text-gray-600 shrink-0">(PowerShell)</span>
+                        </div>
+                      </li>
                       <li><span className="text-emerald-300 font-mono font-bold">3.</span> In MADchatter Settings → choose <span className="text-emerald-300 font-semibold">Ollama / Local</span> (URL auto-fills to <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">http://localhost:11434/v1</code>), set Custom Model Name to your tag, Save.</li>
                     </ol>
                     <p className="text-[10px] text-gray-500 leading-relaxed">

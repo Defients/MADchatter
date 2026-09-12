@@ -22,6 +22,7 @@ export interface BotCandidate {
   confidence: number;
   payload?: string;
   personaFit: number; // 0–1, how well the bot's persona fits the moment
+  isMentioned?: boolean; // true when this bot was directly mentioned in chat
 }
 
 interface PendingRequest {
@@ -94,11 +95,14 @@ class BotCoordinator {
     this.pending = [];
     if (requests.length === 0) return;
 
-    // Pick the highest-scoring candidate. score = confidence + personaFit tiebreak.
+    // Pick the highest-scoring candidate.
+    // score = confidence + personaFit tiebreak + mention bonus.
+    // The 0.15 mention bonus lets a mentioned bot win over a slightly-higher-
+    // confidence non-mentioned bot, but doesn't override a strong confidence gap.
     let best = requests[0];
     for (const r of requests) {
-      const rScore = r.candidate.confidence + r.candidate.personaFit * 0.001;
-      const bScore = best.candidate.confidence + best.candidate.personaFit * 0.001;
+      const rScore = r.candidate.confidence + r.candidate.personaFit * 0.001 + (r.candidate.isMentioned ? 0.15 : 0);
+      const bScore = best.candidate.confidence + best.candidate.personaFit * 0.001 + (best.candidate.isMentioned ? 0.15 : 0);
       if (rScore > bScore) best = r;
     }
 
