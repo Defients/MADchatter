@@ -3015,7 +3015,7 @@ export function ForgeLayout() {
                         {multiBotPanelOpen && (
                           <motion.div
                             key="multibot-panel"
-                            className="fixed top-16 right-4 z-[60]"
+                            className="fixed top-16 right-4 z-40"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}

@@ -27,7 +27,8 @@ function BotCard({
   removeBot: (botId: string) => void;
 }) {
   const bot = useAppStore((s) => s.bots.find((b) => b.id === botId));
-  const sentCount = useAppStore((s) => s.bots.find((b) => b.id === botId)?.runtime.sentMessages.length ?? 0);
+  const sentMessages = useAppStore((s) => s.bots.find((b) => b.id === botId)?.runtime.sentMessages ?? []);
+  const sentCount = sentMessages.length;
   const prevSentCount = useRef(sentCount);
   const controls = useAnimationControls();
   // First Message Mode: subscribe to this bot's status in the active cohort.
@@ -35,6 +36,50 @@ function BotCard({
   // it out. Non-cohort bots (status absent) show nothing.
   const firstMessageStatus = useAppStore((s) => s.firstMessageCohort?.status[botId]);
   const firstMessageArmed = firstMessageStatus === "armed" || firstMessageStatus === "sending";
+
+  // ── Last-send recency spectrum ─────────────────────────────────────────
+  // The card border glows in a color that fades through a spectrum based on
+  // how long since the bot last sent a message, so the user can see at a
+  // glance which bots are active vs. idle:
+  //   0–10s   → emerald (just sent)
+  //   10–30s  → cyan
+  //   30s–2m  → blue
+  //   2–5m    → purple
+  //   5m+     → dim gray (idle)
+  // A 1s tick keeps the fade live. We only tick when the panel is mounted
+  // (BotCard unmounts when the panel closes), so this is cheap.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const lastSent = sentMessages.length > 0 ? sentMessages[sentMessages.length - 1].timestamp : 0;
+  const elapsedMs = lastSent ? now - lastSent : 0;
+  const elapsedSec = elapsedMs / 1000;
+
+  // Derive the spectrum color + intensity from elapsed time.
+  const spectrum = (() => {
+    if (!lastSent) return { color: "rgba(255,255,255,0.06)", glow: "transparent", label: "No messages sent yet" };
+    if (elapsedSec < 10) return { color: "rgba(16,185,129,0.55)", glow: "rgba(16,185,129,0.35)", label: "just now" };
+    if (elapsedSec < 30) return { color: "rgba(34,211,238,0.50)", glow: "rgba(34,211,238,0.28)", label: "active" };
+    if (elapsedSec < 120) return { color: "rgba(96,165,250,0.45)", glow: "rgba(96,165,250,0.22)", label: "cooling" };
+    if (elapsedSec < 300) return { color: "rgba(168,85,247,0.40)", glow: "rgba(168,85,247,0.18)", label: "idle" };
+    return { color: "rgba(255,255,255,0.08)", glow: "transparent", label: "dormant" };
+  })();
+
+  // Human-readable "time ago" for the tooltip.
+  const timeAgo = (() => {
+    if (!lastSent) return "never";
+    const s = Math.floor(elapsedSec);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s ago`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m ago`;
+  })();
+  const lastSentTimeStr = lastSent
+    ? new Date(lastSent).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : "—";
 
   useEffect(() => {
     if (sentCount > prevSentCount.current) {
@@ -60,7 +105,8 @@ function BotCard({
   return (
     <motion.div
       animate={controls}
-      className="relative border border-white/10 rounded-md bg-white/[0.02] overflow-hidden"
+      className="relative border rounded-md bg-white/[0.02] overflow-hidden transition-colors duration-1000"
+      style={{ borderColor: spectrum.color, boxShadow: `0 0 12px 0 ${spectrum.glow}` }}
     >
       {/* First Message arrival ring — a separate overlay so it never conflicts
           with the framer-motion send-pulse inline styles. Fades in/out via
@@ -77,7 +123,27 @@ function BotCard({
         }}
       />
       <div className="flex items-center gap-2 p-2">
+        <ThemedTooltip
+          zIndex={61}
+          content={
+            <div className="flex flex-col gap-1 min-w-[160px]">
+              <div className="flex items-center gap-1.5 font-bold text-[11px]">
+                <span
+                  className="inline-block w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: spectrum.color, boxShadow: `0 0 6px ${spectrum.glow}` }}
+                />
+                Last send: <span className="text-white">{timeAgo}</span>
+              </div>
+              <div className="text-[10px] text-gray-400 leading-snug">
+                <div>Timestamp: <span className="font-mono text-gray-300">{lastSentTimeStr}</span></div>
+                <div>Status: <span className="font-mono text-gray-300">{spectrum.label}</span></div>
+                <div>Total sent: <span className="font-mono text-gray-300">{sentCount}</span></div>
+              </div>
+            </div>
+          }
+        >
         <BotIcon className={cn("w-3.5 h-3.5 shrink-0", bot.active ? "text-[#9146FF]" : "text-gray-600")} />
+        </ThemedTooltip>
         {idx < 9 && (
           <ThemedTooltip content={`Press ${idx + 1} to toggle this bot`} zIndex={61}>
             <button

@@ -384,7 +384,7 @@ export function AutoForgeHUD() {
       initial={{ opacity: 0, scale: 0.9, y: -50 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.9, y: -50 }}
-      className="fixed z-50 top-5 right-5 flex flex-col bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl overflow-hidden cursor-move"
+      className="fixed z-40 top-5 right-5 flex flex-col bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl overflow-hidden cursor-move"
       style={{ width: 330 }}
     >
       {/* Header (Drag Handle) */}
