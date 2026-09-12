@@ -2434,7 +2434,12 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         </CardContent>
       </Card>
 
-      {/* E1/E4: Creative Tools — Templates & Mood Lock */}
+      </div>{/* end dimmed scrollable middle section */}
+
+      {/* E1/E4: Creative Tools — Templates & Mood Lock.
+          Pulled out of the dimmed container above so it stays fully visible
+          in multi-bot mode: templates and mood locks are global, not per-bot,
+          so they remain useful when multi-bot is active. */}
       <Card className="bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0">
         <CardHeader className="p-1.5 pb-0 flex flex-col space-y-0 gap-1">
           <CardTitle className="text-xs font-bold uppercase tracking-wider text-gray-300 shrink-0 text-center w-full flex items-center justify-center gap-2">
@@ -2891,8 +2896,6 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             </div>
         </CardContent>
       </Card>
-
-      </div>
 
       {/* 4. Big Forge Button — locked to bottom */}
       <div className="shrink-0" data-tutorial="forge-buttons">

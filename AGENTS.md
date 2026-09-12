@@ -20,7 +20,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 19 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 20 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
@@ -65,6 +65,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Queue timeouts (`isQueueTimeout()`) are capacity issues (too many bots queued for the single Ollama slot), NOT provider failures — they don't poison provider health or trigger cooldown.
 - NEXT CHECK toggle (`autoForgeAutoCheckEnabled`, schema v19, default true): HUD-local clock button in the header pauses the 15s auto-scheduling tick in both loops. Force ignores it (only the master `autoForgeEnabled` gates force). When paused, the HUD shows "Paused" and Force buttons switch to an amber accent.
 - NEXT CHECK display has three visual states: **Processing** (cyan, animated brain + sweeping bar — an AI check is in-flight, derived from `isAutoForgeThinking` / per-bot `runtime.isAutoForgeThinking`), **Waiting** (dimmed gray pulse — timer hit 0 but the 15s interval hasn't fired yet), and the normal color-coded countdown. The header Brain icon also turns cyan with a processing pulse when a check is active.
+- **Multi-bot parity (v1.0.3):** Per-bot rate limiters (`getBotRateLimiter(botId)` in `actionRateLimiter.ts`) — each bot gets its own `ActionRateLimiter` so quotas are independent. The legacy loop uses the shared `actionRateLimiter` singleton. Rule Engine `force_autoforge_check` dispatches a targeted event (`detail: { botId }`) in multi-bot mode so only the firing bot checks. AutoForge Sequences overlay includes a bot identity selector in multi-bot mode; sends use the selected bot's identity and `full_forge` steps target the selected bot.
 
 ### Speaker Coordinator (`src/lib/botCoordinator.ts`)
 - Singleton `botCoordinator`. `requestFloor(botId, candidate)` opens a 2.5s bid window; highest `confidence + personaFit * 0.001 + (isMentioned ? 0.15 : 0)` wins. 15s floor gap between speaks. Manual sends bypass the coordinator.

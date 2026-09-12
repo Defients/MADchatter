@@ -151,6 +151,8 @@ Most single-key shortcuts apply when you are not typing in a text field. Press *
 | `F` / `S` | Forge a batch / send the top variant. |
 | `C` / `V` | Start capture / open visual snapshot history. |
 | `A` / `H` | Toggle AutoForge / its HUD. |
+| `Q` / `E` | Page back / forward through AutoForge decision history. |
+| `W` | Send the currently-viewed AutoForge decision (if unsent). |
 | `D` | Toggle analytics. |
 | `T` | Cycle themes. |
 | `Shift + R` | Toggle R34L typing style. |

@@ -140,12 +140,18 @@ export function AutoForgeSequencesOverlay({ open, onClose }: { open: boolean; on
     duplicateAutoForgeSequence,
     platform,
     streamMetadata,
+    bots,
+    multiBotEnabled,
   } = useAppStore();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showInstructions, setShowInstructions] = useState(true);
   const [showPresets, setShowPresets] = useState(false);
   const [runningId, setRunningId] = useState<string | null>(null);
+  // Bot identity for sequence sends. null = legacy singleton (single-bot
+  // mode). In multi-bot mode, defaults to the first active+authenticated bot.
+  const activeBots = multiBotEnabled ? bots.filter((b) => b.active && b.session) : [];
+  const [runAsBotId, setRunAsBotId] = useState<string | null>(null);
 
   const editingSeq = useMemo(
     () => autoForgeSequences.find((s) => s.id === editingId) || null,
@@ -188,24 +194,37 @@ export function AutoForgeSequencesOverlay({ open, onClose }: { open: boolean; on
       toast.error("No channel connected. Connect to a platform first.");
       return;
     }
+    // Resolve the bot identity for sends. In multi-bot mode, use the
+    // selected bot (or default to the first active bot). In legacy mode,
+    // botId is undefined → singleton send path.
+    const selectedBotId = multiBotEnabled
+      ? (runAsBotId ?? activeBots[0]?.id)
+      : undefined;
+    const selectedBot = selectedBotId ? bots.find((b) => b.id === selectedBotId) : null;
+    if (multiBotEnabled && !selectedBot) {
+      toast.error("No active bot selected. Activate a bot to run sequences.");
+      return;
+    }
     setRunningId(seq.id);
     playSfx("autoforge_action");
-    toast.info(`Running sequence: ${seq.name}`, { description: `${seq.steps.length} steps` });
+    toast.info(`Running sequence: ${seq.name}${selectedBot ? ` as @${selectedBot.session?.username}` : ""}`, { description: `${seq.steps.length} steps` });
 
-    const sendFn = getPlatformSendFn(platform);
-    let elapsed = 0;
+    const sendFn = getPlatformSendFn(platform, selectedBotId);
     for (const step of seq.steps) {
       // Wait for the cumulative delay
       if (step.delayMs > 0) {
         await new Promise((r) => setTimeout(r, step.delayMs));
-        elapsed += step.delayMs;
       }
 
       if (step.actionType === "full_forge") {
-        // For full_forge, we can't truly replicate the AI generation here,
-        // but we can trigger the AutoForge force-check event
+        // For full_forge, trigger a targeted AutoForge force-check so the
+        // selected bot generates + sends via its own identity.
         toast.info(`Step: Full Forge — triggering AI generation...`);
-        window.dispatchEvent(new CustomEvent("autoforge-force-check"));
+        if (selectedBotId) {
+          window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId: selectedBotId } }));
+        } else {
+          window.dispatchEvent(new CustomEvent("autoforge-force-check"));
+        }
       } else if (step.payload) {
         try {
           await sendFn(channel, step.payload);
@@ -218,7 +237,7 @@ export function AutoForgeSequencesOverlay({ open, onClose }: { open: boolean; on
 
     setRunningId(null);
     toast.success(`Sequence complete: ${seq.name}`);
-  }, [platform, streamMetadata, setRunningId]);
+  }, [platform, streamMetadata, setRunningId, multiBotEnabled, activeBots, bots, runAsBotId]);
 
   const handleUpdateStep = useCallback((seqId: string, stepId: string, updates: Partial<AutoForgeSequenceStep>) => {
     const seq = useAppStore.getState().autoForgeSequences.find((s) => s.id === seqId);
@@ -290,6 +309,19 @@ export function AutoForgeSequencesOverlay({ open, onClose }: { open: boolean; on
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {multiBotEnabled && activeBots.length > 0 && (
+                  <ThemedTooltip content="Bot identity for sequence sends">
+                    <select
+                      value={runAsBotId ?? activeBots[0]?.id ?? ""}
+                      onChange={(e) => setRunAsBotId(e.target.value || null)}
+                      className="text-[10px] px-2 py-1.5 rounded-lg border border-white/10 bg-black/40 text-gray-300 font-mono focus:outline-none focus:border-orange-500/40"
+                    >
+                      {activeBots.map((b) => (
+                        <option key={b.id} value={b.id}>@{b.session?.username ?? b.label}</option>
+                      ))}
+                    </select>
+                  </ThemedTooltip>
+                )}
                 <button
                   onClick={() => { setShowPresets(!showPresets); setShowInstructions(false); }}
                   className={cn(

@@ -618,7 +618,10 @@ export function getOperationTimeout(
     case "refine":
       return isOllama ? 30_000 : 30_000;
     case "vision":
-      return isOllama ? 20_000 : 30_000;
+      // Ollama: vision is interactive priority (preempts autonomous), but a
+      // critical manual Forge can still block the slot. 30s gives room for
+      // one forge cycle to complete before vision queue-times out.
+      return isOllama ? 30_000 : 30_000;
     case "autoforge_decide":
       // Ollama: allow extra room for multi-bot queue depth. Even with
       // staggered intervals, a vision preemption + retry can briefly

@@ -528,7 +528,17 @@ export type RuleConditionType =
   | "unique_chatters_above"
   | "viewer_count_above"
   | "viewer_count_below"
-  | "audio_energy_above";
+  | "audio_energy_above"
+  | "audio_energy_below"
+  | "time_of_day_after"
+  | "time_of_day_before"
+  | "autoforge_is_enabled"
+  | "autoforge_is_disabled"
+  | "mood_is"
+  | "mood_is_not"
+  | "consecutive_silence_above"
+  | "active_bot_count_above"
+  | "active_bot_count_below";
 
 export type RuleConditionOperator = "and" | "or";
 
@@ -543,6 +553,10 @@ export interface RuleCondition {
   healthLabel?: "dead" | "slow" | "active" | "healthy" | "poppin";
   // Keyword string for keyword conditions
   keyword?: string;
+  // Hour (0-23) for time_of_day_after / time_of_day_before conditions
+  hour?: number;
+  // Mood name for mood_is / mood_is_not conditions
+  mood?: string;
 }
 
 export type RuleActionType =
@@ -553,7 +567,11 @@ export type RuleActionType =
   | "trigger_full_forge"
   | "notify_user"
   | "set_hype_level"
-  | "force_autoforge_check";
+  | "force_autoforge_check"
+  | "toggle_autoforge"
+  | "set_confidence_threshold"
+  | "clear_mood_lock"
+  | "set_length_preference";
 
 export interface RuleAction {
   id: string;
@@ -568,6 +586,12 @@ export interface RuleAction {
   notification?: string;
   // Hype level for set_hype_level
   hypeLevel?: number;
+  // Enabled state for toggle_autoforge (true = turn on, false = turn off)
+  enabled?: boolean;
+  // Confidence threshold (0-1) for set_confidence_threshold
+  confidenceThreshold?: number;
+  // Length preference for set_length_preference
+  lengthPreference?: "short" | "medium" | "long";
   // Delay before executing this action (ms)
   delayMs: number;
 }
@@ -605,6 +629,14 @@ export interface RuleEngineContext {
   uniqueChatters: number;
   viewerCount: number;
   audioEnergyRms: number;
+  // Whether AutoForge is currently enabled
+  autoForgeEnabled: boolean;
+  // Current mood lock state (null = no lock)
+  currentMood: string | null;
+  // Consecutive silence cycles (AutoForge decided "silence" N times in a row)
+  consecutiveSilence: number;
+  // Number of active+authenticated bots in multi-bot mode (1 in legacy mode)
+  activeBotCount: number;
 }
 
 // Result of evaluating a single rule
@@ -662,6 +694,10 @@ export interface BotRuntime {
   autoForgeEvents: AutoForgeEvent[];
   // AutoForge pacing / state
   lastAutoForgeDecision: import("./lib/ai").AutoForgeDecision | null;
+  // Bounded history of recent decisions (last ~20). Used by the Q hotkey
+  // to recover unsent messages from earlier cycles, not just the most
+  // recent one. Entries are deduped against sentMessages at send time.
+  autoForgeDecisionHistory: import("./lib/ai").AutoForgeDecision[];
   autoForgeLastActionMs: number | null;
   autoForgeNextActionMs: number;
   autoForgeFollowup: { message: string; deliveredAt: number } | null;

@@ -31,6 +31,7 @@ import {
   TrendingUp,
   Volume2,
   RefreshCw,
+  Gauge,
 } from "lucide-react";
 import type {
   AutoForgeRule,
@@ -46,25 +47,35 @@ import type {
 
 const CONDITION_META: Record<
   RuleConditionType,
-  { label: string; icon: any; color: string; desc: string; needsValue: boolean; needsSentiment: boolean; needsHealth: boolean; needsKeyword: boolean; valueLabel: string; valuePlaceholder: string }
+  { label: string; icon: any; color: string; desc: string; needsValue: boolean; needsSentiment: boolean; needsHealth: boolean; needsKeyword: boolean; needsHour: boolean; needsMood: boolean; valueLabel: string; valuePlaceholder: string }
 > = {
-  chat_velocity_above: { label: "Chat Velocity Above", icon: Activity, color: "text-teal-400", desc: "Chat messages per minute exceed threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "msg/min", valuePlaceholder: "25" },
-  chat_velocity_below: { label: "Chat Velocity Below", icon: Activity, color: "text-teal-400", desc: "Chat messages per minute drop below threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "msg/min", valuePlaceholder: "5" },
-  sentiment_is: { label: "Sentiment Is", icon: Sparkles, color: "text-purple-400", desc: "Current chat sentiment matches the selected label", needsValue: false, needsSentiment: true, needsHealth: false, needsKeyword: false, valueLabel: "", valuePlaceholder: "" },
-  sentiment_is_not: { label: "Sentiment Is Not", icon: Sparkles, color: "text-purple-400", desc: "Current chat sentiment does not match the selected label", needsValue: false, needsSentiment: true, needsHealth: false, needsKeyword: false, valueLabel: "", valuePlaceholder: "" },
-  time_since_last_action_above: { label: "Time Since Last Action Above", icon: Clock, color: "text-blue-400", desc: "Time since the bot's last action exceeds threshold (seconds)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "seconds", valuePlaceholder: "300" },
-  time_since_last_action_below: { label: "Time Since Last Action Below", icon: Clock, color: "text-blue-400", desc: "Time since the bot's last action is under threshold (seconds)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "seconds", valuePlaceholder: "60" },
-  keyword_detected: { label: "Keyword Detected", icon: MessageSquare, color: "text-yellow-400", desc: "A specific keyword appears in recent chat messages", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: true, valueLabel: "", valuePlaceholder: "" },
-  keyword_not_detected: { label: "Keyword Not Detected", icon: MessageSquare, color: "text-yellow-400", desc: "A specific keyword does not appear in recent chat", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: true, valueLabel: "", valuePlaceholder: "" },
-  mention_detected: { label: "Bot Mentioned", icon: Bell, color: "text-orange-400", desc: "The bot's username is mentioned in chat", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "", valuePlaceholder: "" },
-  activity_spike: { label: "Activity Spike", icon: Zap, color: "text-red-400", desc: "Sudden burst of chat activity (10+ messages in under 2 minutes)", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "", valuePlaceholder: "" },
-  stream_health_is: { label: "Stream Health Is", icon: TrendingUp, color: "text-green-400", desc: "Stream health score matches the selected label", needsValue: false, needsSentiment: false, needsHealth: true, needsKeyword: false, valueLabel: "", valuePlaceholder: "" },
-  hype_level_above: { label: "Hype Level Above", icon: Flame, color: "text-orange-400", desc: "Hype level exceeds threshold (0-3)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "level (0-3)", valuePlaceholder: "2" },
-  hype_level_below: { label: "Hype Level Below", icon: Flame, color: "text-orange-400", desc: "Hype level is under threshold (0-3)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "level (0-3)", valuePlaceholder: "1" },
-  unique_chatters_above: { label: "Unique Chatters Above", icon: Eye, color: "text-cyan-400", desc: "Number of unique chatters exceeds threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "chatters", valuePlaceholder: "15" },
-  viewer_count_above: { label: "Viewer Count Above", icon: Eye, color: "text-indigo-400", desc: "Viewer count exceeds threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "viewers", valuePlaceholder: "100" },
-  viewer_count_below: { label: "Viewer Count Below", icon: Eye, color: "text-indigo-400", desc: "Viewer count drops below threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "viewers", valuePlaceholder: "50" },
-  audio_energy_above: { label: "Audio Energy Above", icon: Volume2, color: "text-pink-400", desc: "Audio energy (RMS, 0-100) exceeds threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, valueLabel: "RMS (0-100)", valuePlaceholder: "40" },
+  chat_velocity_above: { label: "Chat Velocity Above", icon: Activity, color: "text-teal-400", desc: "Chat messages per minute exceed threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "msg/min", valuePlaceholder: "25" },
+  chat_velocity_below: { label: "Chat Velocity Below", icon: Activity, color: "text-teal-400", desc: "Chat messages per minute drop below threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "msg/min", valuePlaceholder: "5" },
+  sentiment_is: { label: "Sentiment Is", icon: Sparkles, color: "text-purple-400", desc: "Current chat sentiment matches the selected label", needsValue: false, needsSentiment: true, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  sentiment_is_not: { label: "Sentiment Is Not", icon: Sparkles, color: "text-purple-400", desc: "Current chat sentiment does not match the selected label", needsValue: false, needsSentiment: true, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  time_since_last_action_above: { label: "Time Since Last Action Above", icon: Clock, color: "text-blue-400", desc: "Time since the bot's last action exceeds threshold (seconds)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "seconds", valuePlaceholder: "300" },
+  time_since_last_action_below: { label: "Time Since Last Action Below", icon: Clock, color: "text-blue-400", desc: "Time since the bot's last action is under threshold (seconds)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "seconds", valuePlaceholder: "60" },
+  keyword_detected: { label: "Keyword Detected", icon: MessageSquare, color: "text-yellow-400", desc: "A specific keyword appears in recent chat messages", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: true, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  keyword_not_detected: { label: "Keyword Not Detected", icon: MessageSquare, color: "text-yellow-400", desc: "A specific keyword does not appear in recent chat", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: true, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  mention_detected: { label: "Bot Mentioned", icon: Bell, color: "text-orange-400", desc: "The bot's username is mentioned in chat", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  activity_spike: { label: "Activity Spike", icon: Zap, color: "text-red-400", desc: "Sudden burst of chat activity (10+ messages in under 2 minutes)", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  stream_health_is: { label: "Stream Health Is", icon: TrendingUp, color: "text-green-400", desc: "Stream health score matches the selected label", needsValue: false, needsSentiment: false, needsHealth: true, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  hype_level_above: { label: "Hype Level Above", icon: Flame, color: "text-orange-400", desc: "Hype level exceeds threshold (0-3)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "level (0-3)", valuePlaceholder: "2" },
+  hype_level_below: { label: "Hype Level Below", icon: Flame, color: "text-orange-400", desc: "Hype level is under threshold (0-3)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "level (0-3)", valuePlaceholder: "1" },
+  unique_chatters_above: { label: "Unique Chatters Above", icon: Eye, color: "text-cyan-400", desc: "Number of unique chatters exceeds threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "chatters", valuePlaceholder: "15" },
+  viewer_count_above: { label: "Viewer Count Above", icon: Eye, color: "text-indigo-400", desc: "Viewer count exceeds threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "viewers", valuePlaceholder: "100" },
+  viewer_count_below: { label: "Viewer Count Below", icon: Eye, color: "text-indigo-400", desc: "Viewer count drops below threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "viewers", valuePlaceholder: "50" },
+  audio_energy_above: { label: "Audio Energy Above", icon: Volume2, color: "text-pink-400", desc: "Audio energy (RMS, 0-100) exceeds threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "RMS (0-100)", valuePlaceholder: "40" },
+  audio_energy_below: { label: "Audio Energy Below", icon: Volume2, color: "text-pink-400", desc: "Audio energy (RMS, 0-100) drops below threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "RMS (0-100)", valuePlaceholder: "20" },
+  time_of_day_after: { label: "Time of Day After", icon: Clock, color: "text-indigo-400", desc: "Current local hour is at or after the specified hour (0-23, 24h format)", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: true, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  time_of_day_before: { label: "Time of Day Before", icon: Clock, color: "text-indigo-400", desc: "Current local hour is before the specified hour (0-23, 24h format)", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: true, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  autoforge_is_enabled: { label: "AutoForge Is Enabled", icon: Zap, color: "text-cyan-400", desc: "AutoForge is currently enabled", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  autoforge_is_disabled: { label: "AutoForge Is Disabled", icon: Zap, color: "text-cyan-400", desc: "AutoForge is currently disabled", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "", valuePlaceholder: "" },
+  mood_is: { label: "Mood Is", icon: Bot, color: "text-orange-400", desc: "Current mood lock matches the selected mood", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: true, valueLabel: "", valuePlaceholder: "" },
+  mood_is_not: { label: "Mood Is Not", icon: Bot, color: "text-orange-400", desc: "Current mood lock does not match the selected mood", needsValue: false, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: true, valueLabel: "", valuePlaceholder: "" },
+  consecutive_silence_above: { label: "Consecutive Silence Above", icon: Clock, color: "text-gray-400", desc: "AutoForge has chosen silence N times in a row (dead chat indicator)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "cycles", valuePlaceholder: "5" },
+  active_bot_count_above: { label: "Active Bot Count Above", icon: Bot, color: "text-purple-400", desc: "Number of active+signed-in bots exceeds threshold (1 in legacy mode)", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "bots", valuePlaceholder: "2" },
+  active_bot_count_below: { label: "Active Bot Count Below", icon: Bot, color: "text-purple-400", desc: "Number of active+signed-in bots is under threshold", needsValue: true, needsSentiment: false, needsHealth: false, needsKeyword: false, needsHour: false, needsMood: false, valueLabel: "bots", valuePlaceholder: "1" },
 };
 
 const SENTIMENT_OPTIONS: SentimentLabel[] = ["positive", "negative", "hype", "wholesome", "toxic", "neutral"];
@@ -74,16 +85,20 @@ const HEALTH_OPTIONS = ["dead", "slow", "active", "healthy", "poppin"] as const;
 
 const ACTION_META: Record<
   RuleActionType,
-  { label: string; icon: any; color: string; desc: string; needsPayload: boolean; needsMood: boolean; needsTemplate: boolean; needsNotification: boolean; needsHype: boolean; payloadLabel: string; payloadPlaceholder: string }
+  { label: string; icon: any; color: string; desc: string; needsPayload: boolean; needsMood: boolean; needsTemplate: boolean; needsNotification: boolean; needsHype: boolean; needsEnabled: boolean; needsConfidence: boolean; needsLengthPref: boolean; payloadLabel: string; payloadPlaceholder: string }
 > = {
-  send_message: { label: "Send Message", icon: MessageSquare, color: "text-teal-400 bg-teal-500/10 border-teal-500/30", desc: "Send a specific message to chat", needsPayload: true, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, payloadLabel: "Message", payloadPlaceholder: "e.g. Hey chat! 👋" },
-  send_emote: { label: "Send Emote", icon: Sparkles, color: "text-purple-400 bg-purple-500/10 border-purple-500/30", desc: "Send an emote or short text to chat", needsPayload: true, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, payloadLabel: "Emote", payloadPlaceholder: "e.g. Kappa" },
-  change_mood: { label: "Change Mood", icon: Bot, color: "text-orange-400 bg-orange-500/10 border-orange-500/30", desc: "Lock the bot's mood to a specific value", needsPayload: false, needsMood: true, needsTemplate: false, needsNotification: false, needsHype: false, payloadLabel: "", payloadPlaceholder: "" },
-  apply_template: { label: "Apply Template", icon: Copy, color: "text-blue-400 bg-blue-500/10 border-blue-500/30", desc: "Apply a saved Forge template", needsPayload: false, needsMood: false, needsTemplate: true, needsNotification: false, needsHype: false, payloadLabel: "", payloadPlaceholder: "" },
-  trigger_full_forge: { label: "Trigger Full Forge", icon: Bot, color: "text-orange-400 bg-orange-500/10 border-orange-500/30", desc: "Trigger a full AI-generated Forge message", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, payloadLabel: "", payloadPlaceholder: "" },
-  notify_user: { label: "Notify User", icon: Bell, color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30", desc: "Show a toast notification to the user", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: true, needsHype: false, payloadLabel: "", payloadPlaceholder: "" },
-  set_hype_level: { label: "Set Hype Level", icon: Flame, color: "text-red-400 bg-red-500/10 border-red-500/30", desc: "Manually set the hype level (0-3)", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: true, payloadLabel: "", payloadPlaceholder: "" },
-  force_autoforge_check: { label: "Force AutoForge Check", icon: Zap, color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30", desc: "Force an immediate AutoForge decision check", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, payloadLabel: "", payloadPlaceholder: "" },
+  send_message: { label: "Send Message", icon: MessageSquare, color: "text-teal-400 bg-teal-500/10 border-teal-500/30", desc: "Send a specific message to chat", needsPayload: true, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "Message", payloadPlaceholder: "e.g. Hey chat! 👋" },
+  send_emote: { label: "Send Emote", icon: Sparkles, color: "text-purple-400 bg-purple-500/10 border-purple-500/30", desc: "Send an emote or short text to chat", needsPayload: true, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "Emote", payloadPlaceholder: "e.g. Kappa" },
+  change_mood: { label: "Change Mood", icon: Bot, color: "text-orange-400 bg-orange-500/10 border-orange-500/30", desc: "Lock the bot's mood to a specific value", needsPayload: false, needsMood: true, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  apply_template: { label: "Apply Template", icon: Copy, color: "text-blue-400 bg-blue-500/10 border-blue-500/30", desc: "Apply a saved Forge template", needsPayload: false, needsMood: false, needsTemplate: true, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  trigger_full_forge: { label: "Trigger Full Forge", icon: Bot, color: "text-orange-400 bg-orange-500/10 border-orange-500/30", desc: "Trigger a full AI-generated Forge message", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  notify_user: { label: "Notify User", icon: Bell, color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/30", desc: "Show a toast notification to the user", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: true, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  set_hype_level: { label: "Set Hype Level", icon: Flame, color: "text-red-400 bg-red-500/10 border-red-500/30", desc: "Manually set the hype level (0-3)", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: true, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  force_autoforge_check: { label: "Force AutoForge Check", icon: Zap, color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30", desc: "Force an immediate AutoForge decision check", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  toggle_autoforge: { label: "Toggle AutoForge", icon: Zap, color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30", desc: "Turn AutoForge on or off entirely", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: true, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  set_confidence_threshold: { label: "Set Confidence Threshold", icon: Gauge, color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30", desc: "Adjust the AutoForge confidence threshold (0-100%)", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: true, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  clear_mood_lock: { label: "Clear Mood Lock", icon: Bot, color: "text-orange-400 bg-orange-500/10 border-orange-500/30", desc: "Release any active mood lock, returning to neutral", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: false, payloadLabel: "", payloadPlaceholder: "" },
+  set_length_preference: { label: "Set Length Preference", icon: MessageSquare, color: "text-teal-400 bg-teal-500/10 border-teal-500/30", desc: "Change the bot's message length preference (short/medium/long)", needsPayload: false, needsMood: false, needsTemplate: false, needsNotification: false, needsHype: false, needsEnabled: false, needsConfidence: false, needsLengthPref: true, payloadLabel: "", payloadPlaceholder: "" },
 };
 
 const MOOD_OPTIONS = ["happy", "calm", "excited", "sarcastic", "thoughtful", "chaotic", "wholesome", "mysterious"];
@@ -130,6 +145,10 @@ export function RuleBuilderOverlay({ open, onClose }: { open: boolean; onClose: 
     uniqueChatters: enhancedStats.uniqueChatters,
     viewerCount: streamMetadata?.viewerCount ?? 0,
     audioEnergyRms: audioEnergy?.rms ?? 0,
+    autoForgeEnabled: useAppStore.getState().autoForgeEnabled,
+    currentMood: useAppStore.getState().moodLock.locked ? useAppStore.getState().moodLock.mood : null,
+    consecutiveSilence: 0,
+    activeBotCount: useAppStore.getState().bots.filter((b) => b.active && b.session).length || 1,
   }), [enhancedStats, sentimentHistory, streamHealth, hypeLevel, audioEnergy, streamMetadata]);
 
   const handleAddPreset = useCallback((presetIdx: number) => {
@@ -347,6 +366,11 @@ export function RuleBuilderOverlay({ open, onClose }: { open: boolean; onClose: 
                           <li><span className="text-cyan-400">Unique chatters</span> — distinct users</li>
                           <li><span className="text-indigo-400">Viewer count</span> — from platform</li>
                           <li><span className="text-pink-400">Audio energy</span> — RMS 0-100</li>
+                          <li><span className="text-indigo-400">Time of day</span> — local hour (24h)</li>
+                          <li><span className="text-cyan-400">AutoForge enabled/disabled</span> — current state</li>
+                          <li><span className="text-orange-400">Mood is/is not</span> — current mood lock</li>
+                          <li><span className="text-gray-400">Consecutive silence</span> — dead-chat cycles</li>
+                          <li><span className="text-purple-400">Active bot count</span> — signed-in bots</li>
                         </ul>
                       </div>
                       <div>
@@ -355,11 +379,15 @@ export function RuleBuilderOverlay({ open, onClose }: { open: boolean; onClose: 
                           <li><span className="text-teal-400">Send Message</span> — send exact text to chat</li>
                           <li><span className="text-purple-400">Send Emote</span> — send emote/short text</li>
                           <li><span className="text-orange-400">Change Mood</span> — lock bot mood</li>
+                          <li><span className="text-orange-400">Clear Mood Lock</span> — release mood lock</li>
                           <li><span className="text-blue-400">Apply Template</span> — use a Forge template</li>
                           <li><span className="text-orange-400">Trigger Full Forge</span> — AI generates message</li>
                           <li><span className="text-yellow-400">Notify User</span> — show toast notification</li>
                           <li><span className="text-red-400">Set Hype Level</span> — override hype level</li>
                           <li><span className="text-cyan-400">Force AutoForge Check</span> — immediate decision</li>
+                          <li><span className="text-cyan-400">Toggle AutoForge</span> — turn on/off entirely</li>
+                          <li><span className="text-cyan-400">Set Confidence Threshold</span> — adjust 0-100%</li>
+                          <li><span className="text-teal-400">Set Length Preference</span> — short/medium/long</li>
                         </ul>
                       </div>
                       <div>
@@ -796,6 +824,30 @@ const RuleCard: React.FC<{
                           className="flex-1 text-[10px] bg-black/40 border border-white/10 rounded px-2 py-1 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/40"
                         />
                       )}
+                      {meta.needsHour && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input
+                            type="number"
+                            value={cond.hour ?? 0}
+                            onChange={(e) => onUpdateCondition(cond.id, { hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0)) })}
+                            min={0}
+                            max={23}
+                            className="w-12 text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-gray-200 font-mono focus:outline-none focus:border-cyan-500/40"
+                          />
+                          <span className="text-[9px] text-gray-600">h (0-23)</span>
+                        </div>
+                      )}
+                      {meta.needsMood && (
+                        <select
+                          value={cond.mood ?? "happy"}
+                          onChange={(e) => onUpdateCondition(cond.id, { mood: e.target.value })}
+                          className="text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-gray-200 focus:outline-none focus:border-cyan-500/40 shrink-0"
+                        >
+                          {MOOD_OPTIONS.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      )}
                       <span className="text-[9px] text-gray-600 flex-1 min-w-0 truncate">{meta.desc}</span>
                       <button
                         onClick={() => onRemoveCondition(cond.id)}
@@ -908,6 +960,40 @@ const RuleCard: React.FC<{
                             max={3}
                             className="w-16 text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-gray-200 font-mono focus:outline-none focus:border-orange-500/40"
                           />
+                        )}
+                        {meta.needsEnabled && (
+                          <select
+                            value={action.enabled === false ? "off" : "on"}
+                            onChange={(e) => onUpdateAction(action.id, { enabled: e.target.value === "on" })}
+                            className="text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-gray-200 focus:outline-none focus:border-orange-500/40"
+                          >
+                            <option value="on">Enable</option>
+                            <option value="off">Disable</option>
+                          </select>
+                        )}
+                        {meta.needsConfidence && (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              value={Math.round((action.confidenceThreshold ?? 0.5) * 100)}
+                              onChange={(e) => onUpdateAction(action.id, { confidenceThreshold: Math.max(0, Math.min(1, (parseFloat(e.target.value) || 0) / 100)) })}
+                              min={0}
+                              max={100}
+                              className="w-16 text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-gray-200 font-mono focus:outline-none focus:border-orange-500/40"
+                            />
+                            <span className="text-[9px] text-gray-600">%</span>
+                          </div>
+                        )}
+                        {meta.needsLengthPref && (
+                          <select
+                            value={action.lengthPreference ?? "medium"}
+                            onChange={(e) => onUpdateAction(action.id, { lengthPreference: e.target.value as any })}
+                            className="text-[10px] bg-black/40 border border-white/10 rounded px-1.5 py-1 text-gray-200 focus:outline-none focus:border-orange-500/40"
+                          >
+                            <option value="short">Short</option>
+                            <option value="medium">Medium</option>
+                            <option value="long">Long</option>
+                          </select>
                         )}
                         <p className="text-[9px] text-gray-600 mt-0.5 leading-snug">{meta.desc}</p>
                       </div>

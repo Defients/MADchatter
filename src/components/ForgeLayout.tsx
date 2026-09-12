@@ -62,6 +62,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { SENTIMENT_DOT_COLORS } from "../lib/sentiment";
 import type { SentimentLabel } from "../types";
 import { visionRequest } from "../lib/ai";
+import { isQueueTimeout } from "../lib/aiScheduler";
 import { getActiveProvider } from "../lib/keys";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
@@ -1683,11 +1684,18 @@ export function ForgeLayout() {
         }
       } catch (visionErr: any) {
         const vErrMsg = visionErr?.message || String(visionErr);
-        if (!vErrMsg.includes('No API key configured')) {
+        // Queue timeout = Ollama slot was busy (e.g. a manual Forge was running).
+        // Not a real failure — don't toast, just log and mark the snapshot.
+        if (isQueueTimeout(visionErr)) {
+          console.log("[Visual] Vision queued out (Ollama slot busy) — skipping analysis");
+          setVisualSnapshot(dataUrl, ["Captured — vision skipped (slot busy)"], isManual ? "manual" : "auto", delta);
+        } else if (!vErrMsg.includes('No API key configured')) {
           console.error("[Visual] Vision API error:", visionErr);
           toast.error("Vision API failed", { description: vErrMsg });
+          setVisualSnapshot(dataUrl, ["Captured — vision failed"], isManual ? "manual" : "auto", delta);
+        } else {
+          setVisualSnapshot(dataUrl, ["Captured — vision failed"], isManual ? "manual" : "auto", delta);
         }
-        setVisualSnapshot(dataUrl, ["Captured — vision failed"], isManual ? "manual" : "auto", delta);
       }
     } catch (e: any) {
       console.error("[Visual] Capture error:", e);

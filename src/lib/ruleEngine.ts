@@ -52,6 +52,30 @@ function evaluateCondition(condition: RuleCondition, ctx: RuleEngineContext): bo
       return ctx.viewerCount < (condition.value ?? 0);
     case "audio_energy_above":
       return ctx.audioEnergyRms > (condition.value ?? 0) / 100;
+    case "audio_energy_below":
+      return ctx.audioEnergyRms < (condition.value ?? 0) / 100;
+    case "time_of_day_after": {
+      const h = new Date().getHours();
+      return h >= (condition.hour ?? 0);
+    }
+    case "time_of_day_before": {
+      const h = new Date().getHours();
+      return h < (condition.hour ?? 24);
+    }
+    case "autoforge_is_enabled":
+      return ctx.autoForgeEnabled;
+    case "autoforge_is_disabled":
+      return !ctx.autoForgeEnabled;
+    case "mood_is":
+      return ctx.currentMood === condition.mood;
+    case "mood_is_not":
+      return ctx.currentMood !== condition.mood;
+    case "consecutive_silence_above":
+      return ctx.consecutiveSilence > (condition.value ?? 0);
+    case "active_bot_count_above":
+      return ctx.activeBotCount > (condition.value ?? 0);
+    case "active_bot_count_below":
+      return ctx.activeBotCount < (condition.value ?? 0);
     default:
       return false;
   }
@@ -155,9 +179,49 @@ async function executeAction(action: RuleAction, botId?: string): Promise<boolea
     }
 
     case "force_autoforge_check": {
-      window.dispatchEvent(new CustomEvent("autoforge-force-check"));
-      toast.info("Rule: forced AutoForge check");
+      // In multi-bot mode, target the bot whose tick fired the rule so
+      // only that bot checks (not every bot). In legacy mode, broadcast.
+      if (botId) {
+        window.dispatchEvent(new CustomEvent("autoforge-force-check", { detail: { botId } }));
+        toast.info(`Rule: forced AutoForge check (bot)`);
+      } else {
+        window.dispatchEvent(new CustomEvent("autoforge-force-check"));
+        toast.info("Rule: forced AutoForge check");
+      }
       return true;
+    }
+
+    case "toggle_autoforge": {
+      const enable = action.enabled ?? true;
+      state.setAutoForgeEnabled(enable);
+      toast.info(`Rule: AutoForge ${enable ? "enabled" : "disabled"}`, {
+        duration: 4000,
+      });
+      return true;
+    }
+
+    case "set_confidence_threshold": {
+      if (typeof action.confidenceThreshold === "number") {
+        state.setAutoForgeConfidenceThreshold(action.confidenceThreshold);
+        toast.info(`Rule: confidence threshold set to ${Math.round(action.confidenceThreshold * 100)}%`);
+        return true;
+      }
+      return false;
+    }
+
+    case "clear_mood_lock": {
+      state.setMoodLock(false, null);
+      toast.info("Rule: mood lock cleared");
+      return true;
+    }
+
+    case "set_length_preference": {
+      if (action.lengthPreference) {
+        state.updateConfig({ lengthPreference: action.lengthPreference });
+        toast.info(`Rule: length preference set to "${action.lengthPreference}"`);
+        return true;
+      }
+      return false;
     }
 
     default:
@@ -416,6 +480,101 @@ export const RULE_PRESETS: RulePreset[] = [
       ],
       cooldownMs: 600000,
       maxFires: 1,
+    },
+  },
+  {
+    name: "Late Night Stand Down",
+    description: "After 2am local time, turn AutoForge off and notify. Useful for letting the bot rest overnight.",
+    rule: {
+      name: "Late Night Stand Down",
+      description: "Disable AutoForge late at night",
+      enabled: true,
+      conditions: [
+        { id: "c1", type: "time_of_day_after", hour: 2 },
+        { id: "c2", type: "autoforge_is_enabled" },
+      ],
+      conditionOperator: "and",
+      actions: [
+        { id: "a1", type: "toggle_autoforge", enabled: false, delayMs: 0 },
+        { id: "a2", type: "notify_user", notification: "AutoForge disabled for the night.", delayMs: 500 },
+      ],
+      cooldownMs: 3600000,
+      maxFires: 0,
+    },
+  },
+  {
+    name: "Dead Chat Backoff",
+    description: "After 5 consecutive silence cycles, raise the confidence threshold so the bot waits for stronger moments before speaking.",
+    rule: {
+      name: "Dead Chat Backoff",
+      description: "Raise threshold during dead periods",
+      enabled: true,
+      conditions: [
+        { id: "c1", type: "consecutive_silence_above", value: 5 },
+      ],
+      conditionOperator: "and",
+      actions: [
+        { id: "a1", type: "set_confidence_threshold", confidenceThreshold: 0.7, delayMs: 0 },
+      ],
+      cooldownMs: 600000,
+      maxFires: 0,
+    },
+  },
+  {
+    name: "Toxic Mood Reset",
+    description: "When sentiment turns toxic, lock mood to calm. When it clears, release the lock automatically.",
+    rule: {
+      name: "Toxic Mood Reset",
+      description: "Clear mood lock when sentiment recovers",
+      enabled: true,
+      conditions: [
+        { id: "c1", type: "sentiment_is_not", sentimentLabel: "toxic" },
+        { id: "c2", type: "mood_is", mood: "calm" },
+      ],
+      conditionOperator: "and",
+      actions: [
+        { id: "a1", type: "clear_mood_lock", delayMs: 0 },
+      ],
+      cooldownMs: 120000,
+      maxFires: 0,
+    },
+  },
+  {
+    name: "Raid Mode",
+    description: "When viewer count spikes above 200 AND hype is high, switch to short messages and force an AutoForge check to react fast.",
+    rule: {
+      name: "Raid Mode",
+      description: "Short messages + immediate check on raid",
+      enabled: true,
+      conditions: [
+        { id: "c1", type: "viewer_count_above", value: 200 },
+        { id: "c2", type: "hype_level_above", value: 2 },
+      ],
+      conditionOperator: "and",
+      actions: [
+        { id: "a1", type: "set_length_preference", lengthPreference: "short", delayMs: 0 },
+        { id: "a2", type: "force_autoforge_check", delayMs: 1000 },
+      ],
+      cooldownMs: 300000,
+      maxFires: 0,
+    },
+  },
+  {
+    name: "Single Bot Guard",
+    description: "When only one bot is active, lower the confidence threshold so it speaks more freely. When more bots come online, the threshold resets.",
+    rule: {
+      name: "Single Bot Guard",
+      description: "Lower threshold for solo bot",
+      enabled: true,
+      conditions: [
+        { id: "c1", type: "active_bot_count_below", value: 2 },
+      ],
+      conditionOperator: "and",
+      actions: [
+        { id: "a1", type: "set_confidence_threshold", confidenceThreshold: 0.35, delayMs: 0 },
+      ],
+      cooldownMs: 600000,
+      maxFires: 0,
     },
   },
 ];

@@ -6,9 +6,10 @@ import { generateId } from "./lib/ids";
 import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
 import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
+import { removeBotRateLimiter } from "./lib/actionRateLimiter";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 19;
+const SETTINGS_VERSION = 20;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -221,6 +222,7 @@ function createDefaultBotRuntime(): BotRuntime {
     actionAccuracy: [],
     autoForgeEvents: [],
     lastAutoForgeDecision: null,
+    autoForgeDecisionHistory: [],
     autoForgeLastActionMs: null,
     autoForgeNextActionMs: 0,
     autoForgeFollowup: null,
@@ -270,6 +272,9 @@ interface AppState {
   setIsAutoForgeHUDOpen: (isOpen: boolean) => void;
   lastAutoForgeDecision: AutoForgeDecision | null;
   setLastAutoForgeDecision: (decision: AutoForgeDecision | null) => void;
+  // Bounded history of recent decisions (last ~20). Used by the Q hotkey
+  // to recover unsent messages from earlier cycles.
+  autoForgeDecisionHistory: AutoForgeDecision[];
 
   autoForgeFollowup: { message: string; deliveredAt: number } | null;
   setAutoForgeFollowup: (followup: { message: string; deliveredAt: number } | null) => void;
@@ -783,7 +788,13 @@ export const useAppStore = create<AppState>()(
       isAutoForgeHUDOpen: false,
       setIsAutoForgeHUDOpen: (isOpen) => set({ isAutoForgeHUDOpen: isOpen }),
       lastAutoForgeDecision: null,
-      setLastAutoForgeDecision: (decision) => set({ lastAutoForgeDecision: decision }),
+      autoForgeDecisionHistory: [],
+      setLastAutoForgeDecision: (decision) => set((state) => ({
+        lastAutoForgeDecision: decision,
+        autoForgeDecisionHistory: decision
+          ? [...state.autoForgeDecisionHistory, decision].slice(-20)
+          : state.autoForgeDecisionHistory,
+      })),
 
       autoForgeFollowup: null,
       setAutoForgeFollowup: (followup) => set({ autoForgeFollowup: followup }),
@@ -1795,6 +1806,7 @@ export const useAppStore = create<AppState>()(
               actionAccuracy: [...state.actionAccuracy],
               autoForgeEvents: [...state.autoForgeEventLog],
               lastAutoForgeDecision: state.lastAutoForgeDecision,
+              autoForgeDecisionHistory: [...state.autoForgeDecisionHistory],
               autoForgeLastActionMs: state.autoForgeLastActionMs,
               autoForgeNextActionMs: state.autoForgeNextActionMs,
               autoForgeFollowup: state.autoForgeFollowup,
@@ -1846,6 +1858,7 @@ export const useAppStore = create<AppState>()(
           actionAccuracy: [...state.actionAccuracy],
           autoForgeEvents: [...state.autoForgeEventLog],
           lastAutoForgeDecision: state.lastAutoForgeDecision,
+          autoForgeDecisionHistory: [...state.autoForgeDecisionHistory],
           autoForgeLastActionMs: state.autoForgeLastActionMs,
           autoForgeNextActionMs: state.autoForgeNextActionMs,
           autoForgeFollowup: state.autoForgeFollowup,
@@ -1900,6 +1913,7 @@ export const useAppStore = create<AppState>()(
             actionAccuracy: [...primary.runtime.actionAccuracy],
             autoForgeEventLog: [...primary.runtime.autoForgeEvents],
             lastAutoForgeDecision: primary.runtime.lastAutoForgeDecision,
+            autoForgeDecisionHistory: [...primary.runtime.autoForgeDecisionHistory],
             autoForgeLastActionMs: primary.runtime.autoForgeLastActionMs,
             autoForgeNextActionMs: primary.runtime.autoForgeNextActionMs,
             autoForgeFollowup: primary.runtime.autoForgeFollowup,
@@ -1966,6 +1980,8 @@ export const useAppStore = create<AppState>()(
           activeBotId: state.activeBotId === id ? (state.bots.find((b) => b.id !== id)?.id ?? null) : state.activeBotId,
         }));
         get().removeBotFromFirstMessageCohort(id);
+        // Clean up the per-bot rate limiter to prevent unbounded Map growth.
+        removeBotRateLimiter(id);
       },
       updateBotPersona: (id, updates) =>
         set((state) => ({
@@ -2058,7 +2074,13 @@ export const useAppStore = create<AppState>()(
         })),
       setBotLastAutoForgeDecision: (id, decision) =>
         set((state) => ({
-          bots: state.bots.map((b) => (b.id === id ? { ...b, runtime: { ...b.runtime, lastAutoForgeDecision: decision } } : b)),
+          bots: state.bots.map((b) => {
+            if (b.id !== id) return b;
+            const history = decision
+              ? [...b.runtime.autoForgeDecisionHistory, decision].slice(-20)
+              : b.runtime.autoForgeDecisionHistory;
+            return { ...b, runtime: { ...b.runtime, lastAutoForgeDecision: decision, autoForgeDecisionHistory: history } };
+          }),
         })),
       setBotAutoForgeLastActionMs: (id, ms) =>
         set((state) => ({
@@ -2487,6 +2509,22 @@ export const useAppStore = create<AppState>()(
         if (version < 19 && persistedState) {
           if (persistedState.autoForgeAutoCheckEnabled === undefined) {
             persistedState.autoForgeAutoCheckEnabled = true;
+          }
+        }
+        // v20: AutoForge decision history (bounded, last 20). Lets the Q
+        // hotkey recover unsent messages from earlier cycles, not just the
+        // most recent decision. Seed empty arrays for the legacy global field
+        // and every bot runtime.
+        if (version < 20 && persistedState) {
+          if (persistedState.autoForgeDecisionHistory === undefined) {
+            persistedState.autoForgeDecisionHistory = [];
+          }
+          if (Array.isArray(persistedState.bots)) {
+            persistedState.bots.forEach((b: any) => {
+              if (b?.runtime && b.runtime.autoForgeDecisionHistory === undefined) {
+                b.runtime.autoForgeDecisionHistory = [];
+              }
+            });
           }
         }
         return persistedState;

@@ -492,7 +492,7 @@ export default function App() {
     return manager.onStateChange((state) => setTmiSendState(state as any));
   }, [setTmiSendState, platform]);
 
-  // 5. Keyboard Shortcuts listener (Ctrl+K palette & hotkeys F, C, S, A, R, H)
+  // 5. Keyboard Shortcuts listener (Ctrl+K palette & hotkeys F, C, S, A, R, H, Q, W, E)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.repeat || e.isComposing) return;
@@ -620,6 +620,25 @@ export default function App() {
         s.setR34lEnabled(newVal);
         toast.success(`R34L mode is now ${newVal ? 'enabled' : 'disabled'}`);
         playSfx('theme_toggle');
+        return;
+      }
+
+      // Hotkey: Q = AutoForge decision history — previous (older) page
+      if (e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('autoforge-history-prev'));
+        return;
+      }
+      // Hotkey: W = Send the currently-viewed AutoForge decision page
+      if (e.key.toLowerCase() === 'w') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('autoforge-history-send'));
+        return;
+      }
+      // Hotkey: E = AutoForge decision history — next (newer) page
+      if (e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('autoforge-history-next'));
         return;
       }
     };

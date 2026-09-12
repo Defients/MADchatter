@@ -289,6 +289,10 @@ export function useAutoForge() {
           viewerCount,
           useAppStore.getState().audioEnergy?.rms ?? 0,
           now,
+          useAppStore.getState().autoForgeEnabled,
+          useAppStore.getState().moodLock.locked ? useAppStore.getState().moodLock.mood : null,
+          consecutiveSilenceRef.current,
+          useAppStore.getState().bots.filter((b) => b.active && b.session).length || 1,
         );
 
         const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx);
@@ -606,8 +610,12 @@ export function useAutoForge() {
             availableEmotes: useAppStore.getState().emoteAwarenessEnabled
               ? getAvailableEmoteNames(state.streamMetadata.channelName, 50)
               : undefined,
-            // AutoForge full_forge is background — must yield to manual Forge.
-            priority: "autonomous",
+            // AutoForge full_forge generates the actual message to send.
+            // Once the bot has decided to act, this must not be preempted by
+            // vision (interactive) — otherwise the bot decides to speak but
+            // the message is never sent. Use interactive priority so vision
+            // queues behind it; manual Forge (critical) can still preempt.
+            priority: "interactive",
           });
 
           // Stale channel guard: discard if the user switched streamers.

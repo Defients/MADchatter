@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useAppStore, selectMultiBotActive } from '../store';
 import type { Bot } from '../types';
-import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle, ChevronDown } from 'lucide-react';
+import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle, ChevronDown, Send } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx, playForceBurstSfx } from '../lib/sfx';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
+import { sendManualMessage } from '../lib/manualSend';
+import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { ThemedTooltip } from './ui/tooltip';
 
@@ -117,6 +119,7 @@ export function AutoForgeHUD() {
     isAutoForgeThinking,
     autoForgeAutoCheckEnabled,
     setAutoForgeAutoCheckEnabled,
+    autoForgeDecisionHistory,
   } = useAppStore();
   const multiBotActive = useAppStore(selectMultiBotActive);
 
@@ -125,6 +128,12 @@ export function AutoForgeHUD() {
   const [burstIntensity, setBurstIntensity] = useState(0);
   const [minimized, setMinimized] = useState(true);
   const [liteView, setLiteView] = useState(false);
+  // Decision history pagination. The HUD shows the most recent decision by
+  // default; Q/E page back/forward through the bounded history, W sends the
+  // currently-viewed page's payload if it was never delivered.
+  const [historyOffset, setHistoryOffset] = useState(0);
+  // Pulse the collapse button for 3s on initial HUD show to draw attention.
+  const [collapsePulse, setCollapsePulse] = useState(false);
 
   // Micro-check acceleration tracking: detect when the next-check timer is
   // shortened mid-cycle (activity spike, mention, manual cooldown) and flash
@@ -140,6 +149,15 @@ export function AutoForgeHUD() {
     if (!isAutoForgeHUDOpen) return;
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
+  }, [isAutoForgeHUDOpen]);
+
+  // Pulse the collapse/expand button for 3s when the HUD first opens so the
+  // user notices they can expand it for the full view.
+  useEffect(() => {
+    if (!isAutoForgeHUDOpen) return;
+    setCollapsePulse(true);
+    const t = setTimeout(() => setCollapsePulse(false), 1750);
+    return () => clearTimeout(t);
   }, [isAutoForgeHUDOpen]);
 
   useEffect(() => {
@@ -174,8 +192,11 @@ export function AutoForgeHUD() {
 
   // Most recent decision across bots (by timestamp), plus the bot that owns it
   // so the card can show who was chosen to speak and why.
+  // In multi-bot mode we merge every bot's decision history into one
+  // chronological list so Q/E can page across all bots.
   let effectiveDecision = lastAutoForgeDecision;
   let decisionBot: Bot | null = null;
+  let mergedHistory: { decision: NonNullable<typeof lastAutoForgeDecision>; bot: Bot | null }[] = [];
   if (multiBotActive && activeBots.length > 0) {
     let bestTs = -1;
     for (const b of activeBots) {
@@ -186,6 +207,29 @@ export function AutoForgeHUD() {
         effectiveDecision = d;
         decisionBot = b;
       }
+      for (const hd of b.runtime.autoForgeDecisionHistory) {
+        if (hd) mergedHistory.push({ decision: hd, bot: b });
+      }
+    }
+    mergedHistory.sort((a, b) => (a.decision.timestamp ?? 0) - (b.decision.timestamp ?? 0));
+  } else {
+    mergedHistory = (autoForgeDecisionHistory ?? []).map((d) => ({ decision: d, bot: null }));
+  }
+
+  // Apply the pagination offset. Offset 0 = most recent; higher = older.
+  // Clamp to the available range so a stale offset (e.g. after a bot was
+  // removed) can't run off the end.
+  const historyLen = mergedHistory.length;
+  const clampedOffset = Math.min(historyOffset, Math.max(0, historyLen - 1));
+  if (historyLen > 0 && clampedOffset !== historyOffset) {
+    setHistoryOffset(clampedOffset);
+  }
+  const viewingHistory = historyLen > 0 && clampedOffset > 0;
+  if (viewingHistory) {
+    const entry = mergedHistory[historyLen - 1 - clampedOffset];
+    if (entry) {
+      effectiveDecision = entry.decision;
+      decisionBot = entry.bot;
     }
   }
 
@@ -203,6 +247,59 @@ export function AutoForgeHUD() {
     }
     prevNextMsRef.current = effectiveNextActionMs;
   }, [effectiveNextActionMs]);
+
+  // Q/W/E decision-history navigation. Q = older, E = newer, W = send the
+  // currently-viewed page's payload if it was never delivered. App.tsx
+  // dispatches custom events on keydown; the HUD listens here.
+  useEffect(() => {
+    if (!isAutoForgeHUDOpen) return;
+    const onPrev = () => setHistoryOffset((o) => o + 1);
+    const onNext = () => setHistoryOffset((o) => Math.max(0, o - 1));
+    const onSend = () => {
+      const channel = useAppStore.getState().streamMetadata.channelName;
+      const payload = typeof effectiveDecision?.action_payload === "string"
+        ? effectiveDecision.action_payload
+        : "";
+      if (!channel) { toast.error("Set a channel before sending."); return; }
+      if (!payload) { toast.info("No message on this page to send."); return; }
+      if (effectiveDecision?.decision === "deliberate_silence" || effectiveDecision?.decision === "meta_observation") {
+        toast.info("This decision was a silence — nothing to send.");
+        return;
+      }
+      const sent = multiBotActive
+        ? (decisionBot?.runtime.sentMessages ?? [])
+        : useAppStore.getState().sentMessages;
+      if (sent.some((m) => m.message.toLowerCase().trim() === payload.toLowerCase().trim())) {
+        toast.info("This message was already sent.");
+        return;
+      }
+      setSendingPayload(true);
+      sendManualMessage({
+        message: payload,
+        channel,
+        botId: decisionBot?.id,
+        source: "manual",
+      })
+        .then(() => {
+          playSfx("forge_complete");
+          toast.success(`Sent${decisionBot ? ` as @${decisionBot.session?.username}` : ""}`, {
+            description: payload.slice(0, 60),
+          });
+        })
+        .catch((err: any) => {
+          toast.error("Send failed", { description: err?.message || String(err) });
+        })
+        .finally(() => setSendingPayload(false));
+    };
+    window.addEventListener("autoforge-history-prev", onPrev);
+    window.addEventListener("autoforge-history-next", onNext);
+    window.addEventListener("autoforge-history-send", onSend);
+    return () => {
+      window.removeEventListener("autoforge-history-prev", onPrev);
+      window.removeEventListener("autoforge-history-next", onNext);
+      window.removeEventListener("autoforge-history-send", onSend);
+    };
+  }, [isAutoForgeHUDOpen, effectiveDecision, decisionBot, multiBotActive]);
 
   if (!isAutoForgeHUDOpen) return null;
 
@@ -257,6 +354,22 @@ export function AutoForgeHUD() {
   const decisionPersonaFit = effectiveDecision?.personaFit;
   const decisionWasMentioned = effectiveDecision?.isMentioned === true;
   const decisionWasSent = decisionType !== 'None' && decisionType !== 'deliberate_silence' && decisionType !== 'meta_observation' && !!safeActionPayload;
+
+  // Check if the action_payload was actually sent. The heuristic above only
+  // checks that a decision was an action type — it doesn't verify the send
+  // happened. When a bot decides to act but gets preempted (vision, manual
+  // Forge) or queue-timed-out, the decision is stored but the message was
+  // never sent. Compare the payload against recent sent messages so we can
+  // show a "Send" button for unsent payloads.
+  const recentSentMessages = multiBotActive
+    ? (decisionBot?.runtime.sentMessages ?? [])
+    : useAppStore.getState().sentMessages;
+  const wasActuallySent = !!safeActionPayload && recentSentMessages.some(
+    (m) => m.message.toLowerCase().trim() === safeActionPayload.toLowerCase().trim(),
+  );
+  const showSendButton = decisionWasSent && !wasActuallySent;
+
+  const [sendingPayload, setSendingPayload] = useState(false);
   
   return (
     <motion.div
@@ -345,7 +458,10 @@ export function AutoForgeHUD() {
           <button 
             type="button"
             onClick={(e) => { e.stopPropagation(); setMinimized(!minimized); playSfx('panel_collapse'); }}
-            className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            className={cn(
+              "p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-colors",
+              collapsePulse && "forge-collapse-pulse",
+            )}
           >
             {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
           </button>
@@ -797,7 +913,38 @@ export function AutoForgeHUD() {
 
             {/* Last Decision Details */}
             <div className="flex flex-col">
-              <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase mb-2 ml-1">Previous Cycle Decision</span>
+              <div className="flex items-center justify-between mb-2 ml-1">
+                <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase">
+                  {viewingHistory ? "Decision History" : "Previous Cycle Decision"}
+                </span>
+                {historyLen > 0 && (
+                  <div className="flex items-center gap-1">
+                    <ThemedTooltip content="Older decision (Q)">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setHistoryOffset((o) => o + 1); }}
+                        disabled={clampedOffset >= historyLen - 1}
+                        className="p-0.5 rounded text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <ChevronDown className="w-3 h-3 rotate-90" />
+                      </button>
+                    </ThemedTooltip>
+                    <span className="text-[9px] text-gray-500 font-mono font-bold tabular-nums">
+                      {clampedOffset + 1}/{historyLen}
+                    </span>
+                    <ThemedTooltip content="Newer decision (E)">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setHistoryOffset((o) => Math.max(0, o - 1)); }}
+                        disabled={clampedOffset <= 0}
+                        className="p-0.5 rounded text-gray-400 hover:text-cyan-300 hover:bg-cyan-500/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <ChevronDown className="w-3 h-3 -rotate-90" />
+                      </button>
+                    </ThemedTooltip>
+                  </div>
+                )}
+              </div>
               
               <div className="flex flex-col p-2.5 bg-blue-500/10 border border-blue-500/20 rounded gap-2 relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-1 px-2 bg-blue-500/20 rounded-bl-lg">
@@ -806,8 +953,13 @@ export function AutoForgeHUD() {
                 <span className="text-[10px] font-mono text-blue-400 font-bold uppercase">{decisionType}</span>
                 {multiBotActive && decisionBotUsername && (
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-[9px] font-mono font-bold text-[#c79bff] bg-[#9146FF]/15 border border-[#9146FF]/30 rounded px-1.5 py-0.5">
-                      {decisionWasSent ? 'Sent by' : 'Decided by'} @{decisionBotUsername}
+                    <span className={cn(
+                      "text-[9px] font-mono font-bold rounded px-1.5 py-0.5 border",
+                      wasActuallySent
+                        ? "text-[#c79bff] bg-[#9146FF]/15 border-[#9146FF]/30"
+                        : "text-amber-300 bg-amber-500/10 border-amber-500/30",
+                    )}>
+                      {wasActuallySent ? 'Sent by' : 'Unsent ·'} @{decisionBotUsername}
                     </span>
                     {typeof decisionPersonaFit === 'number' && (
                       <ThemedTooltip content="How well this bot's persona fits the moment (0–100%). Mentioned bots get +30%.">
@@ -829,6 +981,61 @@ export function AutoForgeHUD() {
                   <div className="mt-1 p-2 bg-black/50 rounded border border-white/5 text-[10px] font-mono text-white break-words">
                     {effectiveDecision.action_payload}
                   </div>
+                )}
+
+                {/* Manual send button — shown when the bot decided to act but
+                    the message was never sent (preempted, queue timeout, lost
+                    floor, etc.). Lets the user salvage the decision. */}
+                {showSendButton && (
+                  <button
+                    type="button"
+                    disabled={sendingPayload}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (sendingPayload) return;
+                      setSendingPayload(true);
+                      try {
+                        const channel = useAppStore.getState().streamMetadata.channelName;
+                        if (!channel) {
+                          toast.error("Set a channel before sending.");
+                          return;
+                        }
+                        await sendManualMessage({
+                          message: safeActionPayload,
+                          channel,
+                          botId: decisionBot?.id,
+                          source: "manual",
+                        });
+                        playSfx("forge_complete");
+                        toast.success(`Sent${decisionBot ? ` as @${decisionBot.session?.username}` : ""}`, {
+                          description: safeActionPayload.slice(0, 60),
+                        });
+                      } catch (err: any) {
+                        toast.error("Send failed", { description: err?.message || String(err) });
+                      } finally {
+                        setSendingPayload(false);
+                      }
+                    }}
+                    className={cn(
+                      "mt-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded text-[10px] font-mono font-bold uppercase transition-colors border",
+                      sendingPayload
+                        ? "bg-white/5 border-white/10 text-gray-500 cursor-wait"
+                        : "bg-emerald-500/20 hover:bg-emerald-500/40 border-emerald-500/30 text-emerald-300 hover:text-emerald-200",
+                    )}
+                  >
+                    {sendingPayload ? (
+                      <>
+                        <span className="w-3 h-3 border border-emerald-400/40 border-t-emerald-300 rounded-full animate-spin" />
+                        Sending...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-3 h-3" />
+                        Send Now
+                        <kbd className="ml-1 text-[8px] font-mono bg-emerald-500/20 border border-emerald-500/30 rounded px-1 py-0.5 text-emerald-200/80">W</kbd>
+                      </>
+                    )}
+                  </button>
                 )}
               </div>
             </div>

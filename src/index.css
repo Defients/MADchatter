@@ -286,7 +286,8 @@
   .forge-waiting-pulse,
   .forge-btn-shimmer,
   .forge-btn-glow,
-  .forge-btn-active-pulse {
+  .forge-btn-active-pulse,
+  .forge-collapse-pulse {
     animation: none !important;
     transition: none !important;
   }
@@ -790,6 +791,14 @@
 }
 .forge-btn-active-pulse {
   animation: forge-btn-active-pulse 0.7s ease-in-out infinite;
+}
+
+@keyframes forge-collapse-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,211,238,0); color: rgb(156,163,175); }
+  50% { box-shadow: 0 0 12px 3px rgba(34,211,238,0.5); color: rgb(34,211,238); }
+}
+.forge-collapse-pulse {
+  animation: forge-collapse-pulse 0.9s ease-in-out infinite;
 }
 
 @keyframes visual-auto-pulse {

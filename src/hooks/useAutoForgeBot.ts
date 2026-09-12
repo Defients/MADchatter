@@ -12,7 +12,7 @@ import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetr
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
 import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/jokeEngine";
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
-import { actionRateLimiter } from "../lib/actionRateLimiter";
+import { getBotRateLimiter, syncBotRateLimiterConfig } from "../lib/actionRateLimiter";
 import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { getAvailableEmoteNames } from "../lib/emotes";
@@ -325,6 +325,10 @@ export function useAutoForgeBot(botId: string) {
           store.streamMetadata.viewerCount,
           store.audioEnergy?.rms ?? 0,
           now,
+          store.autoForgeEnabled,
+          store.moodLock.locked ? store.moodLock.mood : null,
+          consecutiveSilenceRef.current,
+          store.bots.filter((b) => b.active && b.session).length || 1,
         );
 
         const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx, botId);
@@ -345,16 +349,16 @@ export function useAutoForgeBot(botId: string) {
         }
       }
 
-      // ── Rate limit (shared action limiter) ────────────────────────────────
-      // Sync config from store so user-configured limits are applied. The
-      // legacy useAutoForge loop does this on every render; the per-bot loop
-      // must do it too so limits stay current when the legacy loop self-
-      // disables in multi-bot mode.
-      actionRateLimiter.updateConfig(store.rateLimitConfig);
-      actionRateLimiter.updatePerActionConfig(store.perActionRateLimits);
+      // ── Rate limit (per-bot limiter) ──────────────────────────────────────
+      // Each bot gets its own rate-limit tracking so bot A's sends don't
+      // count against bot B's quota. Config is synced from the store every
+      // cycle so user-configured limits apply uniformly. The legacy loop
+      // uses the shared singleton; the per-bot loop uses per-bot instances.
+      const botLimiter = getBotRateLimiter(botId);
+      syncBotRateLimiterConfig(botId, store.rateLimitConfig, store.perActionRateLimits);
 
-      if (!force && !actionRateLimiter.canAct()) {
-        const rateStats = actionRateLimiter.getStats();
+      if (!force && !botLimiter.canAct()) {
+        const rateStats = botLimiter.getStats();
         store.setBotAutoForgeNextActionMs(botId, Date.now() + Math.max(30000, rateStats.msUntilNextAllowed));
         return;
       }
@@ -549,7 +553,7 @@ export function useAutoForgeBot(botId: string) {
 
       if (decision.decision === "full_forge") {
         // C5: Per-action rate limit check for full_forge
-        if (!force && !actionRateLimiter.canAct("full_forge")) {
+        if (!force && !botLimiter.canAct("full_forge")) {
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "silence",
@@ -584,8 +588,12 @@ export function useAutoForgeBot(botId: string) {
               availableEmotes: store.emoteAwarenessEnabled
                 ? getAvailableEmoteNames(store.streamMetadata.channelName, 50)
                 : undefined,
-              // AutoForge full_forge is background — must yield to manual Forge.
-              priority: "autonomous",
+              // AutoForge full_forge generates the actual message to send.
+              // Once the bot has decided to act, this must not be preempted by
+              // vision (interactive) — otherwise the bot decides to speak but
+              // the message is never sent. Use interactive priority so vision
+              // queues behind it; manual Forge (critical) can still preempt.
+              priority: "interactive",
               firstMessageMode: isFirstMessage,
             });
 
@@ -653,7 +661,7 @@ export function useAutoForgeBot(botId: string) {
               const sendFn = getPlatformSendFn(store.platform, botId);
               const channel = store.streamMetadata.channelName;
               playSfx("autoforge_action");
-              actionRateLimiter.recordAction("full_forge");
+              botLimiter.recordAction("full_forge");
               store.incrementBotStat(botId, "autoForgeActions");
               store.incrementStat("autoForgeActions");
 
@@ -748,7 +756,7 @@ export function useAutoForgeBot(botId: string) {
           decision.action_payload.length * 65));
 
         // C5: Per-action rate limit check for quick_followup
-        if (!force && !actionRateLimiter.canAct("quick_followup")) {
+        if (!force && !botLimiter.canAct("quick_followup")) {
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "silence",
@@ -792,7 +800,7 @@ export function useAutoForgeBot(botId: string) {
 
           toast.info(`[${bot.session.username}] quick follow-up in ${(delayMs / 1000).toFixed(1)}s`, { description: decision.action_payload });
           playSfx("autoforge_action");
-          actionRateLimiter.recordAction("quick_followup");
+          botLimiter.recordAction("quick_followup");
           store.incrementBotStat(botId, "autoForgeActions");
           store.incrementStat("followupActions");
 
@@ -862,7 +870,7 @@ export function useAutoForgeBot(botId: string) {
       } else if (decision.decision !== "deliberate_silence" && decision.decision !== "meta_observation" && decision.action_payload) {
         // Direct-send path for short_reaction, emote_only, joke_callback, meta_observation
         // C5: Per-action rate limit check
-        if (!force && !actionRateLimiter.canAct(decision.decision)) {
+        if (!force && !botLimiter.canAct(decision.decision)) {
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
             type: "silence",
@@ -945,7 +953,7 @@ export function useAutoForgeBot(botId: string) {
           const sendFn = getPlatformSendFn(store.platform, botId);
           const channel = store.streamMetadata.channelName;
           playSfx("autoforge_action");
-          actionRateLimiter.recordAction(effectiveDecision);
+          botLimiter.recordAction(effectiveDecision);
           store.incrementBotStat(botId, "autoForgeActions");
           store.incrementStat("autoForgeActions");
 

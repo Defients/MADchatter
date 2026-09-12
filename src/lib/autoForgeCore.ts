@@ -155,6 +155,10 @@ export function buildRuleEngineContext(
   viewerCount: number,
   audioEnergyRms: number,
   now: number,
+  autoForgeEnabled: boolean,
+  currentMood: string | null,
+  consecutiveSilence: number,
+  activeBotCount: number,
 ): RuleEngineContext {
   const recentChatText = chatLog
     .slice(-30)
@@ -178,6 +182,10 @@ export function buildRuleEngineContext(
     uniqueChatters,
     viewerCount,
     audioEnergyRms,
+    autoForgeEnabled,
+    currentMood,
+    consecutiveSilence,
+    activeBotCount,
   };
 }
 

@@ -138,3 +138,38 @@ export class ActionRateLimiter {
 }
 
 export const actionRateLimiter = new ActionRateLimiter();
+
+// ─── Per-bot rate limiters (multi-bot mode) ─────────────────────────────────
+// In multi-bot mode, each bot needs its own rate-limit tracking so bot A's
+// sends don't count against bot B's quota. The global singleton remains
+// available for legacy single-bot mode. Both share the same config (synced
+// from the store on every check), so the user-configured limits apply
+// uniformly — only the timestamp tracking is per-bot.
+const botRateLimiters = new Map<string, ActionRateLimiter>();
+
+export function getBotRateLimiter(botId: string): ActionRateLimiter {
+  let limiter = botRateLimiters.get(botId);
+  if (!limiter) {
+    limiter = new ActionRateLimiter();
+    botRateLimiters.set(botId, limiter);
+  }
+  return limiter;
+}
+
+// Sync config from the store to every active per-bot limiter. Called once
+// per check cycle by useAutoForgeBot (mirrors the legacy loop's config sync).
+export function syncBotRateLimiterConfig(
+  botId: string,
+  config: ActionRateLimitConfig,
+  perActionConfig: Record<string, { maxPerHour: number; maxPerTenMinutes: number; cooldownMs: number }>,
+): void {
+  const limiter = getBotRateLimiter(botId);
+  limiter.updateConfig(config);
+  limiter.updatePerActionConfig(perActionConfig);
+}
+
+// Clean up per-bot limiters when a bot is removed. Prevents unbounded
+// growth of the Map over long sessions with bot churn.
+export function removeBotRateLimiter(botId: string): void {
+  botRateLimiters.delete(botId);
+}
