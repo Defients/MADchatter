@@ -39,7 +39,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 
 ### AI Request Scheduler (`src/lib/aiScheduler.ts`)
 - Centralized orchestrator: priority, preemption, real cancellation, telemetry, error taxonomy.
-- Priority: `critical` (manual Forge) > `interactive` (refine/vision/briefing) > `autonomous` (AutoForge/Smart Replies) > `background` (AutoMemory).
+- Priority: `critical` (manual Forge) > `interactive` (refine/briefing) > `autonomous` (AutoForge/Smart Replies/vision-on-Ollama) > `background` (AutoMemory). Vision is `interactive` on cloud providers (concurrent — preempts nothing) but `autonomous` on Ollama (single slot — competes fairly instead of starving AutoForge).
 - Ollama: single active slot with priority-based preemption. Cloud providers run concurrently.
 - Queued Ollama requests have a wait deadline (`enqueuedAt + (queueTimeoutMs ?? timeoutMs)`) — a hung active request cannot block the slot forever. `queueTimeoutMs` lets background ops wait out contention longer than their execution timeout.
 - Priority aging: a queued request is promoted one rank per 30s of wait when picking the next free slot (ties → oldest first). Prevents background ops (AutoMemory) from starving behind a steady stream of autonomous/interactive requests. Aging never preempts in-flight work.
@@ -48,7 +48,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `buildProviderRequestOptions("ollama")` adds `reasoning_effort: "none"` to prevent hidden GPU deliberation.
 - `getOperationTokenBudget()` scales output budgets by operation type and card count.
 - `getOperationTimeout()` gives each operation+provider pair an appropriate timeout.
-- Error taxonomy: `AIRequestTimeoutError` (with `queued` flag for queue-wait timeouts), `AIRequestPreemptedError`, `AIRequestCancelledError`. Use `isSchedulerCancellation()` for preemption/cancellation and `isQueueTimeout()` for queue-wait timeouts — both avoid poisoning provider health on intentional/capacity issues.
+- Error taxonomy: `AIRequestTimeoutError` (with `queued` flag for queue-wait timeouts), `AIRequestPreemptedError`, `AIRequestCancelledError`. Use `isSchedulerCancellation()` for preemption/cancellation and `isQueueTimeout()` for queue-wait timeouts — both avoid poisoning provider health on intentional/capacity issues. `SyntaxError` from `JSON.parse` (malformed model output) is also rethrown without `recordProviderFailure` — it's a model quality issue, not a provider health issue, so a smaller model producing occasional bad JSON no longer triggers the 3-failure → 5min cooldown cascade.
 - `getMetricsSummary()` / `getMetricsHistory()` for diagnostics.
 - Tests: `npx tsx src/lib/aiScheduler.test.ts` (41 deterministic tests).
 

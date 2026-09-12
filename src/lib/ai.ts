@@ -202,6 +202,9 @@ function repairTruncatedJson(str: string): string {
   if (s.startsWith("```")) {
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   }
+  // Fix leading commas after { or [ (e.g. "{,}" → "{}") — some models emit
+  // these when they intended to write a property but produced nothing.
+  s = s.replace(/([{,]\s*,)+/g, "$1").replace(/([{[]\s*,)+/g, "$1");
   // Track open structures, respecting string state and escapes.
   let inString = false;
   let escape = false;
@@ -653,7 +656,13 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
 
   let usage: TokenUsage | undefined;
   const visionTimeout = getOperationTimeout("vision", provider);
-  const visionPriority: AIRequestPriority = "interactive";
+  // On Ollama's single inference slot, vision at `interactive` would preempt
+  // every `autonomous` AutoForge decide — and vision fires on every frame
+  // change (~10-15s), each taking 13-17s. That starves AutoForge and AutoMemory.
+  // Lower vision to `autonomous` on Ollama so it competes fairly for the next
+  // free slot instead of always preempting. Cloud providers run concurrently,
+  // so they keep `interactive` (vision preempts nothing — it just starts).
+  const visionPriority: AIRequestPriority = provider === "ollama" ? "autonomous" : "interactive";
   const visionMaxTokens = getOperationTokenBudget("vision");
 
   if (provider === "gemini") {
@@ -1201,7 +1210,22 @@ DECIDE NOW.`;
 
       // Record success only after we have valid JSON — a malformed response
       // should not mark the provider as healthy
-      const result = JSON.parse(cleanJsonStr(generatedJsonStr));
+      let result: any;
+      try {
+        result = JSON.parse(cleanJsonStr(generatedJsonStr));
+      } catch (e) {
+        // Truncation/malformation fallback: attempt to repair the JSON so
+        // we can still surface the decision. Without this, a single bad
+        // response crashes the entire bot cycle.
+        const repaired = repairTruncatedJson(generatedJsonStr || "");
+        try {
+          result = JSON.parse(repaired);
+          console.warn("[autoforgeDecide] Model JSON was malformed — salvaged via repair. Original error:", (e as Error).message);
+        } catch (e2) {
+          console.warn("[autoforgeDecide] Failed to parse model JSON.", e, "\nRaw output:", generatedJsonStr?.slice(0, 500));
+          throw new Error("Model returned malformed JSON — the provider may be overloaded or the response was truncated.");
+        }
+      }
       // Sanitize: some models (especially smaller Ollama ones) return
       // action_payload as a nested object {decision, message_content} or use
       // `message_content` as the key name instead of `action_payload`. Both
@@ -1245,6 +1269,11 @@ DECIDE NOW.`;
       // don't poison provider health or trigger cooldown. Rethrow so the
       // caller can reschedule quietly (same as preemption).
       if (isQueueTimeout(e)) throw e;
+      // JSON parse errors: the provider successfully returned a response, but
+      // the model produced malformed JSON. This is a model quality issue, NOT
+      // a provider connectivity/health issue — don't poison provider health
+      // or trigger cooldown. Rethrow so the caller can reschedule.
+      if (e instanceof SyntaxError) throw e;
       recordProviderFailure(currentProvider);
       lastError = e;
       usedFallback = true;

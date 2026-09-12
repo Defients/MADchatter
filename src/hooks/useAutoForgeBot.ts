@@ -1185,11 +1185,10 @@ export function useAutoForgeBot(botId: string) {
     // Initial staggered start — each bot waits its offset before the first
     // tick, then settles into the regular 15s cadence.
     const staggerMs = computeStaggerMs();
+    let botInterval: ReturnType<typeof setInterval> | undefined;
     const startTimer = setTimeout(() => {
       tick();
-      const interval = setInterval(tick, 15000);
-      // Store the interval ref so cleanup can clear it.
-      (startTimer as any).__interval = interval;
+      botInterval = setInterval(tick, 15000);
     }, staggerMs);
 
     // Clean up expired smart replies every 10 seconds (mirrors legacy loop).
@@ -1218,8 +1217,7 @@ export function useAutoForgeBot(botId: string) {
 
     return () => {
       clearTimeout(startTimer);
-      const interval = (startTimer as any).__interval as ReturnType<typeof setInterval> | undefined;
-      if (interval) clearInterval(interval);
+      if (botInterval) clearInterval(botInterval);
       clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForce);
       if (followupTimerRef.current) {
