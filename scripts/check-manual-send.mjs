@@ -9,16 +9,16 @@ const bundle = await build({
   plugins: [{ name: 'fake-platform', setup(builder) {
     builder.onResolve({ filter: /^(\.\.\/store|\.\/platformSend)$/ }, ({ path }) => ({ path, namespace: 'fake' }));
     builder.onLoad({ filter: /.*/, namespace: 'fake' }, ({ path }) => ({ contents: path === '../store'
-      ? 'export const useAppStore = { getState: () => globalThis.__manualSendCheck.state };'
+      ? 'export const useAppStore = { getState: () => globalThis.__manualSendCheck.state }; export const selectMultiBotActive = () => false;'
       : 'export const getPlatformSendFn = (platform, botId) => (channel, message) => globalThis.__manualSendCheck.delivery({ platform, botId, channel, message });' }));
   } }],
 });
-const { sendManualMessage } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
-const methods = ['setLastManualSendMs', 'addBotSentMessage', 'incrementBotStat', 'addBotAutoForgeEvent', 'addSentMessage', 'incrementMessagesSent', 'incrementStat', 'addAutoForgeEvent'];
+const { sendManualMessage } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text + '\n//# sourceURL=manual-send-fixture.mjs').toString('base64')}`);
+const methods = ['setLastManualSendMs', 'addBotSentMessage', 'incrementBotStat', 'addBotAutoForgeEvent', 'addSentMessage', 'incrementMessagesSent', 'incrementStat', 'addAutoForgeEvent', 'setHasSentMessage'];
 let deliveries, calls;
 function reset(overrides = {}) {
   deliveries = []; calls = [];
-  fixture.state = { multiBotEnabled: false, platform: 'twitch', bots: [], manualSendBotId: 'stale', ...overrides };
+  fixture.state = { multiBotEnabled: false, platform: 'twitch', bots: [], manualSendBotId: 'stale', sessionRevision: 0, streamMetadata: { channelName: 'channel' }, hasSentMessage: true, ...overrides };
   for (const method of methods) fixture.state[method] = (...args) => calls.push([method, ...args]);
   fixture.delivery = async (value) => { deliveries.push(value); };
 }
@@ -81,5 +81,52 @@ assert.equal(calls.find(([name]) => name === 'addSentMessage')[1].source, 'autof
 assert.deepEqual(calls.find(([name]) => name === 'incrementStat').slice(1), ['autoForgeActions']);
 assert.ok(!calls.some(([name]) => name === 'setLastManualSendMs'));
 assert.equal(calls.at(-1)[1].details.source, 'autoforge');
+// A transport result from an earlier session must not contaminate current history.
+for (const change of [
+  () => { fixture.state = { ...fixture.state, streamMetadata: { channelName: 'other' } }; },
+  () => { fixture.state = { ...fixture.state, platform: 'kick' }; },
+  () => { fixture.state = { ...fixture.state, sessionRevision: 2 }; }, // A -> B -> A or context reset
+  () => { fixture.state = { ...fixture.state, multiBotEnabled: true }; },
+]) {
+  reset();
+  fixture.delivery = () => new Promise((resolve) => { finish = resolve; });
+  const oldSend = send();
+  change();
+  finish();
+  await oldSend;
+  assert.equal(calls.length, 0, 'stale completion does not update current session');
+}
+
+for (const change of [
+  () => { fixture.state.bots = []; },
+  () => { fixture.state.bots = [bot('chosen', 'twitch', false)]; },
+  () => { fixture.state.bots = [{ ...bot('chosen'), session: { username: 'replacement' } }]; },
+]) {
+  reset({ multiBotEnabled: true, bots: [bot('chosen')] });
+  fixture.delivery = () => new Promise((resolve) => { finish = resolve; });
+  const oldSend = send();
+  change();
+  finish();
+  await oldSend;
+  assert.equal(calls.length, 0, 'removed, inactive, or replaced bot receives no accounting');
+}
+
+reset({ hasSentMessage: false, autoForgeDryRun: true });
+await send();
+assert.ok(calls.some(([name]) => name === 'setHasSentMessage'), 'real manual send counts even when AutoForge is in dry run');
+
+reset({ hasSentMessage: false });
+await send({ dryRun: true });
+assert.equal(deliveries.length, 0);
+assert.ok(calls.some(([name]) => name === 'addSentMessage'));
+assert.ok(!calls.some(([name]) => ['setHasSentMessage', 'incrementMessagesSent', 'incrementStat', 'setLastManualSendMs'].includes(name)));
+
+reset();
+fixture.delivery = () => new Promise((resolve) => { finish = resolve; });
+const normalizedPending = send();
+await assert.rejects(send({ channel: '#CHANNEL' }), /already being sent/);
+finish();
+await normalizedPending;
+
 delete globalThis.__manualSendCheck;
-console.log('PASS: 9 manual-send regression scenarios (local fakes, zero network calls).');
+console.log('PASS: 19 manual-send regression scenarios (local fakes, zero network calls).');

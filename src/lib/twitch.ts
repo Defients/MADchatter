@@ -249,23 +249,13 @@ class SendGuard extends SendRateLimiter {
       throw new Error(`Message exceeds Twitch's 500-character limit (${message.length} chars). Trim it before sending.`);
     }
 
-    if (this.isDuplicate(message)) {
-      throw new Error("Duplicate message blocked — this exact message was sent within the last 60 seconds.");
-    }
-
-    // If rate limited, queue and wait
-    if (!this.canSendNow()) {
-      const waitMs = this.getWaitMs();
-      console.warn(`[SendGuard] Rate limit reached, waiting ${waitMs}ms before sending...`);
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
-
-    this.recordSend(message);
     // Auto-detect @username mentions and attach a reply tag if we have a
     // recent message ID from the mentioned user. This forces Twitch to
     // render the mention as clickable/special text instead of plain text.
-    const replyId = findReplyTargetFromMentions(message);
-    await this.doSend(channel, message, replyId ?? undefined);
+    await this.sendWithRateLimit(message, async () => {
+      const replyId = findReplyTargetFromMentions(message);
+      await this.doSend(channel, message, replyId ?? undefined);
+    });
   }
 }
 

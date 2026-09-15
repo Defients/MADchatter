@@ -19,10 +19,11 @@ Before considering a change complete, run:
 
 ```sh
 npm run lint
+npm test
 npm run build
 ```
 
-Both commands must exit successfully. `lint` is TypeScript checking only; there is no configured automated test runner. Browser externalization warnings from the Anthropic SDK, mixed dynamic/static import warnings, and large-chunk warnings are known build messages documented in [AGENTS.md](AGENTS.md).
+All three commands must exit successfully. `lint` is TypeScript checking only. `npm test` discovers the TypeScript regression suites and runs them in isolated processes, plus the channel-switch, manual-send, and platform-send integration harnesses. Each suite has a two-minute timeout; failures return a nonzero exit code and include diagnostic output. Platform delivery is replaced with local fakes in the integration harnesses. Browser externalization warnings from the Anthropic SDK, mixed dynamic/static import warnings, and large-chunk warnings are known build messages documented in [AGENTS.md](AGENTS.md).
 
 Manually verify the behavior you changed. For UI changes, check layout and interaction in the relevant desktop viewport. For platform or AutoForge changes, distinguish simulated or Dry Run behavior from authenticated delivery. Use a channel/account you are authorized to test, and state which provider/platform paths you actually exercised.
 

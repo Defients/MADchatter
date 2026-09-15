@@ -1,5 +1,6 @@
 import { useAppStore } from "../store";
 import { getPlatformSendFn } from "./platformSend";
+import { captureSessionScope, isSessionScopeCurrent, normalizeSessionChannel } from "./sessionScope";
 
 type ManualSendSource = "manual" | "smart_reply" | "autoforge";
 
@@ -20,6 +21,7 @@ export async function sendManualMessage({
   dryRun?: boolean;
 }): Promise<void> {
   const state = useAppStore.getState();
+  const scope = captureSessionScope();
   const text = message.trim();
   const destination = channel.trim();
   if (!text) throw new Error("Write a message before sending.");
@@ -40,7 +42,7 @@ export async function sendManualMessage({
   }
 
   // Covers double clicks and overlapping keyboard/card sends until delivery resolves.
-  const pendingKey = JSON.stringify([state.platform, destination, sentBot?.id, text, dryRun]);
+  const pendingKey = JSON.stringify([scope.revision, state.platform, normalizeSessionChannel(destination), sentBot?.id, text, dryRun]);
   if (pendingSends.has(pendingKey)) throw new Error("This message is already being sent.");
   pendingSends.add(pendingKey);
   try {
@@ -49,6 +51,14 @@ export async function sendManualMessage({
     if (!dryRun) {
       await getPlatformSendFn(state.platform, sentBot?.id)(destination, text);
     }
+    // Delivery may finish after navigation or an identity change. It cannot be
+    // undone, but its old history must never be written into the new session.
+    const current = useAppStore.getState();
+    const currentBot = sentBot && current.bots.find((bot) => bot.id === sentBot.id);
+    if (!isSessionScopeCurrent(scope) || current.multiBotEnabled !== state.multiBotEnabled ||
+      (sentBot && (!currentBot?.active || currentBot.platform !== sentBot.platform ||
+        currentBot.session?.username !== sentBot.session?.username ||
+        currentBot.session?.userId !== sentBot.session?.userId))) return;
     const timestamp = Date.now();
     if (source !== "autoforge" && !dryRun) state.setLastManualSendMs(timestamp);
     const event = {
@@ -77,7 +87,7 @@ export async function sendManualMessage({
     // Onboarding milestone: first successful send (not dry-run). Derived from
     // actual send success, not button click — if the platform rejects, auth
     // is expired, or the request fails, the throw above prevents this.
-    if (!state.autoForgeDryRun && !state.hasSentMessage && !dryRun) {
+    if (!current.hasSentMessage && !dryRun) {
       state.setHasSentMessage(true);
     }
   } finally {

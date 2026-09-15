@@ -274,14 +274,10 @@ class JoystickSendManager extends SendRateLimiter {
       throw new Error(`Message exceeds Joystick's 500-character limit (${message.length} chars). Shorten your message and try again.`);
     }
 
-    if (this.isDuplicate(message)) {
-      throw new Error("Duplicate message blocked — this exact message was sent within the last 60 seconds. Modify the message and try again.");
-    }
+    return this.sendWithRateLimit(message, () => this.deliver(message, chatClient));
+  }
 
-    if (!this.canSendNow()) {
-      const waitMs = this.getWaitMs();
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
+  private async deliver(message: string, chatClient: JoystickChatClient | null): Promise<void> {
 
     if (!chatClient) {
       throw new Error("Joystick chat client not connected. Wait for the WebSocket to connect before sending.");
@@ -295,7 +291,6 @@ class JoystickSendManager extends SendRateLimiter {
       throw new Error("Failed to send message via Joystick WebSocket. Ensure the connection is active and channelId is resolved.");
     }
 
-    this.recordSend(message);
     this.setState("connected");
   }
 }

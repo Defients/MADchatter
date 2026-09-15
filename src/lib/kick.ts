@@ -404,15 +404,10 @@ class KickSendManager extends SendRateLimiter {
       throw new Error(`Message exceeds Kick's 500-character limit (${message.length} chars). Shorten your message and try again.`);
     }
 
-    if (this.isDuplicate(message)) {
-      throw new Error('Duplicate message blocked — this exact message was sent within the last 60 seconds. Modify the message and try again.');
-    }
+    return this.sendWithRateLimit(message, () => this.deliver(channel, message));
+  }
 
-    if (!this.canSendNow()) {
-      const waitMs = this.getWaitMs();
-      console.warn(`[Kick Send] Rate limit reached (${this.maxPerWindow}/${this.windowMs / 1000}s), waiting ${waitMs}ms...`);
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
+  private async deliver(channel: string, message: string): Promise<void> {
 
     // Ensure we have a valid session (auto-refresh if token is expired)
     let session = await this.ensureValid();
@@ -519,7 +514,6 @@ class KickSendManager extends SendRateLimiter {
         throw new Error(`Kick API error ${res.status}: ${errText}`);
       }
 
-      this.recordSend(message);
       this.setState('connected');
       console.log('[Kick Send] Message sent successfully to', channel);
     } catch (err) {

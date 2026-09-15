@@ -4,6 +4,21 @@ All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD f
 
 ## [Unreleased] — 2026-09-15
 
+### Fixed — Ordered delivery and reliable retry accounting
+- Twitch, Kick, and Joystick now share ordered, per-manager rate-limit admission. Concurrent sends cannot all pass the same capacity check or wake from a rate-limit wait and burst past the local allowance. Each bot's existing manager remains independent.
+- Duplicate history is written only after transport success. Twitch failures no longer mark unsent messages as duplicates for 60 seconds. Concurrent duplicates are checked after the preceding send settles; failed sends release the queue and allow retry.
+- Failed logical send attempts consume local rate capacity to pace repeated failures. Kick's existing internal proxy fallback and token-refresh behavior is preserved. Duplicate rejection and oversized-message validation do not consume attempt capacity.
+- Fixed timestamp-zero duplicate detection and exact-boundary expiry; duplicate protection starts when delivery resolves.
+- Manual-send completion no longer writes old-session history, statistics, or events after channel/platform changes, session resets, multi-bot mode changes, or selected-bot removal/deactivation/identity replacement.
+- Pending manual sends normalize channel spelling (`#CHANNEL` and `channel`) and include the session revision in their lock key.
+- A real manual send now completes the onboarding Send milestone even when AutoForge's separate Dry Run preference is enabled. Explicit dry-run sends remain local and do not increment live-send statistics or the milestone.
+
+### Added — One-command regression verification
+- Added `npm test`: automatic TypeScript-suite discovery, isolated child processes, two-minute per-suite deadlines, complete failure summaries, and nonzero failure exit status. Channel-switch tests retain their existing bundled harness.
+- Added eight deterministic limiter scenarios and nine integration scenarios exercising the real Twitch/Kick/Joystick adapters with local transport fakes. Extended the manual-send harness from nine to nineteen scenarios and repaired its missing onboarding fixture method.
+- Added readable source names to bundled send-test stack traces. No additional dependencies, persisted fields, migration, or release-version change.
+- Updated contributor guidance and added `docs/DELIVERY_INTEGRITY_2026-09-15.md` with the project assessment, full patch notes, validation, and remaining delivery boundaries.
+
 ### Fixed — Bounded, bot-specific conversation context
 - Thread lookup for a specific bot now excludes other bots' marked messages, preventing their conversations from being labeled "You" in AutoForge context. Username matching is case-insensitive; lookup without a username still includes all marked bots.
 - Enforced the existing 200-message thread-cache limit on both incoming and outgoing messages. Eviction also removes the corresponding bot marker; standalone markers are capped while preserving the mark-before-record order used by the chat handler.

@@ -1,6 +1,6 @@
 /**
  * Shared rate-limiter + dedup base class used by Twitch, Kick, and Joystick send managers.
- * Provides sliding-window token bucket rate limiting and message deduplication.
+ * Provides ordered delivery, sliding-window attempt limits and success-only deduplication.
  */
 export class SendRateLimiter {
   protected sendTimestamps: number[] = [];
@@ -8,15 +8,40 @@ export class SendRateLimiter {
   protected maxPerWindow = 20;
   protected windowMs = 30_000;
   protected dedupMs = 60_000;
+  private sendTail: Promise<void> = Promise.resolve();
+
+  /** Serialize admission and delivery per account; a rejected send releases the queue. */
+  protected sendWithRateLimit(message: string, deliver: () => Promise<void>): Promise<void> {
+    const send = this.sendTail.then(async () => {
+      // Recheck after acquiring the slot: another queued send may have just succeeded.
+      if (this.isDuplicate(message)) {
+        throw new Error("Duplicate message blocked — this exact message was sent within the last 60 seconds. Modify the message and try again.");
+      }
+      while (!this.canSendNow()) {
+        await this.waitForCapacity(this.getWaitMs());
+      }
+      // Reserve capacity before awaiting transport. Failed attempts still consume
+      // capacity, but only successful delivery enters the duplicate cache.
+      this.sendTimestamps.push(Date.now());
+      await deliver();
+      this.recentMessages.set(message.trim().toLowerCase(), Date.now());
+    });
+    this.sendTail = send.catch(() => {});
+    return send;
+  }
+
+  protected waitForCapacity(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   /** Returns true if this message is a duplicate within the dedup window */
   protected isDuplicate(message: string): boolean {
     const now = Date.now();
     const key = message.trim().toLowerCase();
     const lastSent = this.recentMessages.get(key);
-    if (lastSent && now - lastSent < this.dedupMs) return true;
+    if (lastSent !== undefined && now - lastSent < this.dedupMs) return true;
     for (const [k, t] of this.recentMessages) {
-      if (now - t > this.dedupMs) this.recentMessages.delete(k);
+      if (now - t >= this.dedupMs) this.recentMessages.delete(k);
     }
     return false;
   }
@@ -34,12 +59,6 @@ export class SendRateLimiter {
     const oldest = this.sendTimestamps[0];
     const now = Date.now();
     return Math.max(0, this.windowMs - (now - oldest) + 50);
-  }
-
-  /** Record a successful send for rate-limiting and dedup tracking */
-  protected recordSend(message: string): void {
-    this.sendTimestamps.push(Date.now());
-    this.recentMessages.set(message.trim().toLowerCase(), Date.now());
   }
 
   /** Get current rate limit status for UI display */

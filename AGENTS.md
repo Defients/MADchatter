@@ -7,10 +7,16 @@ npm install          # install deps
 npm run dev          # start dev server (Vite)
 npm run build        # production build — must pass before committing
 npm run lint         # tsc --noEmit — type-check only, no emit
+npm test             # isolated regression suites + local send/channel harnesses
 npm run server       # run Express/OAuth backend (tsx server.ts)
 ```
 
 **Always run `npm run lint` and `npm run build` before considering work done.** Both must exit 0.
+
+Run `npm test` for regression verification. It discovers `src/**/*.test.ts`, runs
+each in a separate process, and routes channel-switch coverage through its bundled
+harness. Manual-send and platform-send harnesses use local delivery fakes. The
+runner reports every failing suite and returns nonzero on failures or timeouts.
 
 Known non-fatal Vite build warnings (safe to ignore):
 - `node:fs` / `node:path` externalized for browser (Anthropic SDK imports)
@@ -81,6 +87,9 @@ Known non-fatal Vite build warnings (safe to ignore):
 
 ### Send Path (`src/lib/platformSend.ts`)
 - `getPlatformSendFn(platform, botId?)` — returns a send function. `botId` omitted = legacy singleton; provided = per-bot identity with independent rate limiter.
+- `SendRateLimiter.sendWithRateLimit` serializes sends per manager, rechecks capacity after waits, reserves attempt capacity before delivery, and records duplicate history only after transport success. A rejected send releases the queue. Twitch, Kick, and Joystick all use this shared path; per-bot managers retain independent limits. Failed attempts consume capacity, and Kick's internal fallback/refresh requests remain within one logical send attempt.
+- `sendManualMessage` checks the captured session revision/platform/channel and selected bot identity before applying completion history, statistics, events, and onboarding. Stale completion is ignored locally; this does not cancel an already-started transport. Real manual sends count toward onboarding even when AutoForge Dry Run is enabled; explicit dry-run sends do not.
+- Focused checks: `node --import tsx src/lib/rateLimiter.test.ts`, `node scripts/check-manual-send.mjs`, `node scripts/check-platform-send.mjs`.
 
 ### Twitch Mention Rendering (`src/lib/twitch.ts`, `src/lib/twitchReplyCache.ts`)
 - Twitch's web chat only renders `@username` as a clickable, highlighted mention when the user is currently in the channel's chatters list. When a bot sends `@username` via IRC, users who aren't present (or other bots that haven't spoken recently) render as plain text.
