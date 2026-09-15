@@ -236,16 +236,28 @@ export interface AutoCheckWindow {
  * Progress toward the next evaluation, used to drive the CORE countdown bar.
  * Derived from a timestamp the loops already maintain — the bar itself is a
  * pure CSS animation, so nothing here runs per frame.
+ *
+ * `nextActionMs` is the model-driven pacing floor (`autoForgeNextActionMs`).
+ * The actual next check is `max(lastCheckAt + floorMs, nextActionMs)` — the
+ * cadence is the user's maximum frequency, but the model can pace slower.
+ * Without this, the countdown reaches 0 and sits at "Checking shortly…"
+ * for minutes while the model pacing gate blocks the cadence gate from
+ * running.
  */
 export function computeAutoCheckWindow(
-  args: { mode: AutoCheckMode; intervalMs: number; lastCheckAt: number; now: number },
+  args: { mode: AutoCheckMode; intervalMs: number; lastCheckAt: number; now: number; nextActionMs?: number },
 ): AutoCheckWindow {
   const floorMs = resolveAutoCheckFloorMs(args.mode, args.intervalMs);
   const last = args.lastCheckAt;
   const elapsed = typeof last === "number" && Number.isFinite(last) && last > 0 && last <= args.now
     ? args.now - last
     : 0;
-  const dueInMs = Math.max(0, floorMs - elapsed);
+  // Cadence due time: lastCheck + floor. Model pacing due time: nextActionMs.
+  // The actual next check is the LATER of the two — whichever gate opens last.
+  const cadenceDueMs = last > 0 ? last + floorMs : 0;
+  const modelDueMs = typeof args.nextActionMs === "number" && args.nextActionMs > 0 ? args.nextActionMs : 0;
+  const effectiveDueMs = Math.max(cadenceDueMs, modelDueMs);
+  const dueInMs = effectiveDueMs > 0 ? Math.max(0, effectiveDueMs - args.now) : floorMs;
   return {
     elapsedMs: elapsed,
     dueInMs,

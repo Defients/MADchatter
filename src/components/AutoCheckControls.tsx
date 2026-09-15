@@ -52,6 +52,12 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
   const lastCheckMs = useAppStore((s) => s.autoForgeLastCheckMs);
   const armed = useAppStore((s) => s.autoForgeCheckArmed);
   const checking = useAppStore((s) => s.isAutoForgeThinking);
+  // Model pacing floor — the AI's "estimated next action" time. The cadence
+  // is the user's maximum frequency, but the model can pace slower. The
+  // countdown reflects whichever gate opens last, so it never reaches 0
+  // and sits at "Checking shortly…" for minutes while the model pacing
+  // blocks the cadence gate from running.
+  const nextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
 
   const normalizedMode = normalizeAutoCheckMode(mode);
   const isInterval = normalizedMode === "interval";
@@ -70,6 +76,7 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
     intervalMs,
     lastCheckAt: lastCheckMs,
     now,
+    nextActionMs,
   });
 
   const status = describeAutoCheckStatus({

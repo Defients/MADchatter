@@ -3053,6 +3053,15 @@ function AIProviderCompactPanel() {
 
 // ─── Core Readiness Strip (Activating/Operational) ────────────────────────
 
+// Next-check bar color: short = hot/green (about to fire), long = cool/red.
+// Mirrors AutoForgeHUD's nextCheckBarColor so the Core chip matches the HUD.
+function coreNextCheckBarColor(secs: number): string {
+  if (secs <= 10) return 'bg-emerald-500';
+  if (secs <= 30) return 'bg-yellow-500';
+  if (secs <= 90) return 'bg-orange-500';
+  return 'bg-red-500';
+}
+
 function CoreReadinessStrip(props: {
   readiness: ReturnType<typeof useCoreReadiness>;
   platform: Platform;
@@ -3076,6 +3085,51 @@ function CoreReadinessStrip(props: {
   // The active persona's icon data — lets the strip chip and expanded panel
   // show the persona's actual portrait (png/gif pair) instead of a text-only label.
   const activePersona = PERSONA_DATA.find((p) => p.value === props.config.primaryProfile);
+
+  // ── AutoForge cycle progress (thin bar under the AutoForge chip) ──────
+  // Mirrors the AutoForgeHUD's NEXT CHECK progress logic so the Core header
+  // shows the same cycle state at a glance: fills as the next check
+  // approaches, sweeps when processing, dims when paused/waiting.
+  const autoForgeNextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
+  const autoForgeLastActionMs = useAppStore((s) => s.autoForgeLastActionMs);
+  const autoForgeAutoCheckEnabled = useAppStore((s) => s.autoForgeAutoCheckEnabled);
+  const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
+  const bots = useAppStore((s) => s.bots);
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+
+  // In multi-bot mode the legacy global pacing fields are not updated (the
+  // legacy loop stands down). Derive next/last from per-bot runtimes so the
+  // bar stays accurate when multiple bots are running.
+  const activeBots = multiBotEnabled ? bots.filter((b) => b.active && b.session) : [];
+  const rawNext = multiBotEnabled
+    ? activeBots.reduce<number>((min, b) => Math.min(min, b.runtime.autoForgeNextActionMs), Infinity)
+    : (autoForgeNextActionMs ?? 0);
+  const effectiveNextActionMs = rawNext === Infinity ? 0 : rawNext;
+  const effectiveLastActionMs = multiBotEnabled
+    ? activeBots.reduce<number>((max, b) => Math.max(max, b.runtime.autoForgeLastActionMs ?? 0), 0)
+    : (autoForgeLastActionMs ?? 0);
+  const isProcessing = multiBotEnabled
+    ? activeBots.some((b) => b.runtime.isAutoForgeThinking)
+    : isAutoForgeThinking;
+
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!props.autoForgeEnabled) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [props.autoForgeEnabled]);
+
+  const nextCheckPaused = !autoForgeAutoCheckEnabled;
+  const timeUntilNext = effectiveNextActionMs
+    ? Math.max(0, Math.floor((effectiveNextActionMs - now) / 1000))
+    : 0;
+  const totalCycleMs = effectiveNextActionMs && effectiveLastActionMs
+    ? Math.max(1000, effectiveNextActionMs - effectiveLastActionMs)
+    : 0;
+  const elapsedMs = effectiveLastActionMs ? Math.max(0, now - effectiveLastActionMs) : 0;
+  const cyclePct = totalCycleMs ? Math.min(100, Math.round((elapsedMs / totalCycleMs) * 100)) : 0;
+  const isWaiting = !nextCheckPaused && !isProcessing && timeUntilNext === 0;
+  const showBar = props.autoForgeEnabled && (effectiveNextActionMs > 0 || isProcessing);
 
   const items: { key: string; label: string; detail: string; done: boolean; error: boolean; portrait?: { image: string; still: string } }[] = [
     {
@@ -3143,26 +3197,48 @@ function CoreReadinessStrip(props: {
           </button>
         ))}
 
-        {/* AutoForge status */}
-        <button
-          type="button"
-          onClick={() => props.setExpandedItem(props.expandedItem === "autoforge" ? null : "autoforge")}
-          aria-expanded={props.expandedItem === "autoforge"}
-          className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all",
-            props.autoForgeEnabled
-              ? props.autoForgeDryRun
-                ? "bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
-                : "bg-orange-500/10 border-orange-500/30 text-orange-300 hover:bg-orange-500/20"
-              : "bg-white/5 border-white/5 text-gray-500 hover:text-gray-400"
+        {/* AutoForge status — with a thin cycle progress bar hooked to
+            the bottom edge. Fills as the next check approaches, sweeps
+            cyan when processing, dims when paused/waiting. */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => props.setExpandedItem(props.expandedItem === "autoforge" ? null : "autoforge")}
+            aria-expanded={props.expandedItem === "autoforge"}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all",
+              props.autoForgeEnabled
+                ? props.autoForgeDryRun
+                  ? "bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+                  : "bg-orange-500/10 border-orange-500/30 text-orange-300 hover:bg-orange-500/20"
+                : "bg-white/5 border-white/5 text-gray-500 hover:text-gray-400"
+            )}
+          >
+            <Zap className="w-3 h-3" />
+            <span className="font-bold">AutoForge</span>
+            <span className="text-gray-500 hidden sm:inline">
+              · {props.autoForgeEnabled ? (props.autoForgeDryRun ? "Dry Run" : "On") : "Off"}
+            </span>
+          </button>
+          {/* Thin cycle progress bar spanning the bottom of the chip */}
+          {showBar && (
+            <div className="absolute bottom-0 left-0 right-0 h-0.5 rounded-b-md overflow-hidden pointer-events-none">
+              {isProcessing ? (
+                <div className="absolute inset-0 overflow-hidden">
+                  <div className="absolute inset-y-0 w-1/2 bg-cyan-500 forge-processing-bar" />
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    "h-full transition-all duration-1000 ease-linear",
+                    nextCheckPaused ? "bg-gray-600" : isWaiting ? "bg-gray-500" : coreNextCheckBarColor(timeUntilNext),
+                  )}
+                  style={{ width: nextCheckPaused ? "100%" : isWaiting ? "100%" : `${cyclePct}%` }}
+                />
+              )}
+            </div>
           )}
-        >
-          <Zap className="w-3 h-3" />
-          <span className="font-bold">AutoForge</span>
-          <span className="text-gray-500 hidden sm:inline">
-            · {props.autoForgeEnabled ? (props.autoForgeDryRun ? "Dry Run" : "On") : "Off"}
-          </span>
-        </button>
+        </div>
 
         {/* Multi-Bot badge — tappable: expands a read-only bot roster.
             Multi-bot management lives in Studio, but the engine keeps running
