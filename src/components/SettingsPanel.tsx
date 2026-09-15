@@ -733,6 +733,29 @@ export function SettingsPanel({
               />
             </div>
 
+            {/* Custom OpenAI-Compatible API Key Block — always visible so the
+                user can enter a Groq (or other OpenAI-compatible) key without
+                first selecting the Custom provider in the grid above. */}
+            <div className="bg-sky-500/[0.06] border border-sky-500/25 rounded-lg p-2.5 space-y-1.5">
+              <span className="text-[10px] font-bold text-sky-300 flex items-center gap-1.5">
+                <Key className="w-3 h-3 text-sky-400" />
+                Custom OpenAI API Key
+              </span>
+              <input
+                type="password"
+                value={keys.customOpenAIKey}
+                onChange={(e) => {
+                  setKeys((k) => ({ ...k, customOpenAIKey: e.target.value }));
+                  setConnResult(null);
+                }}
+                className="w-full bg-black/30 border border-sky-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-sky-500/50 text-white placeholder-gray-700 font-mono"
+                placeholder="Groq / OpenRouter / Cerebras / custom endpoint key…"
+              />
+              <p className="text-[9px] text-gray-500 leading-relaxed">
+                For the <span className="text-sky-300 font-semibold">Custom</span> provider (Groq, Cerebras, Together, self-hosted gateways). Select "Custom" above and set the Base URL + Model to use it.
+              </p>
+            </div>
+
             {/* Custom API Base URL Block */}
             <div className="bg-white/5 border border-white/10 rounded-lg p-2.5 space-y-1.5">
               <span className="text-[10px] font-bold text-gray-400 flex items-center gap-1.5">
@@ -752,19 +775,34 @@ export function SettingsPanel({
                 <p className="text-[9px] text-gray-500 font-sans leading-relaxed flex-1 min-w-0">
                   Optional. Defaults to OpenRouter. Set to your local endpoint (e.g., <code>http://localhost:11434/v1</code> for Ollama) if desired.
                 </p>
-                <ThemedTooltip content="Auto-fill with the default Ollama local endpoint">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setKeys((k) => ({ ...k, customBaseUrl: "http://localhost:11434/v1" }));
-                      addToast("Filled with Ollama local endpoint", "success");
-                    }}
-                    className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400/50 transition-colors"
-                  >
-                    <Wand2 className="w-3 h-3" />
-                    Ollama URL
-                  </button>
-                </ThemedTooltip>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <ThemedTooltip content="Auto-fill with the Groq OpenAI-compatible endpoint">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setKeys((k) => ({ ...k, customBaseUrl: "https://api.groq.com/openai/v1" }));
+                        addToast("Filled with Groq endpoint", "success");
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-sky-500/10 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider text-sky-300 hover:bg-sky-500/20 hover:border-sky-400/50 transition-colors"
+                    >
+                      <Wand2 className="w-3 h-3" />
+                      Groq URL
+                    </button>
+                  </ThemedTooltip>
+                  <ThemedTooltip content="Auto-fill with the default Ollama local endpoint">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setKeys((k) => ({ ...k, customBaseUrl: "http://localhost:11434/v1" }));
+                        addToast("Filled with Ollama local endpoint", "success");
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 hover:border-emerald-400/50 transition-colors"
+                    >
+                      <Wand2 className="w-3 h-3" />
+                      Ollama URL
+                    </button>
+                  </ThemedTooltip>
+                </div>
               </div>
             </div>
 
