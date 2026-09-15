@@ -78,6 +78,20 @@ function pruneExpired(): void {
   }
 }
 
+/** Enforce the advertised bound even when a busy channel never hits the TTL. */
+function enforceCapacity(): void {
+  while (messageMap.size > MAX_ENTRIES) {
+    const oldestId = messageMap.keys().next().value!;
+    messageMap.delete(oldestId);
+    botMessageIds.delete(oldestId);
+  }
+  // App.tsx marks bot IDs before recording their messages. Keep that ordering
+  // supported without allowing standalone markers to grow indefinitely.
+  while (botMessageIds.size > MAX_ENTRIES) {
+    botMessageIds.delete(botMessageIds.values().next().value!);
+  }
+}
+
 /**
  * Record an incoming Twitch message with its reply-parent tag (if any).
  * Called from App.tsx's `client.on('message')` handler.
@@ -111,6 +125,7 @@ export function recordIncomingMessage(
     parentId,
     parentUsername,
   });
+  enforceCapacity();
 }
 
 /**
@@ -143,6 +158,7 @@ export function recordBotMessage(
     parentId: null,
     parentUsername: null,
   });
+  enforceCapacity();
 }
 
 /**
@@ -151,7 +167,9 @@ export function recordBotMessage(
  * know the ID from the send path). This lets us identify thread roots.
  */
 export function markAsBotMessage(id: string): void {
-  if (id) botMessageIds.add(id);
+  if (!id) return;
+  botMessageIds.add(id);
+  enforceCapacity();
 }
 
 /**
@@ -207,13 +225,15 @@ export function getActiveThreads(botUsername?: string): ActiveThread[] {
   const now = Date.now();
   const threads: ActiveThread[] = [];
 
-  // Find thread roots: either messages marked as bot messages, or messages
-  // from the bot's username.
+  // An explicit identity must constrain marked roots too: otherwise another
+  // bot's conversation is presented as "You" in this bot's AI context.
+  const normalizedBotUsername = botUsername?.toLowerCase();
   const rootIds = new Set<string>();
   for (const [id, msg] of messageMap) {
+    if (normalizedBotUsername && msg.username !== normalizedBotUsername) continue;
     if (botMessageIds.has(id)) {
       rootIds.add(id);
-    } else if (botUsername && msg.username === botUsername && msg.parentId === null) {
+    } else if (normalizedBotUsername && msg.parentId === null) {
       rootIds.add(id);
     }
   }

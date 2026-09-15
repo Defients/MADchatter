@@ -2,7 +2,13 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
-## [Unreleased] — 2026-09-13
+## [Unreleased] — 2026-09-15
+
+### Fixed — Bounded, bot-specific conversation context
+- Thread lookup for a specific bot now excludes other bots' marked messages, preventing their conversations from being labeled "You" in AutoForge context. Username matching is case-insensitive; lookup without a username still includes all marked bots.
+- Enforced the existing 200-message thread-cache limit on both incoming and outgoing messages. Eviction also removes the corresponding bot marker; standalone markers are capped while preserving the mark-before-record order used by the chat handler.
+- Added eight deterministic conversation-thread regression scenarios covering identity isolation, nested replies, burst capacity, marker cleanup, expiry, channel switches, and broken/cyclic chains. Five failed before the repair; all eight pass after it.
+- Added `docs/ENHANCEMENT_REVIEW_2026-09-15.md` with scope, evidence, validation, and deferred follow-ups. No new features, public API changes, dependencies, or persistence migration.
 
 ### Fixed — Core readiness reflects the current session
 - The selected AI provider must have its own required configuration and be outside cooldown. A previous successful Forge or a key stored for another provider no longer marks it ready.

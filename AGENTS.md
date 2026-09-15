@@ -127,6 +127,8 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Twitch-only reply-thread tracker (Kick/Joystick don't support IRC reply tags).
 - Captures `reply-parent-msg-id` from incoming Twitch messages (App.tsx message handler) and records bot message IDs (when `self=true`).
 - Bounded map: 200 entries, 10-min TTL, pruned on every insert. Cleared on channel switch (`setThreadChannel`).
+- Capacity is enforced on incoming/outgoing insertion and bot marking; message eviction removes its bot marker. An explicit bot username filters all roots, including marked roots, case-insensitively. Omitting the username retains the all-marked-bots lookup.
+- Regression checks: `npx tsx --test src/lib/conversationThread.test.ts` (identity isolation, capacity, expiry, channel changes, and reply chains).
 - `getActiveThreads(botUsername)` — returns threads rooted at the bot's messages with recent reply activity (5-min window).
 - `formatThreadContext(botUsername)` — formats active threads into a compact `[ACTIVE CONVERSATION THREADS]` prompt block.
 - Both AutoForge loops (`useAutoForge`, `useAutoForgeBot`) inject `formatThreadContext()` into `autoforgeDecide` via the `threadContext` param so the bot knows when it's being replied to.
@@ -201,7 +203,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 - **R34L** — never add cringe tokens (`lol`, `tbh`, `ngl`, `lmao`, `fr`, `lowkey`, `istg`, `frfr`) to slang lexicon, punctuation signals, or softener examples. The fixed prompt explicitly bans them as trailing closers.
 - **Persistence** — new persisted fields require a `SETTINGS_VERSION` bump + migration step in `store.ts`.
 - **Build warnings** — `node:fs`/`node:path` externalization and chunk-size warnings are expected; do not attempt to fix them.
-- **No test runner** — `npm run lint` (tsc) is the only automated quality gate. Verify manually after changes.
+- **Tests** — focused TypeScript harnesses live alongside the source and run with `npx tsx`; the conversation-thread suite uses `npx tsx --test src/lib/conversationThread.test.ts`. Run relevant regressions plus both required gates (`npm run lint` and `npm run build`); manually verify affected UI flows.
 
 ## Key File Map
 
