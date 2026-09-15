@@ -20,7 +20,7 @@
  * existing/default configuration.
  */
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Bot,
@@ -40,6 +40,7 @@ import { useAppStore } from "../store";
 import { useCoreReadiness, type CoreStage } from "../hooks/useCoreReadiness";
 import { getActiveProvider, getKeys, hasAnyApiKey } from "../lib/keys";
 import { checkOllamaHealth, getCachedOllamaHealth, type OllamaHealthState } from "../lib/ollamaHealth";
+import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
@@ -127,22 +128,6 @@ function useOllamaDetection(): OllamaDetection {
 }
 
 // ─── Provider summary ─────────────────────────────────────────────────────
-
-function getProviderSummary(): { label: string; model: string; isLocal: boolean; configured: boolean } {
-  const provider = getActiveProvider();
-  const keys = getKeys();
-
-  if (provider === "ollama") {
-    const model = keys.customModel || "no model";
-    const configured = !!keys.customBaseUrl && !!keys.customModel;
-    return { label: "Ollama", model, isLocal: true, configured };
-  }
-  if (provider === "gemini") return { label: "Gemini", model: "gemini-pro", isLocal: false, configured: !!keys.geminiKey };
-  if (provider === "openai") return { label: "OpenAI", model: "gpt-4o", isLocal: false, configured: !!keys.chatGptKey };
-  if (provider === "claude") return { label: "Claude", model: "claude", isLocal: false, configured: !!keys.claudeKey };
-  if (provider === "openrouter") return { label: "OpenRouter", model: "auto", isLocal: false, configured: !!keys.openRouterKey };
-  return { label: provider, model: "", isLocal: false, configured: false };
-}
 
 // ─── Stage indicator ──────────────────────────────────────────────────────
 
@@ -239,7 +224,7 @@ export function CoreLaunchpad() {
     }
   }, [readiness.operational, activationCelebrated, setActivationCelebrated]);
 
-  const providerSummary = useMemo(() => getProviderSummary(), [readiness.aiReady]);
+  const providerSummary = getProviderSummary();
 
   const stageItems: { key: CoreStage; label: string; done: boolean; detail: string }[] = [
     {
@@ -421,7 +406,7 @@ export function CoreTuningControls() {
   const readiness = useCoreReadiness();
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const providerSummary = useMemo(() => getProviderSummary(), []);
+  const providerSummary = getProviderSummary();
 
   const handleForge = () => {
     if (isForging) return;

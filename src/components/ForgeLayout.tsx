@@ -942,6 +942,7 @@ export function ForgeLayout() {
   };
 
   const commitChannel = async () => {
+    if (isSwitchingRef.current) return;
     const trimmed = channelInput.trim().replace(/^@/, "");
     if (!trimmed) {
       setEditingChannel(false);
@@ -961,6 +962,11 @@ export function ForgeLayout() {
       if (switched) {
         toast.success(`Switched to @${trimmed}`);
       }
+    } catch (error) {
+      toast.error("Could not switch channel", {
+        description: error instanceof Error ? error.message : "Please try again.",
+      });
+      return;
     } finally {
       isSwitchingRef.current = false;
     }

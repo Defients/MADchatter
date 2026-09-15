@@ -57,6 +57,7 @@ import { checkOllamaHealth, getCachedOllamaHealth, invalidateOllamaHealthCache }
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
+import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
 import { switchChannel } from "../lib/channelSwitch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { ThemedTooltip } from "./ui/tooltip";
@@ -86,21 +87,6 @@ interface CoreWorkspaceProps {
   // Visual auto-capture mode controls
   smartLevel: number;
   onCycleSmartLevel: () => void;
-}
-
-// ─── Provider summary helper ──────────────────────────────────────────────
-
-function getProviderSummary(): { label: string; model: string; configured: boolean } {
-  const provider = getActiveProvider();
-  const keys = getKeys();
-  if (provider === "ollama") {
-    return { label: "Ollama", model: keys.customModel || "no model", configured: !!keys.customBaseUrl && !!keys.customModel };
-  }
-  if (provider === "gemini") return { label: "Gemini", model: "gemini-pro", configured: !!keys.geminiKey };
-  if (provider === "openai") return { label: "OpenAI", model: "gpt-4o", configured: !!keys.chatGptKey };
-  if (provider === "claude") return { label: "Claude", model: "claude", configured: !!keys.claudeKey };
-  if (provider === "openrouter") return { label: "OpenRouter", model: "auto", configured: !!keys.openRouterKey };
-  return { label: provider, model: "", configured: false };
 }
 
 // ─── Core/Studio beautified toggle switch ─────────────────────────────────
@@ -207,6 +193,8 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
   // Live Context region: Stream + Chat share a height (resizable together)
   const [liveContextHeight, setLiveContextHeight] = useState(324);
   const [isResizingLiveContext, setIsResizingLiveContext] = useState(false);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => resizeCleanupRef.current?.(), []);
   const liveContextWide = useMediaQuery("(min-width: 1100px)");
   // Ultra-wide: 4-column layout (Audio | Stream | Chat | Visual)
   const liveContextUltraWide = useMediaQuery("(min-width: 1500px)");
@@ -223,6 +211,7 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
 
   const startLiveContextResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    resizeCleanupRef.current?.();
     setIsResizingLiveContext(true);
     const startY = e.clientY;
     const startH = liveContextHeight;
@@ -230,13 +219,20 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
       const delta = ev.clientY - startY;
       setLiveContextHeight(Math.max(160, Math.min(700, startH + delta)));
     };
-    const onUp = () => {
-      setIsResizingLiveContext(false);
+    const cleanup = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
+      resizeCleanupRef.current = null;
     };
+    const onUp = () => {
+      setIsResizingLiveContext(false);
+      cleanup();
+    };
+    resizeCleanupRef.current = cleanup;
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onUp);
   }, [liveContextHeight]);
 
   // Re-show stream embed when channel changes
@@ -569,8 +565,22 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                 {/* Resize handle for the Live Context region */}
                 <div
                   onMouseDown={startLiveContextResize}
+                  role="separator"
+                  aria-label="Live context height"
+                  aria-orientation="horizontal"
+                  aria-valuemin={160}
+                  aria-valuemax={700}
+                  aria-valuenow={liveContextHeight}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setLiveContextHeight((height) => e.key === "Home" ? 160 : e.key === "End" ? 700
+                      : Math.max(160, Math.min(700, height + (e.key === "ArrowDown" ? 20 : -20))));
+                  }}
                   className={cn(
-                    "shrink-0 h-2 cursor-ns-resize bg-white/[0.04] hover:bg-teal-500/50 transition-colors flex items-center justify-center group border-t border-teal-500/10 hover:border-teal-500/40 rounded-b-xl mx-auto w-full",
+                    "shrink-0 h-2 cursor-ns-resize bg-white/[0.04] hover:bg-teal-500/50 focus-visible:bg-teal-500/50 focus-visible:outline-2 focus-visible:outline-teal-400 transition-colors flex items-center justify-center group border-t border-teal-500/10 hover:border-teal-500/40 rounded-b-xl mx-auto w-full",
                     maxWidth
                   )}
                 >
@@ -836,11 +846,9 @@ function OllamaConfigFields() {
   );
 }
 
-// ─── AutoForge Setup Step (Step 5) ────────────────────────────────────────
-// Lite config overlay: enable AutoForge (dry-run OK), pick talk frequency,
-// set confidence threshold, toggle auto-check scheduling. User must enable
-// AutoForge to finish — dry-run counts as enabled so they can proceed without
-// sending real messages.
+// ─── AutoForge Setup Step (Step 6) ────────────────────────────────────────
+// Optional automation tuning. Finishing setup preserves the user's choice
+// to keep AutoForge off, preview with Dry Run, or enable live automation.
 
 const FREQ_PRESETS = [
   { id: "quiet", label: "Quiet", desc: "8/hr · 3/10min", maxActionsPerHour: 8, maxActionsPerTenMinutes: 3, minCooldownMs: 60_000 },
@@ -872,10 +880,8 @@ function AutoForgeSetupStep(props: {
       p.minCooldownMs === rateLimitConfig.minCooldownMs,
   );
 
-  const canFinish = props.autoForgeEnabled; // dry-run is OK
-
   const handleFinish = () => {
-    if (!canFinish) return;
+    // Automation is optional; finishing setup must also support manual sends.
     playSfx("welcome_dismiss");
     props.onComplete();
   };
@@ -896,7 +902,7 @@ function AutoForgeSetupStep(props: {
         </div>
         <h2 className="text-3xl font-bold text-gray-100 mb-2 tracking-tight">AutoForge — let the bot speak for itself</h2>
         <p className="text-sm text-gray-400">
-          MADchatter decides when to chime in. Enable it now — Dry Run is fine to start.
+          MADchatter can decide when to chime in. Try Dry Run, or finish setup with AutoForge off.
         </p>
       </div>
 
@@ -917,6 +923,8 @@ function AutoForgeSetupStep(props: {
                 borderColor: props.autoForgeEnabled ? "rgba(249,115,22,0.5)" : "rgba(255,255,255,0.1)",
               }}
               aria-label="Toggle AutoForge"
+              role="switch"
+              aria-checked={props.autoForgeEnabled}
             >
               <span className={cn(
                 "absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all",
@@ -926,7 +934,7 @@ function AutoForgeSetupStep(props: {
           </div>
           {!props.autoForgeEnabled && (
             <p className="text-[10px] text-gray-600">
-              Enable AutoForge to continue. You can use Dry Run to preview without sending.
+              AutoForge is optional. Keep it off for manual sends, or use Dry Run to preview its decisions.
             </p>
           )}
         </div>
@@ -942,6 +950,7 @@ function AutoForgeSetupStep(props: {
               <button
                 key={p.id}
                 type="button"
+                aria-pressed={activePreset?.id === p.id}
                 onClick={() => {
                   updateRateLimitConfig({
                     maxActionsPerHour: p.maxActionsPerHour,
@@ -980,6 +989,7 @@ function AutoForgeSetupStep(props: {
             min={0.3}
             max={0.8}
             step={0.05}
+            aria-label="AutoForge confidence threshold"
             value={autoForgeConfidenceThreshold}
             onChange={(e) => setAutoForgeConfidenceThreshold(parseFloat(e.target.value))}
             className="w-full accent-purple-500"
@@ -1009,6 +1019,9 @@ function AutoForgeSetupStep(props: {
           >
             <button
               type="button"
+              role="switch"
+              aria-checked={autoForgeDryRun}
+              aria-label="Dry Run"
               onClick={() => {
                 setAutoForgeDryRun(!autoForgeDryRun);
                 playSfx("welcome_dismiss");
@@ -1044,6 +1057,9 @@ function AutoForgeSetupStep(props: {
           {/* Auto-Check (right) */}
           <button
             type="button"
+            role="switch"
+            aria-checked={autoForgeAutoCheckEnabled}
+            aria-label="Auto-Check"
             onClick={() => {
               setAutoForgeAutoCheckEnabled(!autoForgeAutoCheckEnabled);
               playSfx("welcome_dismiss");
@@ -1079,20 +1095,12 @@ function AutoForgeSetupStep(props: {
         {/* Finish button */}
         <motion.button
           type="button"
-          whileHover={canFinish ? { scale: 1.02 } : undefined}
-          whileTap={canFinish ? { scale: 0.98 } : undefined}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
           onClick={handleFinish}
-          disabled={!canFinish}
-          className={cn(
-            "w-full py-3.5 rounded-xl font-bold text-sm transition-all",
-            canFinish
-              ? "bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-lg shadow-orange-500/20 hover:shadow-orange-500/40"
-              : "bg-white/5 border border-white/10 text-gray-600 cursor-not-allowed",
-          )}
+          className="w-full py-3.5 rounded-xl font-bold text-sm transition-all bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-lg shadow-orange-500/20 hover:shadow-orange-500/40"
         >
-          {canFinish
-            ? (autoForgeDryRun ? "Finish Setup (Dry Run)" : "Finish Setup")
-            : "Enable AutoForge to continue"}
+          {props.autoForgeEnabled && autoForgeDryRun ? "Finish Setup (Dry Run)" : "Finish Setup"}
         </motion.button>
       </div>
     </motion.div>
@@ -1129,7 +1137,7 @@ function CoreLaunchpadHero(props: {
   const authTick = useAppStore((s) => s.authTick);
   // getActiveProvider() reads localStorage — authTick re-runs this after
   // saveKeys/setActiveProvider so provider UI stays fresh.
-  const activeProvider = React.useMemo(() => getActiveProvider(), [authTick]);
+  const activeProvider = getActiveProvider();
   const [channelInput, setChannelInput] = useState(props.streamMetadata?.channelName || "");
   const channelInputRef = useRef<HTMLInputElement>(null);
   const ollamaState = useOllamaAutoDetect();
@@ -1138,7 +1146,7 @@ function CoreLaunchpadHero(props: {
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   // Persona step: user must click "Lock It In" to advance, not just select a persona
   const [personaStepDone, setPersonaStepDone] = useState(false);
-  // AutoForge step: user must enable AutoForge (dry-run OK) to finish setup
+  // Completing the optional automation step never requires enabling it.
   const [autoForgeStepDone, setAutoForgeStepDone] = useState(false);
   // Audio step (optional): user can skip or complete audio capture to advance
   const [audioStepDone, setAudioStepDone] = useState(false);
@@ -1206,9 +1214,8 @@ function CoreLaunchpadHero(props: {
     return () => window.removeEventListener("keydown", onKey);
   }, [readiness.phase, furthestStep]);
 
-  // After the first Forge completes AND AutoForge is configured (Step 5),
-  // mark persona as chosen → phase transitions to activating → TheForge
-  // takes over with the variant cards.
+  // Finish setup after the first Forge and review of optional automation.
+  // The persisted milestone then lets the regular workspace take over.
   useEffect(() => {
     if (hasForgedOnce && personaStepDone && autoForgeStepDone) {
       setPersonaChosen(true);
@@ -1247,15 +1254,12 @@ function CoreLaunchpadHero(props: {
       toast.error("Login first to connect a channel");
       return;
     }
-    const switched = await switchChannel(trimmed);
-    if (switched) {
+    try {
+      await switchChannel(trimmed);
       toast.success(`Watching @${trimmed}`);
       playSfx("memory_add");
-    } else {
-      // Same channel — just ensure metadata is set for first connection
-      props.updateStreamMetadata({ channelName: trimmed });
-      toast.success(`Watching @${trimmed}`);
-      playSfx("memory_add");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not switch channels. Please try again.");
     }
   };
 
@@ -1884,6 +1888,7 @@ function CoreLaunchpadHero(props: {
                   type="button"
                   onClick={() => reachable && setSetupStep(s.step)}
                   disabled={!reachable}
+                  aria-current={isCurrent ? "step" : undefined}
                   className={cn(
                     "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all",
                     s.done ? "text-emerald-300" : "text-gray-400",
@@ -2000,6 +2005,7 @@ function PersonalityGrid(props: { config: any; updateConfig: (c: any) => void; a
             >
               <motion.button
                 type="button"
+                aria-pressed={active}
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.98 }}
                 onClick={() => {
@@ -2386,23 +2392,32 @@ function ForgeTrayButton() {
 }
 
 // ─── Channel Edit Row (readiness strip → platform panel) ──────────────────
-// Lets the user change the watched channel after setup. Updates
-// streamMetadata.channelName, which tears down and reconnects the chat
-// client via the effect in App.tsx.
+// Uses the same archive/reset/restore flow as setup and Studio.
 
 function ChannelEditRow(props: {
   channelName: string;
-  onSave: (name: string) => void;
+  onSave: (name: string) => void | Promise<void>;
 }) {
   const [value, setValue] = useState(props.channelName);
-  const save = () => {
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  useEffect(() => setValue(props.channelName), [props.channelName]);
+  const save = async () => {
+    if (savingRef.current) return;
     const trimmed = value.trim().replace(/^#/, "");
     if (!trimmed) {
       toast.error("Enter a channel name");
       return;
     }
     if (trimmed === props.channelName) return;
-    props.onSave(trimmed);
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await props.onSave(trimmed);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   };
   return (
     <div className="flex gap-1">
@@ -2411,6 +2426,7 @@ function ChannelEditRow(props: {
         <input
           type="text"
           value={value}
+          disabled={saving}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
           placeholder="channel name"
@@ -2421,9 +2437,11 @@ function ChannelEditRow(props: {
       <button
         type="button"
         onClick={save}
+        disabled={saving}
+        aria-busy={saving}
         className="px-2.5 py-1.5 rounded bg-orange-500/20 border border-orange-500/30 text-orange-300 text-[10px] font-bold hover:bg-orange-500/30 transition-all"
       >
-        Set
+        {saving ? "Switching…" : "Set"}
       </button>
     </div>
   );
@@ -2463,7 +2481,7 @@ function CoreReadinessStrip(props: {
     {
       key: "ai",
       label: props.providerSummary.label,
-      detail: props.providerSummary.model || "Not configured",
+      detail: props.providerSummary.model || (props.providerSummary.configured ? "Configured" : "Not configured"),
       done: readiness.aiReady,
       error: readiness.aiError,
     },
@@ -2487,6 +2505,7 @@ function CoreReadinessStrip(props: {
             key={item.key}
             type="button"
             onClick={() => props.setExpandedItem(props.expandedItem === item.key ? null : item.key)}
+            aria-expanded={props.expandedItem === item.key}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all",
               item.error
@@ -2510,6 +2529,7 @@ function CoreReadinessStrip(props: {
         <button
           type="button"
           onClick={() => props.setExpandedItem(props.expandedItem === "autoforge" ? null : "autoforge")}
+          aria-expanded={props.expandedItem === "autoforge"}
           className={cn(
             "flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all",
             props.autoForgeEnabled
@@ -2579,10 +2599,15 @@ function CoreReadinessStrip(props: {
                         <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">Watching channel</div>
                         <ChannelEditRow
                           channelName={props.streamMetadata?.channelName || ""}
-                          onSave={(name) => {
-                            props.updateStreamMetadata({ channelName: name });
-                            toast.success(`Watching @${name}`);
-                            playSfx("memory_add");
+                          onSave={async (name) => {
+                            try {
+                              if (await switchChannel(name)) {
+                                toast.success(`Watching @${name}`);
+                                playSfx("memory_add");
+                              }
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : "Could not switch channels. Please try again.");
+                            }
                           }}
                         />
                       </div>
@@ -2595,7 +2620,7 @@ function CoreReadinessStrip(props: {
               {props.expandedItem === "ai" && (
                 <div className="space-y-2">
                   <div className="text-xs text-gray-400">
-                    {props.providerSummary.label} · {props.providerSummary.model}
+                    {props.providerSummary.label}{props.providerSummary.model ? ` · ${props.providerSummary.model}` : ""}
                   </div>
                   {getActiveProvider() === "ollama" && <OllamaConfigFields />}
                   <button
@@ -2614,6 +2639,7 @@ function CoreReadinessStrip(props: {
                       key={p}
                       type="button"
                       onClick={() => props.updateConfig({ primaryProfile: props.config.primaryProfile === p ? "none" : p })}
+                      aria-pressed={props.config.primaryProfile === p}
                       className={cn(
                         "py-1 rounded border text-[10px] font-bold transition-all",
                         props.config.primaryProfile === p
@@ -2632,6 +2658,9 @@ function CoreReadinessStrip(props: {
                     <span className="text-xs text-gray-400">Let MADchatter decide when to speak</span>
                     <button
                       type="button"
+                      role="switch"
+                      aria-checked={props.autoForgeEnabled}
+                      aria-label="AutoForge"
                       onClick={() => {
                         const newVal = !props.autoForgeEnabled;
                         useAppStore.getState().setAutoForgeEnabled(newVal);
@@ -2688,6 +2717,9 @@ function AutoForgeLiteControls() {
       {/* Master AutoForge enable */}
       <button
         type="button"
+        role="switch"
+        aria-checked={autoForgeEnabled}
+        aria-label="AutoForge"
         onClick={() => {
           const next = !autoForgeEnabled;
           useAppStore.getState().setAutoForgeEnabled(next);
@@ -2737,6 +2769,9 @@ function AutoForgeLiteControls() {
         >
           <button
             type="button"
+            role="switch"
+            aria-checked={autoForgeDryRun}
+            aria-label="Dry Run"
             onClick={() => {
               setAutoForgeDryRun(!autoForgeDryRun);
               playSfx("welcome_dismiss");
@@ -2772,6 +2807,9 @@ function AutoForgeLiteControls() {
         {/* Auto-Check (right) */}
         <button
           type="button"
+          role="switch"
+          aria-checked={autoForgeAutoCheckEnabled}
+          aria-label="Auto-Check"
           onClick={() => {
             setAutoForgeAutoCheckEnabled(!autoForgeAutoCheckEnabled);
             playSfx("welcome_dismiss");
@@ -2815,6 +2853,7 @@ function AutoForgeLiteControls() {
             <button
               key={p.id}
               type="button"
+              aria-pressed={activePreset?.id === p.id}
               onClick={() => {
                 updateRateLimitConfig({
                   maxActionsPerHour: p.maxActionsPerHour,
@@ -2853,7 +2892,8 @@ function AutoForgeLiteControls() {
           min={0.3}
           max={0.8}
           step={0.05}
-          value={autoForgeConfidenceThreshold}
+          aria-label="AutoForge confidence threshold"
+            value={autoForgeConfidenceThreshold}
           onChange={(e) => setAutoForgeConfidenceThreshold(parseFloat(e.target.value))}
           className="w-full accent-purple-500 h-1"
         />
@@ -2974,6 +3014,7 @@ function CoreUtilityDock(props: {
                   : "bg-white/5 border-white/5 text-gray-400 hover:text-gray-300 hover:bg-white/10"
               )}
               aria-label={`${item.label} widget`}
+              aria-expanded={active}
             >
               <span className={cn(item.active && !active && "text-teal-400")}>
                 {item.icon}
@@ -3003,6 +3044,7 @@ function CoreUtilityDock(props: {
             type="button"
             onClick={() => setSettingsOpen((o) => !o)}
             aria-label="Settings"
+            aria-expanded={settingsOpen}
             className={cn(
               "p-1.5 rounded-lg border transition-all",
               settingsOpen
@@ -3110,6 +3152,9 @@ function DockSettingsToggle(props: {
     <button
       type="button"
       onClick={props.onToggle}
+      role="switch"
+      aria-checked={props.value}
+      aria-label={props.label}
       className="w-full flex items-center justify-between text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
     >
       <div className="min-w-0 pr-2">
