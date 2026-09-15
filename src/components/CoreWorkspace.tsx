@@ -2621,8 +2621,13 @@ function PreviousCycleDecisionPanel() {
                     )}
                   </div>
 
-                  {/* Payload + Send button (dry-run gets a manual send option) */}
-                  {decision === "speak" && lastDecision.action_payload && (
+                  {/* Payload + Send button — shown for ANY payload-bearing
+                      decision (short_reaction, emote_only, joke_callback,
+                      meta_observation, quick_followup, speak, full_forge),
+                      not just "speak". Only silence decisions lack a payload.
+                      Dry-run / AutoForge-off surfaces a manual send so the
+                      proposed message isn't trapped in telemetry. */}
+                  {lastDecision.action_payload && (
                     <div className="pt-2 border-t border-white/5">
                       <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">Payload</div>
                       <div className="text-[11px] text-gray-300 italic leading-relaxed line-clamp-3">
