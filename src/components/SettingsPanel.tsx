@@ -16,6 +16,7 @@ import {
   Loader2,
   RefreshCw,
   Zap,
+  ScanEye,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { getKeys, saveKeys, getActiveProvider, setActiveProvider, getProviderWithKey, getApiKey, CUSTOM_OPENAI_PROVIDER } from "../lib/keys";
@@ -25,6 +26,8 @@ import { getKickClientId, setKickClientId } from "../lib/kick";
 import { getJoystickClientId, setJoystickClientId, getJoystickClientSecret, setJoystickClientSecret, getJoystickBotUsername, setJoystickBotUsername } from "../lib/joystick";
 import { playSfx } from "../lib/sfx";
 import { ThemedTooltip } from "./ui/tooltip";
+import { useAppStore } from "../store";
+import { checkOllamaHealth, invalidateOllamaHealthCache, type OllamaHealthResult } from "../lib/ollamaHealth";
 
 interface SettingsPanelProps {
   variant: "config" | "keys" | "full";
@@ -70,6 +73,18 @@ export function SettingsPanel({
   const [loadingModels, setLoadingModels] = useState(false);
   const [testingConn, setTestingConn] = useState(false);
   const [connResult, setConnResult] = useState<ConnectionTestResult | null>(null);
+
+  // Independent vision provider state (v26). Read from the store so the UI
+  // stays in sync with runtime changes. Vision config is a user preference
+  // (not a credential), so it lives in the persisted store — not in keys.ts.
+  const visionProvider = useAppStore((s) => s.visionProvider);
+  const visionOllamaBaseUrl = useAppStore((s) => s.visionOllamaBaseUrl);
+  const visionOllamaModel = useAppStore((s) => s.visionOllamaModel);
+  const setVisionProvider = useAppStore((s) => s.setVisionProvider);
+  const setVisionOllamaBaseUrl = useAppStore((s) => s.setVisionOllamaBaseUrl);
+  const setVisionOllamaModel = useAppStore((s) => s.setVisionOllamaModel);
+  const [visionHealth, setVisionHealth] = useState<OllamaHealthResult | null>(null);
+  const [visionChecking, setVisionChecking] = useState(false);
 
   const [devUsername, setDevUsername] = useState("");
   const [devToken, setDevToken] = useState("");
@@ -165,6 +180,35 @@ export function SettingsPanel({
       addToast(result.message, result.ok ? "success" : "error");
     } finally {
       setTestingConn(false);
+    }
+  };
+
+  // Test the independent Ollama vision endpoint + model. This checks that the
+  // endpoint is reachable and the model is listed — it does NOT verify image
+  // analysis works (a text-only model can pass this check). The status line
+  // distinguishes "ready" (model listed) from "model_unavailable" and
+  // "endpoint_unreachable" so the user gets actionable feedback. A full image
+  // analysis test happens on the first real capture.
+  const handleTestVisionModel = async () => {
+    const baseUrl = visionOllamaBaseUrl.trim();
+    const model = visionOllamaModel.trim();
+    if (!baseUrl || !model) {
+      setVisionHealth(null);
+      addToast("Set a base URL and model first", "error");
+      return;
+    }
+    setVisionChecking(true);
+    setVisionHealth(null);
+    invalidateOllamaHealthCache();
+    try {
+      const result = await checkOllamaHealth(baseUrl, model, true);
+      setVisionHealth(result);
+      addToast(
+        result.state === "ready" ? `Model "${model}" is available` : result.error || `Model "${model}" not found`,
+        result.state === "ready" ? "success" : "error",
+      );
+    } finally {
+      setVisionChecking(false);
     }
   };
 
@@ -422,6 +466,110 @@ export function SettingsPanel({
                 </div>
               </div>
             )}
+
+            {/* ─── Independent Vision Provider (v26) ────────────────────────── */}
+            <div className="bg-violet-500/[0.06] border border-violet-500/25 rounded-lg p-2.5 space-y-2.5">
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-violet-300 flex items-center gap-1.5">
+                  <ScanEye className="w-3 h-3 text-violet-400" />
+                  Vision Provider
+                </span>
+                <p className="text-[10px] text-gray-400 leading-relaxed">
+                  Route screenshot interpretation independently from text generation. Pick <span className="text-violet-300 font-semibold">Ollama</span> to analyze frames locally with an image-capable model while your text provider (e.g. Groq) handles the conversation. The screenshot is never sent to the text provider — only the textual observation is.
+                </p>
+              </div>
+
+              {/* Mode selector */}
+              <div className="flex gap-1.5">
+                {(["text", "ollama"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setVisionProvider(m)}
+                    className={cn(
+                      "flex-1 px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider border transition-colors",
+                      visionProvider === m
+                        ? "bg-violet-500/20 border-violet-400/50 text-violet-200"
+                        : "bg-white/5 border-white/10 text-gray-500 hover:bg-white/10",
+                    )}
+                  >
+                    {m === "text" ? "Use Text Provider" : "Ollama (Local)"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Ollama vision config — shown when Ollama is selected */}
+              {visionProvider === "ollama" && (
+                <div className="space-y-2.5 pt-1 border-t border-violet-500/15">
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Ollama Base URL</span>
+                    <input
+                      type="text"
+                      value={visionOllamaBaseUrl}
+                      onChange={(e) => setVisionOllamaBaseUrl(e.target.value)}
+                      className="w-full bg-black/30 border border-violet-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-violet-500/50 text-white placeholder-gray-700 font-mono"
+                      placeholder="http://localhost:11434/v1"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Vision Model (image-capable)</span>
+                    <input
+                      type="text"
+                      value={visionOllamaModel}
+                      onChange={(e) => setVisionOllamaModel(e.target.value)}
+                      className="w-full bg-black/30 border border-violet-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-violet-500/50 text-white placeholder-gray-700 font-mono"
+                      placeholder="llama3.2-vision:11b"
+                    />
+                    <p className="text-[9px] text-gray-500 leading-relaxed">
+                      Enter an image-capable model tag you've already pulled (<code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">ollama pull llama3.2-vision</code>). MADchatter does not download models or verify image support automatically — pick a vision model you know works.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={handleTestVisionModel}
+                      disabled={visionChecking || !visionOllamaBaseUrl.trim() || !visionOllamaModel.trim()}
+                      className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-violet-500/10 border border-violet-500/30 text-[10px] font-bold uppercase tracking-wider text-violet-300 hover:bg-violet-500/20 hover:border-violet-400/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {visionChecking ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                      Check Model Availability
+                    </button>
+                    {visionHealth && (
+                      <div className={cn(
+                        "flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10px] leading-relaxed",
+                        visionHealth.state === "ready"
+                          ? "bg-green-500/10 border border-green-500/25 text-green-300"
+                          : "bg-amber-500/10 border border-amber-500/25 text-amber-300",
+                      )}>
+                        {visionHealth.state === "ready"
+                          ? <Check className="w-3 h-3 mt-0.5 shrink-0" />
+                          : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />}
+                        <span>
+                          {visionHealth.state === "ready"
+                            ? `Model "${visionOllamaModel}" is listed. Image analysis is verified on the first capture.`
+                            : visionHealth.error || "Model not found or endpoint unreachable."}
+                        </span>
+                      </div>
+                    )}
+                    {!visionHealth && visionOllamaBaseUrl.trim() && visionOllamaModel.trim() && (
+                      <p className="text-[9px] text-gray-500 leading-relaxed">
+                        Configured but not yet verified. Click "Check Model Availability" or trigger a capture to confirm.
+                      </p>
+                    )}
+                    {!visionOllamaModel.trim() && (
+                      <p className="text-[9px] text-amber-300/80 leading-relaxed">
+                        Configuration incomplete — enter an image-capable model. Vision will fall back to the text provider until both fields are set.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+              {visionProvider === "text" && (
+                <p className="text-[9px] text-gray-500 leading-relaxed">
+                  Screenshots are analyzed by your active text provider (legacy behavior). Switch to Ollama to keep images local.
+                </p>
+              )}
+            </div>
 
             {/* Twitch Client ID Block */}
             <div className="bg-white/5 border border-white/10 rounded-lg p-2.5 space-y-1.5">

@@ -47,7 +47,7 @@ All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD f
 - Added 18 readiness scenarios and 14 mocked Ollama health scenarios, including different models/endpoints, out-of-order invalidation, forced refresh, cache expiry, malformed responses, and a stalled response body.
 - Added `docs/READINESS_REVIEW.md` with the inspected project state, scope, complete patch notes, verification, and prioritized follow-up work.
 - Local Chromium verification covers 11 browser scenarios/layout checks, with synthetic settings and external traffic blocked.
-- No persistence schema change or release version bump; these fixes continue the existing uncommitted v1.0.7 work.
+- No persistence schema change or release version bump; these fixes continue the existing uncommitted v1.0.8 work.
 
 ## [1.0.7] — 2026-09-13
 

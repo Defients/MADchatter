@@ -66,6 +66,21 @@ Known non-fatal Vite build warnings (safe to ignore):
 - States: `configured`, `connecting`, `ready`, `model_unavailable`, `endpoint_unreachable`.
 - `invalidateOllamaHealthCache()` — call when endpoint/model changes.
 
+### Independent Vision Provider (`src/lib/visionProvider.ts`, v26)
+- **Split-provider routing:** Text generation and screenshot interpretation can use different providers. The user picks a vision mode in Settings → Vision:
+  - `"text"` (default, backward-compatible) — vision flows through the active text provider exactly as before.
+  - `"ollama"` — screenshots are routed to a separately configured local Ollama endpoint + image-capable model. The text provider (e.g. Groq) never receives the raw image — only the textual observation.
+- **Centralized resolver:** `resolveVisionConfig()` is the single chokepoint. It returns `{ mode, provider, baseUrl, model, apiKey, independent, ollamaConfigured, prefersOllama }`. Every vision call site (`visionRequest`, `generateVisionContext`) routes through it. `isIndependentVisionActive()` gates the screenshot-stripping in `generateChat`.
+- **Degradation:** When the user picks `"ollama"` but hasn't set a model, `resolveVisionConfig()` degrades to `"text"` mode so vision keeps working through the text provider. `prefersOllama` stays true so the UI surfaces "configuration incomplete."
+- **No image leakage:** When `isIndependentVisionActive()` is true, `generateChat` strips `params.screenshot` before building the text request — the image is never attached, never retried text-only after a rejection, and never sent to a cloud fallback. The textual observation (`visualContext`) is the only visual signal the text provider receives.
+- **No text-config mutation:** Vision settings (`visionOllamaBaseUrl`, `visionOllamaModel`) are independent from text-provider Ollama config (`customBaseUrl`, `customModel` in `keys.ts`). Editing vision never overwrites Groq/legacy settings.
+- **Session isolation:** `visionConfigRevision` (runtime-only, not persisted) bumps on every vision config change. The setters also clear `visualContextTags` + `visualSnapshotUrl` so a superseded provider's observation is never presented as current. ForgeLayout's vision capture captures the revision before the async call and discards results from an older revision (in addition to the existing `captureSessionScope` channel guard).
+- **Scheduler isolation:** Vision requests are tagged `provider: "ollama"` when independent; text requests keep their own provider tag. A local vision failure never poisons cloud text-provider health (separate health tracking). Ollama's single-slot priority behavior applies to the vision Ollama endpoint independently.
+- **Multi-bot sharing:** Vision capture is single (ForgeLayout); the observation lives in the shared `visualContextTags`. Both AutoForge loops read the same state — multiple bots do NOT analyze the screenshot separately.
+- **Capability honesty:** The Settings "Check Model Availability" button verifies the endpoint is reachable and the model is listed (via `checkOllamaHealth`), but does NOT claim image analysis works — a text-only model can pass. The status line distinguishes "ready" (model listed) from "model_unavailable"/"endpoint_unreachable". Image analysis is verified on the first real capture. MADchatter never downloads models or hard-codes an unverified "recommended" vision model.
+- **Persistence (schema v26):** `visionProvider`, `visionOllamaBaseUrl`, `visionOllamaModel` persist via `partialize` + `exportSettings`/`importSettings`. `visionConfigRevision` is runtime-only (never persisted). Migration v26 defaults existing users to `"text"` (legacy behavior preserved).
+- Tests: `npx tsx src/lib/visionProvider.test.ts` (77 scenarios: routing, isolation, freshness, capability, no-image-to-text, persistence, multi-bot sharing).
+
 ### AutoForge Loops
 - Legacy: `useAutoForge()` — 15s interval, self-disables when `selectMultiBotActive` is true.
 - Per-bot: `useAutoForgeBot(botId)` — 15s interval per bot, requests speaker floor from `botCoordinator`. Intervals are staggered by bot index across the 15s window so they don't all fire at once and flood the single Ollama slot.
@@ -236,6 +251,8 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/lib/memoryRetrieval.test.ts` | Memory retrieval + director notes tests (run: `npx tsx src/lib/memoryRetrieval.test.ts`) |
 | `src/lib/botCoordinator.test.ts` | Bot coordinator tests (run: `npx tsx src/lib/botCoordinator.test.ts`) |
 | `src/lib/ollamaHealth.ts` | Ollama endpoint/model reachability check |
+| `src/lib/visionProvider.ts` | Independent vision provider resolver (text/ollama split routing) |
+| `src/lib/visionProvider.test.ts` | Vision provider tests (run: `npx tsx src/lib/visionProvider.test.ts`) |
 | `src/lib/prompts.ts` | System prompts (Forge, AutoForge, R34L, memory) |
 | `src/lib/keys.ts` | Provider keys, `openAiCompatEndpoint()` |
 | `src/lib/chatStyle.ts` | Chat style analysis for R34L adaptation |

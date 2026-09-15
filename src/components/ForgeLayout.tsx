@@ -79,6 +79,7 @@ import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
 import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
 import { captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
+import { getVisionConfigRevision } from "../lib/visionProvider";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
@@ -219,6 +220,8 @@ export function ForgeLayout() {
     visualContextTags,
     visualSnapshotHistory,
     setVisualHistoryOpen,
+    visionProvider,
+    visionOllamaModel,
     config,
     updateConfig,
     isForging,
@@ -1060,7 +1063,10 @@ export function ForgeLayout() {
     if (!msg || !channel || sidebarChatSending) return;
     setSidebarChatSending(true);
     try {
-      await sendManualMessage({ message: msg, channel });
+      // The Chat Input sends as the user's base login — not bots[0]/Primary.
+      // Multi-bot entries have their own per-bot send controls; this input
+      // represents the main account regardless of manualSendBotId.
+      await sendManualMessage({ message: msg, channel, useBaseIdentity: true });
       if (messageSoundEnabled && platform === 'joystick') playMessageSound();
       speakMessage(msg);
       setSidebarChatMsg((current) => current.trim() === msg ? "" : current);
@@ -1943,9 +1949,20 @@ export function ForgeLayout() {
         // vision result can repopulate visual context after clearAllContext
         // wiped it for the new channel.
         const visionScope = captureSessionScope();
+        // Capture the vision config revision too — if the user changed the
+        // vision provider/endpoint/model while this analysis was in flight,
+        // the result was produced by superseded settings and must not replace
+        // the current observation. The store setters bump this revision and
+        // clear the stored observation, so a late result landing here would
+        // otherwise resurrect a stale description.
+        const visionRev = getVisionConfigRevision();
         const data = await visionRequest(dataUrl, provider, prevVisualContextRef.current);
         if (!isSessionScopeCurrent(visionScope)) {
           console.log("[Visual] Discarding stale vision result (session changed)");
+          return;
+        }
+        if (getVisionConfigRevision() !== visionRev) {
+          console.log("[Visual] Discarding stale vision result (vision config changed)");
           return;
         }
         if (data.tokenUsage) {
@@ -2371,6 +2388,23 @@ export function ForgeLayout() {
                 Awaiting screen capture analysis...
               </span>
             )}
+            {/* Compact vision provider status — shows which provider analyzes
+                frames and flags an incomplete independent Ollama config. */}
+            <div className="flex items-center gap-1.5 text-[9px] font-mono">
+              <span
+                className={cn(
+                  "px-1.5 py-0.5 rounded border",
+                  visionProvider === "ollama"
+                    ? visionOllamaModel.trim()
+                      ? "bg-violet-500/10 border-violet-500/30 text-violet-300"
+                      : "bg-amber-500/10 border-amber-500/30 text-amber-300"
+                    : "bg-white/5 border-white/10 text-gray-500",
+                )}
+                title={visionProvider === "ollama" ? "Screenshots analyzed locally by Ollama" : "Screenshots analyzed by the active text provider"}
+              >
+                {visionProvider === "ollama" ? (visionOllamaModel.trim() ? `Vision: Ollama · ${visionOllamaModel.trim()}` : "Vision: Ollama (incomplete — set a model)") : "Vision: text provider"}
+              </span>
+            </div>
             {visualAutoCapture && windowSelected && visualCountdown > 0 && (
               <span className="text-[9px] text-orange-400/60 font-mono text-right">
                 {visualCountdown}s

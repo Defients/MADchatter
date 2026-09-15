@@ -17,7 +17,7 @@ import {
 } from "./lib/coreAutoCheck";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 25;
+const SETTINGS_VERSION = 26;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -306,7 +306,23 @@ interface AppState {
   setVisualHistoryOpen: (open: boolean) => void;
   clearVisualSnapshotHistory: () => void;
   removeVisualSnapshot: (id: string) => void;
-  
+
+  // ─── Independent Vision Provider (v26) ────────────────────────────────────
+  // Lets the user route screenshot interpretation through a separate local
+  // Ollama endpoint + image-capable model while text generation continues
+  // through the selected text provider (e.g. Groq). "text" = backward-
+  // compatible default (vision flows through the active text provider).
+  visionProvider: "text" | "ollama";
+  visionOllamaBaseUrl: string;
+  visionOllamaModel: string;
+  setVisionProvider: (mode: "text" | "ollama") => void;
+  setVisionOllamaBaseUrl: (url: string) => void;
+  setVisionOllamaModel: (model: string) => void;
+  // Runtime-only revision that bumps whenever the vision configuration
+  // changes. Vision capture captures this to discard results produced by
+  // superseded settings. Never persisted (not in partialize).
+  visionConfigRevision: number;
+
   config: ForgeConfig;
   updateConfig: (updates: Partial<ForgeConfig>) => void;
   
@@ -917,6 +933,11 @@ export const partializeAppState = (state: AppState) => ({
   // it describes the live session, not a user preference.
   autoForgeAutoCheckMode: state.autoForgeAutoCheckMode,
   autoForgeAutoCheckIntervalMs: state.autoForgeAutoCheckIntervalMs,
+  // Independent vision provider (v26). Runtime visionConfigRevision is
+  // deliberately excluded — it describes the live session, not a preference.
+  visionProvider: state.visionProvider,
+  visionOllamaBaseUrl: state.visionOllamaBaseUrl,
+  visionOllamaModel: state.visionOllamaModel,
 });
 
 export const useAppStore = create<AppState>()(
@@ -980,6 +1001,45 @@ export const useAppStore = create<AppState>()(
           };
         });
       },
+
+      // ─── Independent Vision Provider (v26) ────────────────────────────────
+      // Defaults: "text" mode (backward-compatible — vision flows through the
+      // active text provider). Ollama base URL defaults to the local endpoint
+      // so a user who already runs Ollama for text can point vision at the
+      // same server without re-typing. Model defaults empty (user must pick an
+      // image-capable model explicitly — we never hard-code an unverified
+      // "recommended" name).
+      visionProvider: "text",
+      visionOllamaBaseUrl: "http://localhost:11434/v1",
+      visionOllamaModel: "",
+      visionConfigRevision: 0,
+      setVisionProvider: (mode) =>
+        set((state) => ({
+          visionProvider: mode,
+          // Bump the revision so in-flight vision results from the old
+          // configuration are discarded, and clear the stored textual
+          // observation so a superseded provider's description is never
+          // presented as a current live observation. The raw snapshot URL
+          // is cleared too so the UI doesn't show a stale frame labelled
+          // with the old observation.
+          visionConfigRevision: state.visionConfigRevision + 1,
+          visualContextTags: [],
+          visualSnapshotUrl: null,
+        })),
+      setVisionOllamaBaseUrl: (url) =>
+        set((state) => ({
+          visionOllamaBaseUrl: url,
+          visionConfigRevision: state.visionConfigRevision + 1,
+          visualContextTags: [],
+          visualSnapshotUrl: null,
+        })),
+      setVisionOllamaModel: (model) =>
+        set((state) => ({
+          visionOllamaModel: model,
+          visionConfigRevision: state.visionConfigRevision + 1,
+          visualContextTags: [],
+          visualSnapshotUrl: null,
+        })),
 
       config: {
         provider: "gemini",
@@ -2701,6 +2761,10 @@ export const useAppStore = create<AppState>()(
           autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
           autoForgeAutoCheckMode: state.autoForgeAutoCheckMode,
           autoForgeAutoCheckIntervalMs: state.autoForgeAutoCheckIntervalMs,
+          // Independent vision provider (v26).
+          visionProvider: state.visionProvider,
+          visionOllamaBaseUrl: state.visionOllamaBaseUrl,
+          visionOllamaModel: state.visionOllamaModel,
           exportedAt: new Date().toISOString(),
           version: SETTINGS_VERSION,
         };
@@ -2761,6 +2825,11 @@ export const useAppStore = create<AppState>()(
           if (data.autoForgeAutoCheckEnabled !== undefined) set({ autoForgeAutoCheckEnabled: data.autoForgeAutoCheckEnabled });
           if (data.autoForgeAutoCheckMode !== undefined) set({ autoForgeAutoCheckMode: normalizeAutoCheckMode(data.autoForgeAutoCheckMode) });
           if (data.autoForgeAutoCheckIntervalMs !== undefined) set({ autoForgeAutoCheckIntervalMs: clampAutoCheckIntervalMs(data.autoForgeAutoCheckIntervalMs) });
+          // Independent vision provider (v26). Bump the runtime revision so
+          // any in-flight vision work from the old configuration is discarded.
+          if (data.visionProvider !== undefined) set((state) => ({ visionProvider: data.visionProvider === "ollama" ? "ollama" : "text", visionConfigRevision: state.visionConfigRevision + 1 }));
+          if (data.visionOllamaBaseUrl !== undefined) set((state) => ({ visionOllamaBaseUrl: data.visionOllamaBaseUrl, visionConfigRevision: state.visionConfigRevision + 1 }));
+          if (data.visionOllamaModel !== undefined) set((state) => ({ visionOllamaModel: data.visionOllamaModel, visionConfigRevision: state.visionConfigRevision + 1 }));
           return true;
         } catch (e) {
           console.warn("[store] importSettings failed:", e);
@@ -3050,6 +3119,24 @@ export const useAppStore = create<AppState>()(
             persistedState.autoForgeAutoCheckIntervalMs = DEFAULT_AUTO_CHECK_INTERVAL_MS;
           } else {
             persistedState.autoForgeAutoCheckIntervalMs = clampAutoCheckIntervalMs(persistedState.autoForgeAutoCheckIntervalMs);
+          }
+        }
+        // v26: Independent vision provider. Existing users default to "text"
+        // mode (vision flows through the active text provider — preserves the
+        // exact legacy behavior). The Ollama base URL defaults to the local
+        // endpoint; the model defaults empty so the user must explicitly
+        // select an image-capable model (we never hard-code an unverified
+        // "recommended" name). Text credentials, endpoints, models, and
+        // provider preferences are untouched.
+        if (version < 26 && persistedState) {
+          if (persistedState.visionProvider === undefined) {
+            persistedState.visionProvider = "text";
+          }
+          if (persistedState.visionOllamaBaseUrl === undefined) {
+            persistedState.visionOllamaBaseUrl = "http://localhost:11434/v1";
+          }
+          if (persistedState.visionOllamaModel === undefined) {
+            persistedState.visionOllamaModel = "";
           }
         }
         return persistedState;

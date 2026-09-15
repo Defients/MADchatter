@@ -3,6 +3,10 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey, getKeys, openAiCompatEndpoint, isOpenAICompatibleProvider } from "./keys";
 import { getTwitchSession } from "./twitch";
+import {
+  resolveVisionConfig,
+  isIndependentVisionActive,
+} from "./visionProvider";
 import { AutoForgeEvent, ForgeConfig, ForgeSuggestion } from "../types";
 import {
   FORGE_SYSTEM_PROMPT,
@@ -350,9 +354,20 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
 
   let currentVisualContext = params.visualContext;
   let usage: any = undefined;
-  if (params.screenshot && (!params.visualContext || params.visualContext.length < 50)) {
+  // When independent Ollama vision is active, the screenshot must NOT be sent
+  // to the text provider (e.g. Groq). The vision capture flow (ForgeLayout)
+  // already produced a textual observation via Ollama and stored it in
+  // visualContext. Strip the raw screenshot here so neither the inline
+  // auto-vision call nor the multimodal request body below can leak the image
+  // to the cloud text provider. The textual `currentVisualContext` is the only
+  // visual signal the text provider receives.
+  let screenshotForRequest = params.screenshot;
+  if (isIndependentVisionActive()) {
+    screenshotForRequest = undefined;
+  }
+  if (screenshotForRequest && (!params.visualContext || params.visualContext.length < 50)) {
     try {
-      const visionResult = await generateVisionContext(rawProvider, apiKey, params.screenshot);
+      const visionResult = await generateVisionContext(rawProvider, apiKey, screenshotForRequest);
       currentVisualContext = visionResult.text;
       // Fold vision tokens into the forge total (user triggered Forge)
       if (visionResult.tokenUsage) {
@@ -431,9 +446,9 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   if (provider === "gemini") {
     const ai = new GoogleGenAI({ apiKey });
     const parts: any[] = [{ text: userMessageContent }];
-    if (params.screenshot) {
-      const mimeType = params.screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
-      const base64Data = params.screenshot.replace(/^data:image\/\w+;base64,/, "");
+    if (screenshotForRequest) {
+      const mimeType = screenshotForRequest.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
+      const base64Data = screenshotForRequest.replace(/^data:image\/\w+;base64,/, "");
       parts.push({ inlineData: { data: base64Data, mimeType } });
     }
     const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
@@ -484,10 +499,10 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
             { role: "system", content: systemPrompt },
             {
               role: "user",
-              content: withImage && params.screenshot
+              content: withImage && screenshotForRequest
                 ? [
                     { type: "text", text: userMessageContent },
-                    { type: "image_url", image_url: { url: params.screenshot } },
+                    { type: "image_url", image_url: { url: screenshotForRequest } },
                   ]
                 : userMessageContent,
             },
@@ -500,7 +515,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     try {
       response = await makeRequest(true);
     } catch (e) {
-      if (params.screenshot && isVisionUnsupportedError(e)) {
+      if (screenshotForRequest && isVisionUnsupportedError(e)) {
         console.warn(`[generateChat/${provider}] Model rejected image input — retrying text-only`);
         response = await makeRequest(false);
       } else {
@@ -518,9 +533,9 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const content: any[] = [];
-    if (params.screenshot) {
-      const mimeType = params.screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
-      const base64Data = params.screenshot.replace(/^data:image\/\w+;base64,/, "");
+    if (screenshotForRequest) {
+      const mimeType = screenshotForRequest.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
+      const base64Data = screenshotForRequest.replace(/^data:image\/\w+;base64,/, "");
       content.push({ type: "image", source: { type: "base64", media_type: mimeType as any, data: base64Data } });
     }
     content.push({ type: "text", text: userMessageContent });
@@ -689,7 +704,11 @@ export async function generateVisionContext(
   rawProvider: string,
   apiKey: string,
   screenshot: string,
-  previousContext?: string | null
+  previousContext?: string | null,
+  /** Explicit endpoint override for independent Ollama vision. When provided,
+   *  the OpenAI-compatible branch uses this base URL + model instead of the
+   *  text provider's Ollama/OpenRouter config. */
+  endpointOverride?: { baseUrl: string; model: string },
 ): Promise<{ text: string; tokenUsage?: TokenUsage }> {
   const provider = normalizeProvider(rawProvider);
   const keys = getKeys();
@@ -749,7 +768,9 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     }
     return { text: response.text || "", tokenUsage: usage };
   } else if (isOpenAICompatibleProvider(provider)) {
-    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
+    // Independent Ollama vision uses a separately configured endpoint + model
+    // (the user's vision config), never the text provider's Ollama config.
+    const { baseUrl, model } = endpointOverride ?? openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({
       apiKey,
       baseURL: baseUrl,
@@ -810,10 +831,36 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
   throw new Error("Invalid provider");
 }
 
-export async function visionRequest(screenshot: string, activeProvider: string, previousContext?: string | null): Promise<{ visualContext: string; tokenUsage?: TokenUsage }> {
-  const apiKey = getApiKey(activeProvider);
-  if (!apiKey) throw new Error(`No API key configured for ${activeProvider}. Add it in Settings.`);
-  const result = await generateVisionContext(activeProvider, apiKey, screenshot, previousContext);
+export async function visionRequest(
+  screenshot: string,
+  activeProvider?: string,
+  previousContext?: string | null,
+): Promise<{ visualContext: string; tokenUsage?: TokenUsage }> {
+  // Resolve the effective vision configuration. When independent Ollama
+  // vision is active, the screenshot is routed to the separately configured
+  // local Ollama endpoint + image-capable model — the active text provider
+  // (e.g. Groq) is never consulted and never receives the image. When vision
+  // is in "text" mode, the passed `activeProvider` is used so legacy behavior
+  // (vision flows through the text provider) is preserved exactly.
+  const visionConfig = resolveVisionConfig();
+  if (visionConfig.independent) {
+    if (!visionConfig.baseUrl || !visionConfig.model || !visionConfig.apiKey) {
+      throw new Error("Independent Ollama vision is not fully configured. Set a base URL and image-capable model in Settings → Vision.");
+    }
+    const result = await generateVisionContext(
+      visionConfig.provider,
+      visionConfig.apiKey,
+      screenshot,
+      previousContext,
+      { baseUrl: visionConfig.baseUrl, model: visionConfig.model },
+    );
+    return { visualContext: result.text, tokenUsage: result.tokenUsage };
+  }
+  // Legacy / text-mode path: use the active text provider for vision.
+  const provider = activeProvider || visionConfig.provider;
+  const apiKey = getApiKey(provider);
+  if (!apiKey) throw new Error(`No API key configured for ${provider}. Add it in Settings.`);
+  const result = await generateVisionContext(provider, apiKey, screenshot, previousContext);
   return { visualContext: result.text, tokenUsage: result.tokenUsage };
 }
 

@@ -13,12 +13,18 @@ export async function sendManualMessage({
   botId,
   source = "manual",
   dryRun = false,
+  useBaseIdentity = false,
 }: {
   message: string;
   channel: string;
   botId?: string;
   source?: ManualSendSource;
   dryRun?: boolean;
+  /** Send as the base singleton login (legacy session) even in multi-bot
+   *  mode. The multi-bot roster has its own per-bot send controls; surfaces
+   *  like the STUDIO Chat Input represent the user's primary account, not
+   *  "Primary" (bots[0]) or whatever manualSendBotId happens to point at. */
+  useBaseIdentity?: boolean;
 }): Promise<void> {
   const state = useAppStore.getState();
   const scope = captureSessionScope();
@@ -28,7 +34,7 @@ export async function sendManualMessage({
   if (!destination) throw new Error("Set a channel before sending.");
 
   // Joystick uses the singleton session; per-bot sending is not supported there.
-  const usesBots = state.multiBotEnabled && state.platform !== "joystick";
+  const usesBots = state.multiBotEnabled && state.platform !== "joystick" && !useBaseIdentity;
   const availableBots = state.bots.filter((bot) =>
     bot.active && bot.session && bot.platform === state.platform,
   );
