@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey, getKeys, getActiveProvider, openAiCompatEndpoint } from "./keys";
+import { getApiKey, getKeys, getActiveProvider, openAiCompatEndpoint, isOpenAICompatibleProvider } from "./keys";
 import { withAiTimeout } from "./ai";
 import {
   aiScheduler,
@@ -210,7 +210,7 @@ Analyze the above and extract new memories, profile updates, inside jokes, and p
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+  } else if (isOpenAICompatibleProvider(provider)) {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
     const ollamaOpts = buildProviderRequestOptions(provider);

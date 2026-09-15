@@ -298,11 +298,11 @@
    Active below 768px. Additive; never affects desktop layout.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Touch target helper — ensures ≥ 44×44px hit area for interactive elements */
-.touch-target {
-  min-height: 44px;
-  min-width: 44px;
-}
+/* NOTE: `.touch-target` sizing lives ONLY inside the @media (max-width: 768px)
+   block below. Do NOT add an unscoped `.touch-target { min-*: 44px }` rule
+   here — a previous copy forced 44×44px at every viewport, inflating compact
+   desktop controls (Stream Embed mute/Capture/Twitch buttons, AutoCheck HUD
+   buttons) beyond their authored h-6/h-7 sizes in STUDIO/CORE layouts. */
 
 /* Mobile tab bar — bottom navigation for panel switching */
 .mobile-tab-bar {
@@ -327,14 +327,57 @@
   .safe-left { padding-left: env(safe-area-inset-left); }
   .safe-right { padding-right: env(safe-area-inset-right); }
 
-  /* Enlarge interactive elements for touch */
+  /* Enlarge interactive elements for touch — WCAG 2.2 touch targets */
   button,
   [role="button"],
   a,
   input[type="checkbox"],
   input[type="radio"],
   label {
-    min-height: 36px;
+    min-height: 40px;
+  }
+
+  /* Dedicated 44px touch targets */
+  .touch-target,
+  [data-touch="true"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Mobile slider touch ergonomics — large hit area and comfortable thumb */
+  input[type="range"].mobile-slider {
+    height: 40px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+    touch-action: pan-y;
+    width: 100%;
+  }
+  input[type="range"].mobile-slider::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  input[type="range"].mobile-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #f97316;
+    margin-top: -8px;
+    box-shadow: 0 0 10px rgba(249, 115, 22, 0.6);
+    border: 2px solid #ffffff;
+    cursor: pointer;
+  }
+  input[type="range"].mobile-slider-purple::-webkit-slider-thumb {
+    background: #c084fc;
+    box-shadow: 0 0 10px rgba(192, 132, 252, 0.6);
+  }
+  input[type="range"].mobile-slider-amber::-webkit-slider-thumb {
+    background: #fbbf24;
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
   }
 
   /* Remove 300ms tap delay on mobile */
@@ -3693,4 +3736,127 @@
 .supercharge-theme > * {
   position: relative;
   z-index: 1;
+}
+/* ══════════════════════════════════════════════════════════════════════════════
+   CORE REFINEMENTS
+   Mobile space recovery (toasts + telemetry strip) and the AutoForge Auto-Check
+   indicator. All animation here is CSS-driven so none of it costs React renders.
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── AutoForge Auto-Check progress ──────────────────────────────────────────── */
+
+/* Deterministic progress toward the next scheduled check. Duration + negative
+   delay are set inline from the user's cadence, so this resumes in place after
+   a re-render instead of restarting or needing a per-frame timer. */
+@keyframes auto-check-fill {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+.auto-check-fill {
+  transform-origin: left center;
+  animation-name: auto-check-fill;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  will-change: transform;
+}
+
+/* Smart mode has no schedule to count down to — an honest indeterminate sweep
+   rather than a fake countdown. */
+@keyframes auto-check-smart-sweep {
+  0%   { transform: translateX(-60%); }
+  100% { transform: translateX(160%); }
+}
+
+.auto-check-smart {
+  width: 60%;
+  animation: auto-check-smart-sweep 2.6s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ── Mobile CORE toasts: docked under the header, never pushing layout ─────── */
+
+/* Sonner renders in a portal, so toasts were already out of the layout flow.
+   On narrow screens they now sit directly beneath the CORE header (tucking a
+   few px into its lower edge via the offset in main.tsx) instead of eating
+   bottom space above the tab bar. */
+@media (max-width: 768px) {
+  [data-sonner-toaster][data-y-position="top"] {
+    /* Stay above the telemetry strip / bottom nav and inside safe areas. */
+    max-height: calc(100dvh - 8rem);
+    overflow: hidden;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] {
+    /* Compact stacking for limited vertical space. */
+    --toast-gap: 6px;
+    padding: 8px 10px !important;
+    font-size: 12px;
+    border-radius: 10px;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] [data-title] {
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] [data-description] {
+    font-size: 11px;
+    line-height: 1.25;
+  }
+
+  /* The stack itself must never intercept taps meant for the header controls;
+     only the individual toasts are interactive. */
+  [data-sonner-toaster] {
+    pointer-events: none;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] {
+    pointer-events: auto;
+  }
+}
+
+/* ── Mobile CORE telemetry strip: collapsible utility strip ─────────────────── */
+
+.core-telemetry-strip {
+  touch-action: pan-y;
+  transition: height 220ms ease;
+  will-change: height;
+}
+
+/* While dragging, follow the finger exactly — no transition fighting input. */
+.core-telemetry-strip.core-telemetry-dragging {
+  transition: none;
+}
+
+/* Collapsed: keep a discoverable handle, recover the vertical space. */
+.core-telemetry-collapsed {
+  height: calc(14px + env(safe-area-inset-bottom) * 0);
+}
+
+.core-telemetry-grip {
+  /* ≥ 44px tall hit area without visually dominating the strip. */
+  min-height: 32px;
+  min-width: 28px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.core-telemetry-grip:active {
+  cursor: grabbing;
+}
+
+/* Prevent page scroll from being interpreted as a strip drag: only the grip
+   opts out of default touch behaviour (`.core-telemetry-grip` above), the
+   rest of the strip scrolls normally. */
+
+@media (prefers-reduced-motion: reduce) {
+  .auto-check-fill,
+  .auto-check-smart {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+  }
+  .core-telemetry-strip {
+    transition: none;
+  }
 }

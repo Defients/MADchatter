@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Tv, Volume2, VolumeX, ExternalLink, Camera, MonitorUp, StopCircle, MessageCircle, EyeOff, Eye, Lock, Unlock, Send, Mic } from "lucide-react";
 import { useAppStore } from "../store";
+import { useEffectiveMode } from "../hooks/useMediaQuery";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
@@ -63,7 +64,8 @@ export function StreamOverlay({
   const platform = useAppStore((s) => s.platform);
   const tutorialActive = useAppStore((s) => s.tutorialActive);
   const audioSetupActive = useAppStore((s) => s.audioSetupActive);
-  const interfaceMode = useAppStore((s) => s.interfaceMode);
+  // effectiveMode: what actually renders (CORE when STUDIO is unavailable).
+  const interfaceMode = useEffectiveMode();
   const [tutorialVideoEnded, setTutorialVideoEnded] = useState(false);
   const [tutorialVideoPhase, setTutorialVideoPhase] = useState<"mustard" | "water" | "kiss">("mustard");
   const [tutorialMuted, setTutorialMuted] = useState(true);
@@ -449,7 +451,7 @@ export function StreamOverlay({
       )}
 
       {/* Controls Bar */}
-      <div className="shrink-0 flex items-center gap-1.5 px-2 py-1.5 border-t border-white/5 bg-white/[0.02]">
+      <div className="shrink-0 flex items-center flex-wrap gap-1.5 px-2 py-1.5 border-t border-white/5 bg-white/[0.02]">
         {tutorialActive ? (
           <Tooltip>
             <TooltipTrigger render={(props) => (
@@ -457,7 +459,7 @@ export function StreamOverlay({
                 {...props}
                 type="button"
                 onClick={() => setTutorialMuted((m) => !m)}
-                className="h-6 w-6 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-white/10 transition-all relative"
+                className="h-7 w-7 sm:h-6 sm:w-6 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-white/10 transition-all relative touch-target"
               >
                 {tutorialMuted ? (
                   <VolumeX className="w-3.5 h-3.5 animate-pulse text-orange-400" />
@@ -484,7 +486,7 @@ export function StreamOverlay({
                 setMuted(newMuted);
                 twitchPlayerRef.current?.setMuted(newMuted);
               }}
-              className="h-6 w-6 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-white/10 transition-all"
+              className="h-7 w-7 sm:h-6 sm:w-6 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-white/10 transition-all touch-target"
             >
               {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
             </button>
@@ -509,7 +511,7 @@ export function StreamOverlay({
                 onVisualCapture();
               }}
               className={cn(
-                "h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all border",
+                "h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all border touch-target",
                 isVisualCapturing
                   ? "text-red-400 bg-red-500/20 hover:bg-red-500/30 border-red-500/30"
                   : audioSetupActive
@@ -536,7 +538,7 @@ export function StreamOverlay({
                 type="button"
                 onClick={onManualSnapshot}
                 disabled={visualCooldown}
-                className="h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all disabled:opacity-50 text-blue-400 bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/20"
+                className="h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all disabled:opacity-50 text-blue-400 bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/20 touch-target"
               >
                 <Camera className="w-3 h-3" />
                 Snap
@@ -556,7 +558,7 @@ export function StreamOverlay({
                 {...props}
                 type="button"
                 onClick={() => setChatInputMode(!chatInputMode)}
-                className={`h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${
+                className={`h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all touch-target ${
                   chatInputMode
                     ? "text-rose-400 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30"
                     : "text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30"
@@ -586,7 +588,7 @@ export function StreamOverlay({
                   }
                   setLockResolution(!lockResolution);
                 }}
-                className={`h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${
+                className={`h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all touch-target ${
                   lockResolution
                     ? "text-cyan-400 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40"
                     : "text-gray-400 bg-white/5 hover:bg-white/10 border border-white/10"
@@ -609,7 +611,7 @@ export function StreamOverlay({
                 {...props}
                 type="button"
                 onClick={() => window.open(platform === 'kick' ? `https://kick.com/${channel}` : platform === 'joystick' ? `https://joystick.tv/u/${channel}` : `https://twitch.tv/${channel}`, "_blank")}
-                className="h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all text-[#9146FF] bg-[#9146FF]/10 hover:bg-[#9146FF]/20 border border-[#9146FF]/20 hover:border-[#9146FF]/40"
+                className="h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all text-[#9146FF] bg-[#9146FF]/10 hover:bg-[#9146FF]/20 border border-[#9146FF]/20 hover:border-[#9146FF]/40 touch-target"
               >
                 <ExternalLink className="w-3 h-3" />
                 {platform === 'kick' ? 'Kick' : platform === 'joystick' ? 'Joystick' : 'Twitch'}

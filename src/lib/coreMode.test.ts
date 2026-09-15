@@ -27,6 +27,7 @@ const storageMap = new Map<string, string>();
 };
 
 const { useAppStore, partializeAppState } = await import("../store");
+const { setStudioAvailable, isStudioAvailable, STUDIO_MIN_WIDTH } = await import("./studioAvailability");
 
 let passed = 0;
 let failed = 0;
@@ -356,7 +357,89 @@ function testModeWelcomeSeenPersists() {
   assert(partial.modeWelcomeSeen === true, "modeWelcomeSeen should be in partialize output as true");
 }
 
-// ─── Run all tests ────────────────────────────────────────────────────────
+// ─── Test: STUDIO entry is gated when the viewport can't support it ──────
+// When isStudioAvailable() is false (viewport < STUDIO_MIN_WIDTH), calling
+// setInterfaceMode("studio") must NOT change the preferred mode — it opens
+// the gate interstitial instead. This is the single chokepoint every entry
+// path routes through (header toggle, command palette, welcome overlay,
+// discovery overlay, "Open Studio" buttons, persisted state).
+function testStudioGateWhenUnavailable() {
+  storageMap.clear();
+  const s = useAppStore.getState();
+  useAppStore.setState({ interfaceMode: "core", studioGateOpen: false, studioForcedCore: false });
+
+  // Simulate a narrow viewport
+  setStudioAvailable(false);
+  assertEq(isStudioAvailable(), false, "Studio should report unavailable below threshold");
+
+  s.setInterfaceMode("studio");
+  let state = useAppStore.getState();
+  assertEq(state.interfaceMode, "core", "Preferred mode must not change to studio when unavailable");
+  assertEq(state.studioGateOpen, true, "Gate interstitial should open on blocked studio entry");
+
+  // Restore capability
+  setStudioAvailable(true);
+  assertEq(isStudioAvailable(), true, "Studio should report available at/above threshold");
+
+  // Now the same call switches normally and closes the gate
+  s.setInterfaceMode("studio");
+  state = useAppStore.getState();
+  assertEq(state.interfaceMode, "studio", "Studio should enter normally when available");
+  assertEq(state.studioGateOpen, false, "Gate should be closed after successful entry");
+  assertEq(state.studioForcedCore, false, "Forced-core flag cleared on explicit studio entry");
+
+  // Restore a clean baseline for later tests
+  s.setInterfaceMode("core");
+}
+
+// ─── Test: shrink-forced fallback does not overwrite the preferred mode ──
+// Simulates Case F + the preferred-vs-effective split: a STUDIO user whose
+// viewport shrinks gets studioForcedCore set by useStudioAvailabilitySync.
+// The preferred mode stays "studio" so a fresh load on a large screen
+// resumes STUDIO normally.
+function testStudioShrinkPreservesPreference() {
+  storageMap.clear();
+  const s = useAppStore.getState();
+  setStudioAvailable(true);
+  useAppStore.setState({ interfaceMode: "studio", studioForcedCore: false, studioGateOpen: false });
+
+  // Simulate what useStudioAvailabilitySync does on a true→false shrink
+  // while effectively in Studio.
+  const before = useAppStore.getState();
+  const wasStudio = before.interfaceMode === "studio" && !before.studioForcedCore;
+  assert(wasStudio === true, "Effective mode should be studio before shrink");
+  before.setStudioForcedCore(true);
+
+  const after = useAppStore.getState();
+  assertEq(after.interfaceMode, "studio", "Preferred mode stays studio after forced fallback");
+  assertEq(after.studioForcedCore, true, "Forced-core flag set on shrink");
+
+  // Explicit Core choice clears the forced flag (willing choice)
+  after.setInterfaceMode("core");
+  const final = useAppStore.getState();
+  assertEq(final.interfaceMode, "core", "Explicit Core choice applies");
+  assertEq(final.studioForcedCore, false, "Forced flag cleared on explicit choice");
+}
+
+// ─── Test: STUDIO capability fields are runtime-only (never persisted) ────
+// studioForcedCore and studioGateOpen are transient viewport state — they
+// must not be serialized into madchatter-storage, or a phone session could
+// leak "forced to core" into a desktop session.
+function testStudioGateFieldsNotPersisted() {
+  storageMap.clear();
+  const s = useAppStore.getState();
+  useAppStore.setState({ studioForcedCore: true, studioGateOpen: true });
+  const partial = partializeAppState(useAppStore.getState());
+  assert(!("studioForcedCore" in partial), "studioForcedCore must not be persisted");
+  assert(!("studioGateOpen" in partial), "studioGateOpen must not be persisted");
+  useAppStore.setState({ studioForcedCore: false, studioGateOpen: false });
+}
+
+// ─── Test: STUDIO_MIN_WIDTH is a sane desktop threshold ──────────────────
+function testStudioMinWidthSane() {
+  assert(STUDIO_MIN_WIDTH >= 900 && STUDIO_MIN_WIDTH <= 1366,
+    `STUDIO_MIN_WIDTH (${STUDIO_MIN_WIDTH}) should be a plausible desktop threshold`);
+}
 async function runAll() {
   console.log("Running Core Mode + Onboarding tests...\n");
 
@@ -373,6 +456,10 @@ async function runAll() {
   testErrorStatesNoRevert();
   testPersonaChosenPersists();
   testModeWelcomeSeenPersists();
+  testStudioGateWhenUnavailable();
+  testStudioShrinkPreservesPreference();
+  testStudioGateFieldsNotPersisted();
+  testStudioMinWidthSane();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) {

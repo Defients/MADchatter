@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { ForgeLayout } from './components/ForgeLayout';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './components/ui/command';
 import { useAppStore } from './store';
+import { cn } from './lib/utils';
 import { toast } from 'sonner';
 import tmi from 'tmi.js';
 import { useAutoForge } from './hooks/useAutoForge';
@@ -18,27 +19,50 @@ import { ShortcutHelp } from './components/ShortcutHelp';
 import { useBotToggleShortcuts } from './hooks/useBotToggleShortcuts';
 import { WelcomeOverlay } from './components/WelcomeOverlay';
 import { ModeWelcomeOverlay } from './components/ModeWelcomeOverlay';
+import { StudioDiscoveryOverlay } from './components/StudioDiscoveryOverlay';
 import { CoreActivationCelebration } from './components/CoreMode';
 import { RageCursor } from './components/RageCursor';
 import { EasterEggs } from './components/EasterEggs';
 import { MobileAdvisory } from './components/MobileAdvisory';
-import { useIsMobile } from './hooks/useMediaQuery';
+import { StudioGateOverlay } from './components/StudioGateOverlay';
+import { useIsMobile, useIsMobileOrTouch } from './hooks/useMediaQuery';
+import { useStudioAvailable, useStudioAvailabilitySync } from './hooks/useMediaQuery';
 import { getKeys } from './lib/keys';
-import { tmiSendManager } from './lib/twitch';
+import { tmiSendManager, getTwitchSession } from './lib/twitch';
 import { recordTwitchMessageId, clearTwitchMessageIdCache } from './lib/twitchReplyCache';
 import { recordIncomingMessage, markAsBotMessage } from './lib/conversationThread';
-import { KickChatClient, kickSendManager, fetchKickMetadata } from './lib/kick';
+import { KickChatClient, kickSendManager, fetchKickMetadata, getKickSession } from './lib/kick';
 import { JoystickChatClient, joystickSendManager, getJoystickBasicAuthKey, getJoystickSession, getJoystickBotUsername } from './lib/joystick';
 import { sendManualMessage } from './lib/manualSend';
 import { playMessageSound, setAudioOutputSink, setSoundUrl, setSoundVolume } from './lib/sound';
 import { playSfx, initSfxAudioContext } from './lib/sfx';
-import { createChatMessage } from './lib/chatUtils';
+import { createChatMessage, parseTwitchEmoteTag } from './lib/chatUtils';
 import type { ChatMessage } from './types';
 import { classifySentiment } from './lib/sentiment';
 import { requestNotificationPermission, notifyMention } from './lib/notifications';
 import { messageQueue, startQueueProcessor } from './lib/messageQueue';
 
 // Lazy-load heavy panels/overlays — only loaded when opened, reducing initial bundle on mobile.
+// The read connections are anonymous (Twitch justinfan) or broadcast the
+// sender's own messages back to everyone (Kick/Joystick), so every message we
+// send echoes back through the read path as an ordinary chat line. The send
+// pipeline already appends a styled selfSent chat entry — matching echoes by
+// bot identity here keeps each send from rendering twice.
+function ownBotUsernames(platform: "twitch" | "kick" | "joystick"): Set<string> {
+  const names = new Set<string>();
+  const sessionUser =
+    platform === "twitch" ? getTwitchSession()?.username
+    : platform === "kick" ? getKickSession()?.username
+    : getJoystickBotUsername() || undefined;
+  if (sessionUser) names.add(sessionUser.toLowerCase());
+  for (const b of useAppStore.getState().bots) {
+    if (b.platform === platform && b.session?.username) {
+      names.add(b.session.username.toLowerCase());
+    }
+  }
+  return names;
+}
+
 const AutoForgeReport = lazy(() => import('./components/AutoForgeReport').then(m => ({ default: m.AutoForgeReport })));
 const TutorialWalkthrough = lazy(() => import('./components/TutorialWalkthrough').then(m => ({ default: m.TutorialWalkthrough })));
 const MemoryPanel = lazy(() => import('./components/MemoryPanel').then(m => ({ default: m.MemoryPanel })));
@@ -51,6 +75,12 @@ export default function App() {
   const [maxRageShake, setMaxRageShake] = React.useState(false);
   const [maxRageSettled, setMaxRageSettled] = React.useState(false);
   const isMobile = useIsMobile();
+  const isMobileOrTouch = useIsMobileOrTouch();
+  // Keep the module-level STUDIO capability flag in sync with the viewport
+  // and handle live shrink/expand transitions (auto-fallback to CORE on
+  // shrink, no auto-snap on expand). Mounted once at the app root.
+  useStudioAvailabilitySync();
+  const studioAvailable = useStudioAvailable();
   const lightMode = useAppStore((s) => s.lightThemeActive);
   const colorTheme = useAppStore((s) => s.theme);
   const superchargeActive = useAppStore((s) => s.superchargeActive);
@@ -292,11 +322,16 @@ export default function App() {
       joystickClientRef.current = joystickClient;
 
       joystickClient.onMessage((username, content) => {
+        // Our own sends echo back through the room feed — the send pipeline
+        // already appends a styled selfSent entry, so skip the duplicate.
+        const botName = getJoystickBotUsername();
+        if (ownBotUsernames('joystick').has(username.toLowerCase())) {
+          if (messageSoundEnabled && botName && username.toLowerCase() === botName.toLowerCase()) playMessageSound();
+          return;
+        }
         queueChatMessage(createChatMessage(username, content, 'joystick'));
         incrementMessagesReceived();
         processIncomingMessage(username, content, 'joystick');
-        const botName = getJoystickBotUsername();
-        if (messageSoundEnabled && botName && username.toLowerCase() === botName.toLowerCase()) playMessageSound();
       });
 
       joystickClient.onStateChange((state) => {
@@ -334,6 +369,9 @@ export default function App() {
       kickClientRef.current = kickClient;
 
       kickClient.onMessage((username, content) => {
+        // Our own sends echo back through the room feed — the send pipeline
+        // already appends a styled selfSent entry, so skip the duplicate.
+        if (ownBotUsernames('kick').has(username.toLowerCase())) return;
         queueChatMessage(createChatMessage(username, content, 'kick'));
         incrementMessagesReceived();
         processIncomingMessage(username, content, 'kick');
@@ -376,16 +414,20 @@ export default function App() {
     });
 
     client.on('message', (channel, tags, message, self) => {
+      // The read client is anonymous (no identity) so `self` is never true —
+      // detect our own sends by bot username instead. The send pipeline
+      // already appends a styled selfSent entry to the chat log, so without
+      // this every send would render twice (once gold, once as a plain echo).
+      const isOwn = self || ownBotUsernames('twitch').has((tags.username || '').toLowerCase());
       // Capture the bot's own message ID for conversation threading before
-      // the early return. The bot's messages come back through this handler
-      // with self=true — we need the ID to track threads rooted at the bot.
-      if (self && tags.id) {
+      // the early return — we need the ID to track threads rooted at the bot.
+      if (isOwn && tags.id) {
         const selfUsername = tags['display-name'] || tags.username || 'bot';
         markAsBotMessage(tags.id);
         recordIncomingMessage(tags.id, selfUsername, message, null);
         return;
       }
-      if (self) return;
+      if (isOwn) return;
       const username = tags['display-name'] || tags.username || 'user';
       // Capture the Twitch message ID so we can send reply-tagged messages
       // later. This makes @username mentions render as clickable/special text
@@ -398,7 +440,9 @@ export default function App() {
       // the AutoForge decision prompt.
       const replyParentId = (tags as any)['reply-parent-msg-id'] || null;
       recordIncomingMessage(tags.id || '', username, message, replyParentId);
-      queueChatMessage(createChatMessage(username, message, 'twitch'));
+      // Parse Twitch native emotes from IRC tags for inline rendering
+      const twitchEmotes = parseTwitchEmoteTag((tags as any).emotes);
+      queueChatMessage(createChatMessage(username, message, 'twitch', twitchEmotes));
       incrementMessagesReceived();
       processIncomingMessage(username, message, 'twitch');
     });
@@ -710,7 +754,7 @@ export default function App() {
   };
 
   return (
-    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobile && cursorTrailEnabled ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${lightThemeActive ? 'light-theme' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? (maxRageSettled ? 'max-rage-shake-settled' : 'max-rage-shake') : ''}`}>
+    <div className={`flex flex-col h-dvh bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-0 ${!isMobileOrTouch && cursorTrailEnabled ? 'select-none rage-cursor-active' : ''} ${theme === 'cosmotech' ? 'cosmotech' : ''} ${theme === 'corrupture' ? 'corrupture' : ''} ${lightThemeActive ? 'light-theme' : ''} ${konamiActive ? 'konami-active' : ''} ${maxRageShake ? (maxRageSettled ? 'max-rage-shake-settled' : 'max-rage-shake') : ''}`}>
       {/* Skip link — keyboard / screen-reader accessibility */}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[200] focus:rounded-lg focus:bg-orange-500 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white">
         Skip to main content
@@ -872,7 +916,13 @@ export default function App() {
                   <CommandItem onSelect={() => { useAppStore.getState().setInterfaceMode('core'); setOpenCommand(false); playSfx('palette_select'); toast.success('Switched to Core Mode'); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
                     Switch to Core Mode
                   </CommandItem>
-                  <CommandItem onSelect={() => { useAppStore.getState().setInterfaceMode('studio'); setOpenCommand(false); playSfx('palette_select'); toast.success('Switched to Studio Mode'); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
+                  <CommandItem
+                    onSelect={() => { useAppStore.getState().setInterfaceMode('studio'); setOpenCommand(false); playSfx('palette_select'); if (!useAppStore.getState().studioGateOpen) toast.success('Switched to Studio Mode'); }}
+                    // Not `disabled` — selecting while unavailable routes
+                    // through the gated setInterfaceMode → gate interstitial.
+                    title={studioAvailable ? undefined : 'STUDIO needs a larger screen'}
+                    className={cn("text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5", !studioAvailable && "opacity-50")}
+                  >
                     Switch to Studio Mode
                   </CommandItem>
                   <CommandItem onSelect={() => { setOpenCommand(false); playSfx('palette_select'); window.dispatchEvent(new CustomEvent('welcome-open')); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
@@ -949,9 +999,11 @@ export default function App() {
           center). No separate "Start" overlay needed. */}
       <WelcomeOverlay />
       <ModeWelcomeOverlay />
+      <StudioDiscoveryOverlay />
+      <StudioGateOverlay />
       <CoreActivationCelebration />
       {!isMobile && <Suspense fallback={null}><TutorialWalkthrough /></Suspense>}
-      {!isMobile && cursorTrailEnabled && <RageCursor />}
+      {!isMobileOrTouch && cursorTrailEnabled && <RageCursor />}
       <EasterEggs />
     </div>
   );

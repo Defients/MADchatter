@@ -412,3 +412,52 @@ export function parseEmotes(text: string, emoteMap: EmoteMap | null): TextSegmen
 
   return segments.length > 0 ? segments : [{ type: "text", content: text }];
 }
+
+/**
+ * Parses Twitch native emotes from IRC tags.
+ *
+ * Twitch sends emote data as `tags.emotes` in the format:
+ *   "emoteId:start-end,start-end/emoteId2:start-end"
+ * e.g. "25:0-4/501169489:6-14,16-24" means emote ID 25 at chars 0-4,
+ * and emote ID 501169489 at chars 6-14 and 16-24.
+ *
+ * This function takes that parsed structure (emoteId → [[start, end], ...])
+ * and produces TextSegments with Twitch CDN emote URLs.
+ */
+export function parseTwitchEmotes(
+  text: string,
+  twitchEmotes: Record<string, number[][]>,
+): TextSegment[] {
+  // Collect all emote ranges sorted by start position
+  const ranges: { start: number; end: number; emoteId: string }[] = [];
+  for (const [emoteId, positions] of Object.entries(twitchEmotes)) {
+    for (const [start, end] of positions) {
+      ranges.push({ start, end, emoteId });
+    }
+  }
+  if (ranges.length === 0) return [{ type: "text", content: text }];
+  ranges.sort((a, b) => a.start - b.start);
+
+  const segments: TextSegment[] = [];
+  let lastIndex = 0;
+
+  for (const range of ranges) {
+    // Add preceding text
+    if (range.start > lastIndex) {
+      segments.push({ type: "text", content: text.slice(lastIndex, range.start) });
+    }
+    // Extract the emote name from the text
+    const emoteName = text.slice(range.start, range.end + 1);
+    // Twitch emote CDN URL (1x = small, 2x = medium, 3x = large)
+    const url = `https://static-cdn.jtvnw.net/emoticons/v2/${range.emoteId}/default/dark/1.0`;
+    segments.push({ type: "emote", name: emoteName, url, provider: "twitch" });
+    lastIndex = range.end + 1;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    segments.push({ type: "text", content: text.slice(lastIndex) });
+  }
+
+  return segments.length > 0 ? segments : [{ type: "text", content: text }];
+}

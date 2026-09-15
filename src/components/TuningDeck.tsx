@@ -405,6 +405,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     else if (v === "anthropic") displayName = "Claude Haiku 4.5";
     else if (v === "openrouter") displayName = "OpenRouter / Custom API";
     else if (v === "ollama") displayName = "Ollama / Local";
+    else if (v === "custom-openai") displayName = "Custom OpenAI-Compatible";
     toast.success(`Active AI Model set to ${displayName}`);
   };
 
@@ -2931,7 +2932,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                 onClick={() => setModelMenuOpen(!modelMenuOpen)}
                 className="h-11 px-2.5 flex items-center gap-1 rounded-lg bg-green-900/30 border border-green-700/30 text-green-500 hover:bg-green-900/50 hover:border-green-600/40 transition-all text-[10px] font-bold uppercase tracking-wider font-mono whitespace-nowrap"
               >
-                {provider === 'gemini' ? 'Gem' : provider === 'gemini-env' ? 'Gem-E' : provider === 'gemini-pro' ? 'Gem+' : provider === 'openai' ? 'GPT' : provider === 'anthropic' ? 'Claude' : provider === 'ollama' ? 'Ollama' : 'OR'}
+                {provider === 'gemini' ? 'Gem' : provider === 'gemini-env' ? 'Gem-E' : provider === 'gemini-pro' ? 'Gem+' : provider === 'openai' ? 'GPT' : provider === 'anthropic' ? 'Claude' : provider === 'ollama' ? 'Ollama' : provider === 'custom-openai' ? 'Custom' : 'OR'}
                 <ChevronDown className="w-3 h-3 opacity-60" />
               </button>
             </ThemedTooltip>
@@ -2947,6 +2948,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                     { value: 'anthropic', label: 'Claude Haiku 4.5', desc: 'Fast & affordable' },
                     { value: 'openrouter', label: 'OpenRouter / Custom', desc: 'Custom API' },
                     { value: 'ollama', label: 'Ollama / Local', desc: 'No key needed' },
+                    { value: 'custom-openai', label: 'Custom OpenAI-Compatible', desc: 'Groq, OpenRouter, proxies…' },
                   ].map((m) => (
                     <button
                       key={m.value}

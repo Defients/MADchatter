@@ -7,9 +7,17 @@ import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
 import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
 import { removeBotRateLimiter } from "./lib/actionRateLimiter";
+import { isStudioAvailable } from "./lib/studioAvailability";
+import {
+  DEFAULT_AUTO_CHECK_INTERVAL_MS,
+  DEFAULT_AUTO_CHECK_MODE,
+  clampAutoCheckIntervalMs,
+  normalizeAutoCheckMode,
+  type AutoCheckMode,
+} from "./lib/coreAutoCheck";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 24;
+const SETTINGS_VERSION = 25;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -308,6 +316,20 @@ interface AppState {
   // Force commands still work — lets the user drive checks manually.
   autoForgeAutoCheckEnabled: boolean;
   setAutoForgeAutoCheckEnabled: (enabled: boolean) => void;
+  // Auto-Check cadence — how often the AutoForge loops may spend a model
+  // evaluation. "smart" reacts to real context changes (new chat, transcript,
+  // visual frame, bot activity); "interval" honours a user-chosen cadence.
+  // Replaces the old hard-coded 15s re-check in both loops.
+  autoForgeAutoCheckMode: AutoCheckMode;
+  autoForgeAutoCheckIntervalMs: number;
+  setAutoForgeAutoCheckCadence: (mode: AutoCheckMode, intervalMs?: number) => void;
+  // Runtime-only pacing telemetry for the CORE Auto-Check indicator (shared by
+  // both loops — in multi-bot mode it reflects the most recent check across
+  // bots). Never persisted: it describes the live session, not user settings.
+  autoForgeLastCheckMs: number;
+  setAutoForgeLastCheckMs: (ms: number) => void;
+  autoForgeCheckArmed: boolean;
+  setAutoForgeCheckArmed: (armed: boolean) => void;
 
   r34lEnabled: boolean;
   setR34lEnabled: (enabled: boolean) => void;
@@ -682,11 +704,25 @@ interface AppState {
   setHypeLevel: (level: number) => void;
 
   // ─── Interface Mode (Core vs Studio) ─────────────────────
-  // One authoritative mode drives presentation density. Core = minimal
-  // operational surface; Studio = the existing full-density experience.
+  // `interfaceMode` is the user's *preferred* mode (persisted). The
+  // *effective* mode that renders is derived: when the viewport is too
+  // narrow for STUDIO, or a viewport shrink forced the user into CORE,
+  // the effective mode is "core" — see src/lib/studioAvailability.ts and
+  // useEffectiveMode() in useMediaQuery.ts. Opening MADchatter on a phone
+  // never overwrites the preferred mode; it only changes the effective one.
   // Mode changes presentation only, never engine behavior or config.
   interfaceMode: "core" | "studio";
   setInterfaceMode: (mode: "core" | "studio") => void;
+  // Transient (non-persisted): true when a viewport shrink forced a STUDIO
+  // user into CORE, or when the session started below the STUDIO threshold.
+  // Prevents an automatic snap back to STUDIO on viewport expand (the user
+  // re-enters manually), while a fresh load on a large screen resumes STUDIO.
+  studioForcedCore: boolean;
+  setStudioForcedCore: (v: boolean) => void;
+  // Transient (non-persisted): opens the "STUDIO needs a larger screen"
+  // interstitial when the user attempts to enter STUDIO while unavailable.
+  studioGateOpen: boolean;
+  setStudioGateOpen: (v: boolean) => void;
 
   // ─── Onboarding Milestones ───────────────────────────────
   // Persisted milestones that cannot be reconstructed from current state.
@@ -705,6 +741,10 @@ interface AppState {
   setModeWelcomeSeen: (v: boolean) => void;
   activationCelebrated: boolean;
   setActivationCelebrated: (v: boolean) => void;
+  // True once the user has seen the post-onboarding Studio discovery overlay
+  // (lists Studio-only features they don't have in Core mode).
+  studioDiscoverySeen: boolean;
+  setStudioDiscoverySeen: (v: boolean) => void;
   // Micro-tour dismissal tracking. Keyed by tour id (e.g. "multibot", "memory").
   // Dismissed tours don't re-fire. Stored as a plain object for Zustand persist.
   microToursSeen: Record<string, boolean>;
@@ -864,6 +904,7 @@ export const partializeAppState = (state: AppState) => ({
   personaChosen: state.personaChosen,
   modeWelcomeSeen: state.modeWelcomeSeen,
   activationCelebrated: state.activationCelebrated,
+  studioDiscoverySeen: state.studioDiscoverySeen,
   microToursSeen: state.microToursSeen,
   // First Message Mode: only the user preference persists. The runtime
   // cohort is ephemeral (never serialized) so it can never leak across
@@ -871,6 +912,11 @@ export const partializeAppState = (state: AppState) => ({
   firstMessageModeEnabled: state.firstMessageModeEnabled,
   // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
   autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
+  // Auto-Check cadence (Smart vs fixed interval). Runtime pacing telemetry
+  // (autoForgeLastCheckMs / autoForgeCheckArmed) is deliberately excluded —
+  // it describes the live session, not a user preference.
+  autoForgeAutoCheckMode: state.autoForgeAutoCheckMode,
+  autoForgeAutoCheckIntervalMs: state.autoForgeAutoCheckIntervalMs,
 });
 
 export const useAppStore = create<AppState>()(
@@ -967,6 +1013,18 @@ export const useAppStore = create<AppState>()(
         }),
       autoForgeAutoCheckEnabled: true,
       setAutoForgeAutoCheckEnabled: (enabled) => set({ autoForgeAutoCheckEnabled: enabled }),
+      autoForgeAutoCheckMode: DEFAULT_AUTO_CHECK_MODE,
+      autoForgeAutoCheckIntervalMs: DEFAULT_AUTO_CHECK_INTERVAL_MS,
+      setAutoForgeAutoCheckCadence: (mode, intervalMs) => set((state) => ({
+        autoForgeAutoCheckMode: normalizeAutoCheckMode(mode),
+        autoForgeAutoCheckIntervalMs: intervalMs === undefined
+          ? state.autoForgeAutoCheckIntervalMs
+          : clampAutoCheckIntervalMs(intervalMs),
+      })),
+      autoForgeLastCheckMs: 0,
+      setAutoForgeLastCheckMs: (ms) => set({ autoForgeLastCheckMs: ms }),
+      autoForgeCheckArmed: false,
+      setAutoForgeCheckArmed: (armed) => set({ autoForgeCheckArmed: armed }),
 
       r34lEnabled: false,
       setR34lEnabled: (enabled) => set({ r34lEnabled: enabled }),
@@ -1430,7 +1488,29 @@ export const useAppStore = create<AppState>()(
       // Default to "core" for new users. The v21 migration sets existing
       // users to "studio" so veteran users don't suddenly land in onboarding.
       interfaceMode: "core",
-      setInterfaceMode: (mode) => set({ interfaceMode: mode }),
+      // setInterfaceMode is the single chokepoint for entering either mode.
+      // Every entry path (header toggle, CoreStudioSwitch, command palette,
+      // ModeWelcomeOverlay, StudioDiscoveryOverlay, "Open Studio" buttons,
+      // persisted state) routes through here. When the user asks for STUDIO
+      // but the viewport can't support it, we open the gate interstitial
+      // instead of setting the mode — so the preferred mode is never
+      // silently corrupted by an unsupported request. A successful explicit
+      // choice clears `studioForcedCore` (the user is choosing willingly).
+      setInterfaceMode: (mode) => {
+        if (mode === "studio" && !isStudioAvailable()) {
+          set({ studioGateOpen: true });
+          return;
+        }
+        set({ interfaceMode: mode, studioForcedCore: false, studioGateOpen: false });
+      },
+      // Transient: starts true when the session begins below the STUDIO
+      // threshold so an expand doesn't auto-snap into STUDIO (Case G). A
+      // fresh load on a large screen starts false, so a saved STUDIO
+      // preference resumes normally (Case C).
+      studioForcedCore: !isStudioAvailable(),
+      setStudioForcedCore: (v) => set({ studioForcedCore: v }),
+      studioGateOpen: false,
+      setStudioGateOpen: (v) => set({ studioGateOpen: v }),
       hasSentMessage: false,
       setHasSentMessage: (v) => set({ hasSentMessage: v }),
       hasEnabledAutoForgeOnce: false,
@@ -1441,6 +1521,8 @@ export const useAppStore = create<AppState>()(
       setModeWelcomeSeen: (v) => set({ modeWelcomeSeen: v }),
       activationCelebrated: false,
       setActivationCelebrated: (v) => set({ activationCelebrated: v }),
+      studioDiscoverySeen: false,
+      setStudioDiscoverySeen: (v) => set({ studioDiscoverySeen: v }),
       microToursSeen: {},
       setMicroTourSeen: (tourId, seen) =>
         set((state) => ({ microToursSeen: { ...state.microToursSeen, [tourId]: seen } })),
@@ -2617,6 +2699,8 @@ export const useAppStore = create<AppState>()(
           firstMessageModeEnabled: state.firstMessageModeEnabled,
           // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
           autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
+          autoForgeAutoCheckMode: state.autoForgeAutoCheckMode,
+          autoForgeAutoCheckIntervalMs: state.autoForgeAutoCheckIntervalMs,
           exportedAt: new Date().toISOString(),
           version: SETTINGS_VERSION,
         };
@@ -2675,6 +2759,8 @@ export const useAppStore = create<AppState>()(
           if (data.firstMessageModeEnabled !== undefined) set({ firstMessageModeEnabled: data.firstMessageModeEnabled });
           // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
           if (data.autoForgeAutoCheckEnabled !== undefined) set({ autoForgeAutoCheckEnabled: data.autoForgeAutoCheckEnabled });
+          if (data.autoForgeAutoCheckMode !== undefined) set({ autoForgeAutoCheckMode: normalizeAutoCheckMode(data.autoForgeAutoCheckMode) });
+          if (data.autoForgeAutoCheckIntervalMs !== undefined) set({ autoForgeAutoCheckIntervalMs: clampAutoCheckIntervalMs(data.autoForgeAutoCheckIntervalMs) });
           return true;
         } catch (e) {
           console.warn("[store] importSettings failed:", e);
@@ -2911,6 +2997,9 @@ export const useAppStore = create<AppState>()(
           if (persistedState.activationCelebrated === undefined) {
             persistedState.activationCelebrated = false;
           }
+          if (persistedState.studioDiscoverySeen === undefined) {
+            persistedState.studioDiscoverySeen = false;
+          }
           if (persistedState.microToursSeen === undefined) {
             persistedState.microToursSeen = {};
           }
@@ -2944,6 +3033,23 @@ export const useAppStore = create<AppState>()(
           }
           if (persistedState.modeWelcomeSeen === undefined) {
             persistedState.modeWelcomeSeen = false;
+          }
+        }
+        // v25: AutoForge Auto-Check cadence. Both loops used to re-evaluate on
+        // a hard-coded 15s tick. Existing users migrate to "smart" (check when
+        // the context actually changed, floor 30s) with a 1-minute fallback
+        // interval for when they switch to Interval mode. Nothing is forced —
+        // the cadence is immediately configurable from CORE and the HUD.
+        if (version < 25 && persistedState) {
+          if (persistedState.autoForgeAutoCheckMode === undefined) {
+            persistedState.autoForgeAutoCheckMode = DEFAULT_AUTO_CHECK_MODE;
+          } else {
+            persistedState.autoForgeAutoCheckMode = normalizeAutoCheckMode(persistedState.autoForgeAutoCheckMode);
+          }
+          if (persistedState.autoForgeAutoCheckIntervalMs === undefined) {
+            persistedState.autoForgeAutoCheckIntervalMs = DEFAULT_AUTO_CHECK_INTERVAL_MS;
+          } else {
+            persistedState.autoForgeAutoCheckIntervalMs = clampAutoCheckIntervalMs(persistedState.autoForgeAutoCheckIntervalMs);
           }
         }
         return persistedState;

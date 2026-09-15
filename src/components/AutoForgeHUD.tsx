@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Reorder } from 'framer-motion';
 import { ThemedTooltip } from './ui/tooltip';
 import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from './directorNoteShared';
+import { useEffectiveMode } from '../hooks/useMediaQuery';
 
 // ─── Next Check color thresholds ───────────────────────────────────────────
 // Short = hot/green (about to fire), long = cool/red (calm wait).
@@ -124,6 +125,18 @@ export function AutoForgeHUD() {
     autoForgeDecisionHistory,
   } = useAppStore();
   const multiBotActive = useAppStore(selectMultiBotActive);
+
+  // The AutoForge HUD is a STUDIO-only surface. In CORE mode the user
+  // manages AutoForge through the Core workspace's AutoForge panel instead.
+  // Gate both the render and the open state so a stray open (hotkey H,
+  // command palette, voice command) can't leave the HUD stuck "open"
+  // invisibly and surprise the user when they later switch to STUDIO.
+  const effectiveMode = useEffectiveMode();
+  useEffect(() => {
+    if (effectiveMode === 'core' && useAppStore.getState().isAutoForgeHUDOpen) {
+      useAppStore.getState().setIsAutoForgeHUDOpen(false);
+    }
+  }, [effectiveMode]);
 
   const [now, setNow] = useState(Date.now());
   const [burstKey, setBurstKey] = useState(0);
@@ -310,6 +323,7 @@ export function AutoForgeHUD() {
   }, [isAutoForgeHUDOpen, effectiveDecision, decisionBot, multiBotActive]);
 
   if (!isAutoForgeHUDOpen) return null;
+  if (effectiveMode === 'core') return null;
 
   const timeSinceLast = effectiveLastActionMs
     ? Math.max(0, Math.floor((now - effectiveLastActionMs) / 1000))
@@ -617,6 +631,51 @@ export function AutoForgeHUD() {
                   <div className="mt-1 p-2 bg-black/50 rounded border border-white/5 text-[10px] font-mono text-white break-words">
                     {safeActionPayload}
                   </div>
+                )}
+                {showSendButton && (
+                  <>
+                    <span className="text-[9px] font-mono font-bold uppercase text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 self-start">
+                      Pending — not sent
+                    </span>
+                    <button
+                      type="button"
+                      disabled={sendingPayload}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (sendingPayload) return;
+                        setSendingPayload(true);
+                        try {
+                          const channel = useAppStore.getState().streamMetadata.channelName;
+                          if (!channel) {
+                            toast.error("Set a channel before sending.");
+                            return;
+                          }
+                          await sendManualMessage({
+                            message: safeActionPayload,
+                            channel,
+                            botId: decisionBot?.id,
+                            source: "manual",
+                          });
+                          playSfx("forge_complete");
+                          toast.success(`Sent${decisionBot ? ` as @${decisionBot.session?.username}` : ""}`, {
+                            description: safeActionPayload.slice(0, 60),
+                          });
+                        } catch (err: any) {
+                          toast.error("Send failed", { description: err?.message || String(err) });
+                        } finally {
+                          setSendingPayload(false);
+                        }
+                      }}
+                      className={cn(
+                        "mt-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded text-[10px] font-mono font-bold uppercase transition-colors border",
+                        sendingPayload
+                          ? "bg-white/5 border-white/10 text-gray-500 cursor-wait"
+                          : "bg-emerald-500/20 hover:bg-emerald-500/40 border-emerald-500/30 text-emerald-300 hover:text-emerald-200",
+                      )}
+                    >
+                      {sendingPayload ? "Sending..." : "Send Now"}
+                    </button>
+                  </>
                 )}
               </div>
             </div>

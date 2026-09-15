@@ -20,6 +20,7 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
+  Activity,
   AlertTriangle,
   AudioLines,
   Bot,
@@ -29,7 +30,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Clock,
   Cpu,
   Eye,
   Flame,
@@ -39,28 +39,39 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  MessageCircle,
   MessageSquare,
   MonitorUp,
+  Moon,
+  Plug,
+  Send,
   Settings,
   Sparkles,
   Tv,
   Zap,
 } from "lucide-react";
 import { useAppStore } from "../store";
+import type { Platform } from "../lib/kick";
+import { sendManualMessage } from "../lib/manualSend";
+import { playMessageSound } from "../lib/sound";
+import { speakMessage } from "../lib/tts";
 import { useCoreReadiness, type CorePhase } from "../hooks/useCoreReadiness";
-import { InterfaceModeToggle } from "./CoreMode";
 import { TheForge } from "./TheForge";
 import { VersionBadge } from "./VersionBadge";
 import { PersonaPortrait } from "./PersonaPortrait";
-import { getActiveProvider, getKeys, setActiveProvider, saveKeys } from "../lib/keys";
+import { UserAvatar, userDisplayName } from "./UserAvatar";
+import { getActiveProvider, getKeys, getProviderWithKey, setActiveProvider, saveKeys, CUSTOM_OPENAI_PROVIDER } from "../lib/keys";
+import { fetchAvailableModels, testProviderConnection, suggestBaseUrlFromLabel, isPresetOrDefaultUrl, type ConnectionTestResult } from "../lib/customProvider";
 import { checkOllamaHealth, getCachedOllamaHealth, invalidateOllamaHealthCache } from "../lib/ollamaHealth";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
 import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
 import { switchChannel } from "../lib/channelSwitch";
-import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useMediaQuery, useStudioAvailable, useEffectiveMode } from "../hooks/useMediaQuery";
 import { ThemedTooltip } from "./ui/tooltip";
+import { AutoCheckControls } from "./AutoCheckControls";
+import { fireConfetti } from "../lib/confetti";
 import logoUrl from "../../madchatter-logo1.png";
 
 export type WidgetType = "audio" | "chat" | "visual" | "memory" | "stream";
@@ -87,6 +98,9 @@ interface CoreWorkspaceProps {
   // Visual auto-capture mode controls
   smartLevel: number;
   onCycleSmartLevel: () => void;
+  // Notifies ForgeLayout when the inline Visual panel is hidden/shown so
+  // auto-capture can pause when there's nothing to display.
+  onVisualInlineHiddenChange?: (hidden: boolean) => void;
 }
 
 // ─── Core/Studio beautified toggle switch ─────────────────────────────────
@@ -94,6 +108,7 @@ interface CoreWorkspaceProps {
 function CoreStudioSwitch(props: {
   mode: "core" | "studio";
   onToggle: (m: "core" | "studio") => void;
+  studioAvailable: boolean;
 }) {
   const isCore = props.mode === "core";
   return (
@@ -129,9 +144,17 @@ function CoreStudioSwitch(props: {
         type="button"
         onClick={() => props.onToggle("studio")}
         aria-pressed={!isCore}
+        // aria-disabled (not disabled): a tap still routes through
+        // setInterfaceMode → opens the "larger screen" gate overlay.
+        aria-disabled={!props.studioAvailable}
+        title={props.studioAvailable ? undefined : "STUDIO needs a larger screen"}
         className={cn(
           "relative z-10 px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-full transition-colors",
-          !isCore ? "text-cyan-200" : "text-gray-500 hover:text-gray-400"
+          !isCore
+            ? "text-cyan-200"
+            : props.studioAvailable
+              ? "text-gray-500 hover:text-gray-400"
+              : "text-gray-700 cursor-not-allowed"
         )}
       >
         Studio
@@ -182,7 +205,9 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
   const pinnedMemories = useAppStore((s) => s.pinnedMemories);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
   const setInterfaceMode = useAppStore((s) => s.setInterfaceMode);
-  const interfaceMode = useAppStore((s) => s.interfaceMode);
+  // effectiveMode is what actually renders (CORE when STUDIO is unavailable).
+  const interfaceMode = useEffectiveMode();
+  const studioAvailable = useStudioAvailable();
   const setPersonaChosen = useAppStore((s) => s.setPersonaChosen);
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
   const [stripExpandedItem, setStripExpandedItem] = useState<string | null>(null);
@@ -190,6 +215,11 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
   const [audioInlineHidden, setAudioInlineHidden] = useState(false);
   const [visualInlineHidden, setVisualInlineHidden] = useState(false);
   const [memoryInlineHidden, setMemoryInlineHidden] = useState(false);
+  // Notify ForgeLayout when the inline Visual panel visibility changes so
+  // auto-capture can pause while hidden.
+  useEffect(() => {
+    props.onVisualInlineHiddenChange?.(visualInlineHidden);
+  }, [visualInlineHidden]);
   // Live Context region: Stream + Chat share a height (resizable together)
   const [liveContextHeight, setLiveContextHeight] = useState(324);
   const [isResizingLiveContext, setIsResizingLiveContext] = useState(false);
@@ -206,6 +236,19 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
     if (readiness.phase !== "setup" && !setupGrownRef.current) {
       setupGrownRef.current = true;
       setLiveContextHeight((h) => Math.min(700, h * 2));
+    }
+  }, [readiness.phase]);
+
+  // Celebrate completing the welcome tutorial: confetti bursts from the
+  // bottom-left and bottom-right corners. Fires only on the real setup →
+  // operational transition, not on mount when a returning user loads straight
+  // into operational (personaChosen is persisted).
+  const prevPhaseRef = useRef(readiness.phase);
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = readiness.phase;
+    if (prev === "setup" && readiness.phase !== "setup") {
+      fireConfetti("bottom", 140);
     }
   }, [readiness.phase]);
 
@@ -287,8 +330,9 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
       {/* ─── Core/Studio toggle (top-right corner) ──────────────────────── */}
       <div className="absolute top-3 right-4 z-30">
         <CoreStudioSwitch
-          mode={useAppStore((s) => s.interfaceMode) as "core" | "studio"}
+          mode={interfaceMode}
           onToggle={(m) => setInterfaceMode(m)}
+          studioAvailable={studioAvailable}
         />
       </div>
 
@@ -320,7 +364,6 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                 autoForgeEnabled={autoForgeEnabled}
                 autoForgeDryRun={autoForgeDryRun}
                 handleAutoForgeToggle={handleAutoForgeToggle}
-                setInterfaceMode={setInterfaceMode}
               />
             ) : (
               <CoreReadinessStrip
@@ -334,7 +377,6 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                 multiBotEnabled={multiBotEnabled}
                 expandedItem={stripExpandedItem}
                 setExpandedItem={setStripExpandedItem}
-                setInterfaceMode={setInterfaceMode}
                 setPlatform={setPlatform}
                 updateStreamMetadata={updateStreamMetadata}
                 updateConfig={updateConfig}
@@ -386,12 +428,29 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
               maxWidth = "max-w-5xl";
             }
 
+            // Thin edge rails flag panels that exist but aren't visible inline
+            // (window too narrow, or dismissed via Hide). Click to reopen.
+            const showAudioEdgeHint = showStream && !showAudio;
+            const showMemoryEdgeHint = showStream && !showMemory;
+            const showVisualEdgeHint = showStream && !showVisual;
+
             return (
               <>
+                <div className={cn("shrink-0 relative mx-auto w-full", maxWidth)}>
+                  {/* Left edge hint — Audio transcript lives off-screen left */}
+                  {showAudioEdgeHint && (
+                    <ThemedTooltip content={liveContextUltraWide ? "Audio panel hidden — click to restore" : "Audio panel — hidden at this window width. Click to open"} side="right">
+                      <button
+                        type="button"
+                        onClick={(e) => liveContextUltraWide ? setAudioInlineHidden(false) : openWidgetFromDock("audio", e.currentTarget)}
+                        aria-label="Audio panel hidden — click to open"
+                        className="absolute -left-3 top-1 bottom-1 w-[3px] rounded-full bg-purple-400/25 hover:bg-purple-400/70 transition-colors"
+                      />
+                    </ThemedTooltip>
+                  )}
                 <div
                   className={cn(
-                    "shrink-0 grid gap-3 mx-auto w-full",
-                    maxWidth,
+                    "grid gap-3 w-full",
                     !isResizingLiveContext && "transition-[height] duration-500 ease-out"
                   )}
                   style={{ height: `${liveContextHeight}px`, gridTemplateColumns: gridTemplate }}
@@ -464,6 +523,7 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                     <div className="flex-1 overflow-hidden overflow-x-hidden p-3 min-h-0 flex flex-col">
                       {renderWidgetContent("chat")}
                     </div>
+                    <ChatPulseComposer />
                   </div>
 
                   {/* Far right column: Memory (top) + Visual (bottom) — ultra-wide only */}
@@ -562,6 +622,34 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                   )}
                 </div>
 
+                {/* Right edge hints — Memory + Visual live off-screen right.
+                    Split mirrors the right column's 2:3 stack. */}
+                {(showMemoryEdgeHint || showVisualEdgeHint) && (
+                  <div className="absolute -right-3 top-1 bottom-1 w-[3px] flex flex-col gap-1.5">
+                    {showMemoryEdgeHint && (
+                      <ThemedTooltip content={liveContextUltraWide ? "Memory panel hidden — click to restore" : "Memory panel — hidden at this window width. Click to open"} side="left">
+                        <button
+                          type="button"
+                          onClick={(e) => liveContextUltraWide ? setMemoryInlineHidden(false) : openWidgetFromDock("memory", e.currentTarget)}
+                          aria-label="Memory panel hidden — click to open"
+                          className="w-full flex-[2] rounded-full bg-blue-400/25 hover:bg-blue-400/70 transition-colors"
+                        />
+                      </ThemedTooltip>
+                    )}
+                    {showVisualEdgeHint && (
+                      <ThemedTooltip content={liveContextUltraWide ? "Visual panel hidden — click to restore" : "Visual panel — hidden at this window width. Click to open"} side="left">
+                        <button
+                          type="button"
+                          onClick={(e) => liveContextUltraWide ? setVisualInlineHidden(false) : openWidgetFromDock("visual", e.currentTarget)}
+                          aria-label="Visual panel hidden — click to open"
+                          className="w-full flex-[3] rounded-full bg-orange-400/25 hover:bg-orange-400/70 transition-colors"
+                        />
+                      </ThemedTooltip>
+                    )}
+                  </div>
+                )}
+                </div>
+
                 {/* Resize handle for the Live Context region */}
                 <div
                   onMouseDown={startLiveContextResize}
@@ -625,8 +713,8 @@ function CoreHeader(props: {
   activeLogin: () => void;
   activeLogout: () => void;
   activeClearLoginError: () => void;
-  platform: string;
-  setPlatform: (p: string) => void;
+  platform: Platform;
+  setPlatform: (p: Platform) => void;
 }) {
   return (
     <div className="shrink-0 border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-4 py-2 flex items-center justify-between gap-3 z-40 relative">
@@ -635,15 +723,10 @@ function CoreHeader(props: {
         <VersionBadge />
       </div>
 
-      {/* Center: Mode toggle */}
-      <div className="flex items-center gap-2">
-        <InterfaceModeToggle />
-      </div>
-
       {/* Right: Platform + Login */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1 justify-end">
         {/* Platform tabs */}
-        <div className="flex gap-0.5 bg-black/40 rounded border border-white/5 p-0.5">
+        <div className="flex gap-0.5 bg-black/40 rounded border border-white/5 p-0.5 shrink-0">
           {(["twitch", "kick", "joystick"] as const).map((p) => (
             <button
               key={p}
@@ -667,15 +750,18 @@ function CoreHeader(props: {
 
         {/* Login */}
         {props.activeAuthLoading ? (
-          <div className="h-7 w-20 bg-white/5 animate-pulse rounded-md border border-white/10" />
+          <div className="h-7 w-20 bg-white/5 animate-pulse rounded-md border border-white/10 shrink-0" />
         ) : props.activeUser ? (
-          <div className="flex items-center h-7 rounded-md overflow-hidden border bg-[#18181B] border-white/10">
-            <span className="text-[11px] font-bold tracking-wide text-white truncate max-w-[80px] px-2">
-              @{props.activeUser.display_name || props.activeUser.login || props.activeUser.username}
-            </span>
+          <div className="flex items-center h-7 rounded-md overflow-hidden border bg-[#18181B] border-white/10 min-w-0 max-w-full">
+            <div className="flex items-center gap-1.5 pl-1.5 pr-2.5 min-w-0">
+              <UserAvatar user={props.activeUser} platform={props.platform} sizeClass="h-5 w-5" textClass="text-[10px]" />
+              <span className="text-[11px] font-bold tracking-wide text-white truncate min-w-0">
+                @{userDisplayName(props.activeUser)}
+              </span>
+            </div>
             <button
               onClick={props.activeLogout}
-              className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
+              className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors shrink-0"
               aria-label="Disconnect"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -721,6 +807,48 @@ function CoreHeader(props: {
   );
 }
 
+// ─── Shared AI provider configuration data (hero + strip AI panel) ─────────
+
+const PROVIDER_KEY_MAP: Record<string, keyof ReturnType<typeof getKeys>> = {
+  gemini: "geminiKey",
+  openai: "chatGptKey",
+  claude: "claudeKey",
+  openrouter: "openRouterKey",
+};
+
+// Per-provider key-format hints so the placeholder doesn't mislead (e.g. a
+// Groq key is `gsk_…`, not `sk-…` — and Groq belongs under Custom anyway).
+const PROVIDER_KEY_PLACEHOLDER: Record<string, string> = {
+  gemini: "AIza...",
+  openai: "sk-...",
+  claude: "sk-ant-...",
+  openrouter: "sk-or-...",
+};
+
+const CLOUD_PROVIDER_PILLS = [
+  { id: "gemini", label: "Gemini", color: "text-blue-400" },
+  { id: "openai", label: "OpenAI", color: "text-emerald-400" },
+  { id: "claude", label: "Claude", color: "text-orange-400" },
+  { id: "openrouter", label: "OpenRouter", color: "text-purple-400" },
+  { id: "custom-openai", label: "Custom", color: "text-sky-400" },
+] as const;
+
+/** One-click switch to local Ollama. Seeds the default endpoint/model when
+ *  missing so the provider is immediately usable (OllamaConfigFields then
+ *  auto-repairs the model tag against the live model list). */
+function activateLocalOllama() {
+  setActiveProvider("ollama");
+  const keys = getKeys();
+  const updates: Partial<ReturnType<typeof getKeys>> = {};
+  if (!keys.customBaseUrl) updates.customBaseUrl = "http://localhost:11434/v1";
+  // getApiKey("ollama") returns null without a model — set the recommended
+  // default; OllamaConfigFields auto-repairs it against the live model list.
+  if (!keys.customModel) updates.customModel = "qwen3.5:9b";
+  if (Object.keys(updates).length) saveKeys(updates);
+  toast.success("Switched to local Ollama");
+  playSfx("welcome_dismiss");
+}
+
 // ─── Core Launchpad Hero (Setup phase) ────────────────────────────────────
 // Reimagined: channel input front and center, Ollama auto-detection,
 // clear "do this next" guidance. Not a static welcome — an interactive
@@ -760,7 +888,7 @@ function useOllamaAutoDetect(): "detecting" | "available" | "unavailable" {
  *  Self-contained: reads/saves keys directly, refreshes the model list on
  *  mount and whenever keys change. Auto-repairs a missing model so forging
  *  never fails on an unpulled tag. */
-function OllamaConfigFields() {
+export function OllamaConfigFields() {
   const authTick = useAppStore((s) => s.authTick);
   const [url, setUrl] = useState(() => getKeys().customBaseUrl || "http://localhost:11434/v1");
   const [model, setModel] = useState(() => getKeys().customModel);
@@ -846,7 +974,207 @@ function OllamaConfigFields() {
   );
 }
 
-// ─── AutoForge Setup Step (Step 6) ────────────────────────────────────────
+/** Custom OpenAI-compatible endpoint + model editor (Groq, OpenRouter,
+ *  Cerebras, Together, local proxies, self-hosted gateways…).
+ *  Self-contained like OllamaConfigFields: reads/saves keys directly and
+ *  exposes Load Models (GET /models) + Test Connection (chat probe). */
+export function CustomProviderConfigFields({ onActive }: { onActive?: () => void } = {}) {
+  const authTick = useAppStore((s) => s.authTick);
+  const [label, setLabel] = useState(() => getKeys().customOpenAILabel);
+  const [baseUrl, setBaseUrl] = useState(() => getKeys().customOpenAIBaseUrl);
+  const [apiKey, setApiKey] = useState(() => getKeys().customOpenAIKey);
+  const [model, setModel] = useState(() => getKeys().customOpenAIModel);
+  const [models, setModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [connResult, setConnResult] = useState<ConnectionTestResult | null>(null);
+
+  // Keep inputs in sync when keys change elsewhere (e.g. SettingsPanel save).
+  useEffect(() => {
+    const k = getKeys();
+    setLabel(k.customOpenAILabel);
+    setBaseUrl(k.customOpenAIBaseUrl);
+    setApiKey(k.customOpenAIKey);
+    setModel(k.customOpenAIModel);
+  }, [authTick]);
+
+  const save = (next: Record<string, string>) => {
+    saveKeys(next);
+    setConnResult(null);
+  };
+
+  const configured = !!(baseUrl.trim() && model.trim());
+
+  const handleLoadModels = async () => {
+    setLoadingModels(true);
+    setConnResult(null);
+    try {
+      const result = await fetchAvailableModels({ baseUrl, apiKey });
+      if (result.ok && result.models.length > 0) {
+        setModels(result.models);
+        toast.success(`Loaded ${result.models.length} models`);
+      } else {
+        setModels([]);
+        toast.error(result.message || "No models found — enter a model manually.");
+      }
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    setConnResult(null);
+    try {
+      const result = await testProviderConnection({ baseUrl, apiKey, model });
+      setConnResult(result);
+      if (result.models.length > 0) setModels(result.models);
+      if (result.ok) toast.success(result.message);
+      else toast.error(result.message);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleActivate = () => {
+    if (!baseUrl.trim() || !model.trim()) {
+      toast.error("Base URL and model are required");
+      return;
+    }
+    saveKeys({
+      customOpenAILabel: label.trim(),
+      customOpenAIBaseUrl: baseUrl.trim(),
+      customOpenAIKey: apiKey.trim(),
+      customOpenAIModel: model.trim(),
+    });
+    setActiveProvider(CUSTOM_OPENAI_PROVIDER);
+    toast.success("Custom provider saved — active");
+    playSfx("welcome_dismiss");
+    onActive?.();
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold text-sky-400 uppercase tracking-wider">OpenAI-compatible endpoint</span>
+        <span className="text-[9px] text-gray-600">{models.length ? `${models.length} model${models.length === 1 ? "" : "s"} found` : "Manual entry works"}</span>
+      </div>
+
+      <input
+        type="text"
+        value={label}
+        onChange={(e) => {
+          const next = e.target.value;
+          setLabel(next);
+          // Autofill Base URL when the label matches a known preset and the
+          // URL field is still empty or a preset default (don't clobber custom).
+          // Persist immediately so the authTick resync doesn't wipe it.
+          const suggested = suggestBaseUrlFromLabel(next);
+          if (suggested && isPresetOrDefaultUrl(baseUrl)) {
+            setBaseUrl(suggested);
+            saveKeys({ customOpenAILabel: next, customOpenAIBaseUrl: suggested });
+            setConnResult(null);
+          }
+        }}
+        onBlur={() => save({ customOpenAILabel: label.trim() })}
+        placeholder="Label (e.g. Groq, My Proxy) — optional"
+        className="w-full px-2.5 py-1.5 rounded-md bg-black/30 border border-white/10 text-[11px] font-mono text-gray-200 placeholder-gray-700 focus:border-sky-500/50 focus:outline-none"
+        aria-label="Provider label"
+      />
+      <input
+        type="text"
+        value={baseUrl}
+        onChange={(e) => setBaseUrl(e.target.value)}
+        onBlur={() => save({ customOpenAIBaseUrl: baseUrl.trim() })}
+        placeholder="Base URL (e.g. https://api.groq.com/openai/v1)"
+        className="w-full px-2.5 py-1.5 rounded-md bg-black/30 border border-white/10 text-[11px] font-mono text-gray-200 placeholder-gray-700 focus:border-sky-500/50 focus:outline-none"
+        aria-label="Base URL"
+      />
+      <input
+        type="password"
+        value={apiKey}
+        onChange={(e) => setApiKey(e.target.value)}
+        onBlur={() => save({ customOpenAIKey: apiKey.trim() })}
+        placeholder="API key (leave blank if none)"
+        className="w-full px-2.5 py-1.5 rounded-md bg-black/30 border border-white/10 text-[11px] font-mono text-gray-200 placeholder-gray-700 focus:border-sky-500/50 focus:outline-none"
+        aria-label="API key"
+      />
+      <input
+        type="text"
+        value={model}
+        onChange={(e) => setModel(e.target.value)}
+        onBlur={() => save({ customOpenAIModel: model.trim() })}
+        placeholder="Model (e.g. openai/gpt-oss-120b)"
+        className="w-full px-2.5 py-1.5 rounded-md bg-black/30 border border-white/10 text-[11px] font-mono text-gray-200 placeholder-gray-700 focus:border-sky-500/50 focus:outline-none"
+        aria-label="Model"
+      />
+
+      {models.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {models.slice(0, 10).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setModel(m); save({ customOpenAIModel: m }); }}
+              className={cn(
+                "px-1.5 py-0.5 rounded text-[9px] font-mono border transition-all",
+                model === m
+                  ? "bg-sky-500/20 border-sky-500/40 text-sky-300"
+                  : "bg-white/5 border-white/10 text-gray-500 hover:text-gray-300",
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          onClick={handleLoadModels}
+          disabled={loadingModels || !baseUrl.trim()}
+          className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-md bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-gray-200 hover:border-white/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {loadingModels ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+          Models
+        </button>
+        <button
+          type="button"
+          onClick={handleTest}
+          disabled={testing || !baseUrl.trim()}
+          className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-md bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-gray-200 hover:border-white/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {testing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+          Test
+        </button>
+        <button
+          type="button"
+          onClick={handleActivate}
+          disabled={!configured}
+          className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-md bg-sky-500/15 border border-sky-500/30 text-[10px] font-bold uppercase tracking-wider text-sky-300 hover:bg-sky-500/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Save
+        </button>
+      </div>
+
+      {connResult && (
+        <div className={cn(
+          "flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10px] leading-relaxed",
+          connResult.ok
+            ? "bg-green-500/10 border border-green-500/25 text-green-300"
+            : "bg-red-500/10 border border-red-500/25 text-red-300",
+        )}>
+          {connResult.ok
+            ? <Check className="w-3 h-3 mt-0.5 shrink-0" />
+            : <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />}
+          <span>{connResult.message}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Optional automation tuning. Finishing setup preserves the user's choice
 // to keep AutoForge off, preview with Dry Run, or enable live automation.
 
@@ -855,6 +1183,13 @@ const FREQ_PRESETS = [
   { id: "balanced", label: "Balanced", desc: "30/hr · 8/10min", maxActionsPerHour: 30, maxActionsPerTenMinutes: 8, minCooldownMs: 15_000 },
   { id: "chatty", label: "Chatty", desc: "60/hr · 15/10min", maxActionsPerHour: 60, maxActionsPerTenMinutes: 15, minCooldownMs: 8_000 },
 ] as const;
+
+// Icon per frequency preset — quiet (calm), balanced (steady), chatty (talkative).
+const FREQ_ICON = {
+  quiet: Moon,
+  balanced: Activity,
+  chatty: MessageCircle,
+} as const;
 
 function AutoForgeSetupStep(props: {
   isForging: boolean;
@@ -867,8 +1202,6 @@ function AutoForgeSetupStep(props: {
   const updateRateLimitConfig = useAppStore((s) => s.updateRateLimitConfig);
   const autoForgeDryRun = useAppStore((s) => s.autoForgeDryRun);
   const setAutoForgeDryRun = useAppStore((s) => s.setAutoForgeDryRun);
-  const autoForgeAutoCheckEnabled = useAppStore((s) => s.autoForgeAutoCheckEnabled);
-  const setAutoForgeAutoCheckEnabled = useAppStore((s) => s.setAutoForgeAutoCheckEnabled);
   const autoForgeConfidenceThreshold = useAppStore((s) => s.autoForgeConfidenceThreshold);
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
 
@@ -1000,97 +1333,66 @@ function AutoForgeSetupStep(props: {
           </div>
         </div>
 
-        {/* Dry Run + Auto-Check — side-by-side */}
-        <div className="grid grid-cols-2 gap-3">
-          {/* Dry Run (left) — with beautified tooltip */}
-          <ThemedTooltip
-            side="top"
-            align="center"
-            className="max-w-[240px] leading-relaxed"
-            content={
-              <div className="space-y-1">
-                <div className="font-bold text-amber-300">Dry Run Mode</div>
-                <div className="text-[10px] text-gray-400">
-                  AutoForge runs its full decision loop — reading chat, scoring confidence, generating a message — but never sends anything to the channel.
-                  Use it to preview the bot's judgment and tune confidence/frequency before going live.
-                </div>
+        {/* Dry Run — full-width toggle with beautified tooltip */}
+        <ThemedTooltip
+          side="top"
+          align="center"
+          className="max-w-[240px] leading-relaxed"
+          content={
+            <div className="space-y-1">
+              <div className="font-bold text-amber-300">Dry Run Mode</div>
+              <div className="text-[10px] text-gray-400">
+                AutoForge runs its full decision loop — reading chat, scoring confidence, generating a message — but never sends anything to the channel.
+                Use it to preview the bot's judgment and tune confidence/frequency before going live.
               </div>
-            }
-          >
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoForgeDryRun}
-              aria-label="Dry Run"
-              onClick={() => {
-                setAutoForgeDryRun(!autoForgeDryRun);
-                playSfx("welcome_dismiss");
-              }}
-              className={cn(
-                "h-full flex flex-col items-center gap-2 p-3 rounded-xl border transition-all",
-                autoForgeDryRun
-                  ? "bg-amber-500/10 border-amber-500/40"
-                  : "bg-[#0a0a0f] border-white/5 hover:border-white/10",
-              )}
-            >
-              <div className="flex items-center gap-1.5">
-                <FlaskConical className={cn("w-3.5 h-3.5", autoForgeDryRun ? "text-amber-400" : "text-gray-500")} />
-                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Dry Run</span>
-              </div>
-              <span
-                className={cn(
-                  "relative w-10 h-5 rounded-full border transition-all shrink-0",
-                  autoForgeDryRun ? "bg-amber-500/30 border-amber-500/50" : "bg-white/5 border-white/10",
-                )}
-              >
-                <span className={cn(
-                  "absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all",
-                  autoForgeDryRun ? "left-5 bg-amber-400" : "left-0.5 bg-gray-600",
-                )} />
-              </span>
-              <span className="text-[9px] text-gray-600 text-center leading-tight">
-                {autoForgeDryRun ? "Preview only — nothing sent" : "Sending live to chat"}
-              </span>
-            </button>
-          </ThemedTooltip>
-
-          {/* Auto-Check (right) */}
+            </div>
+          }
+        >
           <button
             type="button"
             role="switch"
-            aria-checked={autoForgeAutoCheckEnabled}
-            aria-label="Auto-Check"
+            aria-checked={autoForgeDryRun}
+            aria-label="Dry Run"
             onClick={() => {
-              setAutoForgeAutoCheckEnabled(!autoForgeAutoCheckEnabled);
+              setAutoForgeDryRun(!autoForgeDryRun);
               playSfx("welcome_dismiss");
             }}
             className={cn(
-              "h-full flex flex-col items-center gap-2 p-3 rounded-xl border transition-all",
-              autoForgeAutoCheckEnabled
-                ? "bg-emerald-500/10 border-emerald-500/40"
+              "w-full flex items-center justify-between gap-2 p-3 rounded-xl border transition-all",
+              autoForgeDryRun
+                ? "bg-amber-500/10 border-amber-500/40"
                 : "bg-[#0a0a0f] border-white/5 hover:border-white/10",
             )}
           >
             <div className="flex items-center gap-1.5">
-              <Clock className={cn("w-3.5 h-3.5", autoForgeAutoCheckEnabled ? "text-emerald-400" : "text-gray-500")} />
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Auto-Check</span>
+              <FlaskConical className={cn("w-3.5 h-3.5", autoForgeDryRun ? "text-amber-400" : "text-gray-500")} />
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Dry Run</span>
+              <span className="text-[9px] text-gray-600 leading-tight">
+                {autoForgeDryRun ? "· preview only" : "· sending live"}
+              </span>
             </div>
             <span
               className={cn(
                 "relative w-10 h-5 rounded-full border transition-all shrink-0",
-                autoForgeAutoCheckEnabled ? "bg-emerald-500/30 border-emerald-500/50" : "bg-white/5 border-white/10",
+                autoForgeDryRun ? "bg-amber-500/30 border-amber-500/50" : "bg-white/5 border-white/10",
               )}
             >
               <span className={cn(
                 "absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all",
-                autoForgeAutoCheckEnabled ? "left-5 bg-emerald-400" : "left-0.5 bg-gray-600",
+                autoForgeDryRun ? "left-5 bg-amber-400" : "left-0.5 bg-gray-600",
               )} />
             </span>
-            <span className="text-[9px] text-gray-600 text-center leading-tight">
-              {autoForgeAutoCheckEnabled ? "Scans chat every 15s" : "Manual checks only"}
-            </span>
           </button>
-        </div>
+        </ThemedTooltip>
+
+        {/* Auto-Check cadence — replaces the old implicit 15s re-check with a
+            user-controlled cadence (Smart / 30s / 1m / 2m / 5m) + live progress.
+            Matches the Mobile CORE tuning surface (AutoCheckControls). */}
+        {props.autoForgeEnabled && (
+          <div className="p-3 rounded-xl border border-white/5 bg-[#0a0a0f]">
+            <AutoCheckControls variant="full" />
+          </div>
+        )}
 
         {/* Finish button */}
         <motion.button
@@ -1111,8 +1413,8 @@ function CoreLaunchpadHero(props: {
   readiness: ReturnType<typeof useCoreReadiness>;
   expandedStep: string | null;
   setExpandedStep: (s: string | null) => void;
-  platform: string;
-  setPlatform: (p: string) => void;
+  platform: Platform;
+  setPlatform: (p: Platform) => void;
   streamMetadata: any;
   updateStreamMetadata: (m: any) => void;
   config: any;
@@ -1129,7 +1431,6 @@ function CoreLaunchpadHero(props: {
   autoForgeEnabled: boolean;
   autoForgeDryRun: boolean;
   handleAutoForgeToggle: () => void;
-  setInterfaceMode: (m: "core" | "studio") => void;
 }) {
   const { readiness } = props;
   const setPersonaChosen = useAppStore((s) => s.setPersonaChosen);
@@ -1150,6 +1451,8 @@ function CoreLaunchpadHero(props: {
   const [autoForgeStepDone, setAutoForgeStepDone] = useState(false);
   // Audio step (optional): user can skip or complete audio capture to advance
   const [audioStepDone, setAudioStepDone] = useState(false);
+  // Forge step (skippable): user can forge OR explicitly skip to AutoForge
+  const [forgeStepDone, setForgeStepDone] = useState(false);
 
   // Store fields for audio setup coordination (glow + progress bar)
   const setAudioSetupActive = useAppStore((s) => s.setAudioSetupActive);
@@ -1160,11 +1463,13 @@ function CoreLaunchpadHero(props: {
   // The "furthest reachable step" is derived from readiness; the user can
   // navigate freely up to that step but not past it.
   // Step 2 (Audio) is optional — audioStepDone is set by skip or capture.
+  // Step 5 (Forge) is skippable — the user can advance to step 6 (AutoForge)
+  // without forging, via the step-6 progress dot or the Next arrow key. Landing
+  // on step 6 without forging marks forgeStepDone so setup can complete.
   const furthestStep = !readiness.platformReady ? 1
     : !audioStepDone ? 2
     : !readiness.aiReady ? 3
     : !personaStepDone ? 4
-    : !hasForgedOnce ? 5
     : !autoForgeStepDone ? 6
     : 7; // setup complete
   const [setupStep, setSetupStep] = useState(1);
@@ -1180,6 +1485,17 @@ function CoreLaunchpadHero(props: {
   useEffect(() => {
     if (setupStep > furthestStep) setSetupStep(furthestStep);
   }, [furthestStep, setupStep]);
+
+  // Skipping the Forge step: the Forge step (5) is skippable, so step 6 is
+  // reachable as soon as the persona is locked in. Whenever the user lands on
+  // step 6 without having forged, mark the forge step done so setup can
+  // complete. This covers every skip path — the step-6 progress dot, the Next
+  // arrow key — without a dedicated "Skip for now" button.
+  useEffect(() => {
+    if (setupStep >= 6 && !hasForgedOnce && !forgeStepDone) {
+      setForgeStepDone(true);
+    }
+  }, [setupStep, hasForgedOnce, forgeStepDone]);
 
   // Auto-advance to the first incomplete step (once per newly-reached step).
   // Don't auto-advance past step 5 (Forge) — after the first Forge completes,
@@ -1214,13 +1530,15 @@ function CoreLaunchpadHero(props: {
     return () => window.removeEventListener("keydown", onKey);
   }, [readiness.phase, furthestStep]);
 
-  // Finish setup after the first Forge and review of optional automation.
-  // The persisted milestone then lets the regular workspace take over.
+  // Finish setup after the first Forge (or an explicit skip) and review of
+  // optional automation. The persisted milestone then lets the regular
+  // workspace take over. A skipped forge leaves hasForgedOnce false — the
+  // user lands in "activating" phase with "Forge something" as next action.
   useEffect(() => {
-    if (hasForgedOnce && personaStepDone && autoForgeStepDone) {
+    if ((hasForgedOnce || forgeStepDone) && personaStepDone && autoForgeStepDone) {
       setPersonaChosen(true);
     }
-  }, [hasForgedOnce, personaStepDone, autoForgeStepDone, setPersonaChosen]);
+  }, [hasForgedOnce, forgeStepDone, personaStepDone, autoForgeStepDone, setPersonaChosen]);
 
   // Sync audioSetupActive to the store so StreamOverlay can glow the capture
   // button while the user is on the audio step.
@@ -1263,26 +1581,6 @@ function CoreLaunchpadHero(props: {
     }
   };
 
-  const useLocalOllama = () => {
-    setActiveProvider("ollama");
-    const keys = getKeys();
-    const updates: Partial<ReturnType<typeof getKeys>> = {};
-    if (!keys.customBaseUrl) updates.customBaseUrl = "http://localhost:11434/v1";
-    // getApiKey("ollama") returns null without a model — set the recommended
-    // default; OllamaConfigFields auto-repairs it against the live model list.
-    if (!keys.customModel) updates.customModel = "qwen3.5:9b";
-    if (Object.keys(updates).length) saveKeys(updates);
-    toast.success("Switched to local Ollama");
-    playSfx("welcome_dismiss");
-  };
-
-  const PROVIDER_KEY_MAP: Record<string, keyof ReturnType<typeof getKeys>> = {
-    gemini: "geminiKey",
-    openai: "chatGptKey",
-    claude: "claudeKey",
-    openrouter: "openRouterKey",
-  };
-
   const saveApiKey = (providerId: string, label: string) => {
     const key = apiKeyInput.trim();
     if (!key) {
@@ -1311,7 +1609,10 @@ function CoreLaunchpadHero(props: {
   const expandedHasKey = !!(expandedKeyField && getKeys()[expandedKeyField]);
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[40vh] py-4">
+    <div className={cn(
+      "flex flex-col items-center justify-center py-4",
+      hasForgedOnce ? "min-h-0" : "min-h-[40vh]"
+    )}>
       {/* ─── Setup steps (1-4, user can navigate back) ───────────────── */}
       <AnimatePresence mode="wait">
         {setupStep === 1 ? (
@@ -1552,7 +1853,7 @@ function CoreLaunchpadHero(props: {
               {/* Ollama — auto-detected */}
               <button
                 type="button"
-                onClick={useLocalOllama}
+                onClick={activateLocalOllama}
                 disabled={ollamaState === "detecting"}
                 className={cn(
                   "w-full p-4 rounded-xl border-2 text-left transition-all flex items-center gap-3",
@@ -1616,15 +1917,15 @@ function CoreLaunchpadHero(props: {
               <div className="p-4 rounded-xl border border-white/5 bg-[#0a0a0f]">
                 <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Cloud Providers</div>
                 <div className="grid grid-cols-2 gap-1.5">
-                  {[
-                    { id: "gemini", label: "Gemini", color: "text-blue-400" },
-                    { id: "openai", label: "OpenAI", color: "text-emerald-400" },
-                    { id: "claude", label: "Claude", color: "text-orange-400" },
-                    { id: "openrouter", label: "OpenRouter", color: "text-purple-400" },
-                  ].map((p) => {
+                  {CLOUD_PROVIDER_PILLS.map((p) => {
                     const keys = getKeys();
                     const keyField = PROVIDER_KEY_MAP[p.id];
-                    const hasKey = !!(keyField && keys[keyField]);
+                    // Custom OpenAI-compatible is "configured" on base URL +
+                    // model (API key is optional); keyed providers check the
+                    // stored key directly.
+                    const hasKey = p.id === "custom-openai"
+                      ? !!(keys.customOpenAIBaseUrl && keys.customOpenAIModel)
+                      : !!(keyField && keys[keyField]);
                     const isActive = activeProvider === p.id;
                     return (
                       <button
@@ -1656,7 +1957,16 @@ function CoreLaunchpadHero(props: {
                         {hasKey ? (
                           expandedProvider === p.id
                             ? <ChevronDown className="w-3 h-3" />
-                            : (
+                            : p.id === "custom-openai" ? (
+                              // No single key to mask — the key is optional and
+                              // config lives in base URL + model.
+                              <span
+                                className="flex items-center gap-1 text-[9px] font-mono text-emerald-400"
+                                title={`${keys.customOpenAILabel || "Custom"} configured — click to view/edit`}
+                              >
+                                <Check className="w-3 h-3" />configured
+                              </span>
+                            ) : (
                               <span
                                 className="flex items-center gap-1 text-[9px] font-mono text-emerald-400"
                                 title={`Saved ${p.label} key ending in ${String(keys[keyField]).slice(-4)} — click to view/edit`}
@@ -1667,14 +1977,17 @@ function CoreLaunchpadHero(props: {
                         ) : expandedProvider === p.id ? (
                           <ChevronDown className="w-3 h-3" />
                         ) : (
-                          <span className="text-[9px] text-gray-600">needs key</span>
+                          <span className="text-[9px] text-gray-600">
+                            {p.id === "custom-openai" ? "endpoint" : "needs key"}
+                          </span>
                         )}
                       </button>
                     );
                   })}
                 </div>
 
-                {/* Inline API key input — expands when provider clicked without key */}
+                {/* Inline API key input — expands when provider clicked without key.
+                    Custom OpenAI-compatible expands a full endpoint form instead. */}
                 <AnimatePresence>
                   {expandedProvider && (
                     <motion.div
@@ -1684,48 +1997,57 @@ function CoreLaunchpadHero(props: {
                       transition={{ duration: 0.2 }}
                       className="overflow-hidden"
                     >
-                      <div className="mt-3 pt-3 border-t border-white/5">
-                        <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">
-                          {expandedHasKey
-                            ? `${expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1)} API key — saved`
-                            : `Paste your ${expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1)} API key`}
+                      {expandedProvider === CUSTOM_OPENAI_PROVIDER ? (
+                        <div className="mt-3 pt-3 border-t border-white/5">
+                          <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">
+                            Custom OpenAI-compatible — Groq, OpenRouter, proxies…
+                          </div>
+                          <CustomProviderConfigFields onActive={() => setExpandedProvider(null)} />
                         </div>
-                        <div className="flex gap-2">
-                          <input
-                            ref={apiKeyInputRef}
-                            type="password"
-                            value={apiKeyInput}
-                            onChange={(e) => setApiKeyInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") saveApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1));
-                              if (e.key === "Escape") { setExpandedProvider(null); setApiKeyInput(""); }
-                            }}
-                            placeholder="sk-..."
-                            className="flex-1 px-3 py-2 rounded-lg bg-[#0a0a0f] border border-white/10 text-sm text-gray-200 placeholder-gray-700 focus:border-cyan-500/50 focus:outline-none focus:ring-2 focus:ring-cyan-500/10"
-                            aria-label={`${expandedProvider} API key`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => saveApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1))}
-                            className="px-4 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 text-xs font-bold transition-all"
-                          >
-                            {expandedHasKey ? "Update" : "Save"}
-                          </button>
-                          {expandedHasKey && (
+                      ) : (
+                        <div className="mt-3 pt-3 border-t border-white/5">
+                          <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">
+                            {expandedHasKey
+                              ? `${expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1)} API key — saved`
+                              : `Paste your ${expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1)} API key`}
+                          </div>
+                          <div className="flex gap-2">
+                            <input
+                              ref={apiKeyInputRef}
+                              type="password"
+                              value={apiKeyInput}
+                              onChange={(e) => setApiKeyInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1));
+                                if (e.key === "Escape") { setExpandedProvider(null); setApiKeyInput(""); }
+                              }}
+                              placeholder={PROVIDER_KEY_PLACEHOLDER[expandedProvider] ?? "API key..."}
+                              className="flex-1 px-3 py-2 rounded-lg bg-[#0a0a0f] border border-white/10 text-sm text-gray-200 placeholder-gray-700 focus:border-cyan-500/50 focus:outline-none focus:ring-2 focus:ring-cyan-500/10"
+                              aria-label={`${expandedProvider} API key`}
+                            />
                             <button
                               type="button"
-                              onClick={() => removeApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1))}
-                              className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 text-xs font-bold transition-all"
+                              onClick={() => saveApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1))}
+                              className="px-4 py-2 rounded-lg bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 text-xs font-bold transition-all"
                             >
-                              Remove
+                              {expandedHasKey ? "Update" : "Save"}
                             </button>
-                          )}
+                            {expandedHasKey && (
+                              <button
+                                type="button"
+                                onClick={() => removeApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1))}
+                                className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 text-xs font-bold transition-all"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-[9px] text-gray-600 mt-1.5">
+                            {expandedHasKey && <span className="text-emerald-500/70">Key saved from a previous session. </span>}
+                            Press <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">Enter</kbd> to save · <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">Esc</kbd> to cancel
+                          </p>
                         </div>
-                        <p className="text-[9px] text-gray-600 mt-1.5">
-                          {expandedHasKey && <span className="text-emerald-500/70">Key saved from a previous session. </span>}
-                          Press <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">Enter</kbd> to save · <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">Esc</kbd> to cancel
-                        </p>
-                      </div>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1796,8 +2118,8 @@ function CoreLaunchpadHero(props: {
             transition={{ duration: 0.3 }}
             className="w-full max-w-xl"
           >
-            <div className="text-center mb-6">
-              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-300 text-xs font-bold uppercase tracking-wider mb-4">
+            <div className="text-center mb-3">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-300 text-xs font-bold uppercase tracking-wider mb-3">
                 <span className="w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
                 Step 5 of 6 · Let's make some noise
               </div>
@@ -1817,33 +2139,33 @@ function CoreLaunchpadHero(props: {
                 </>
               )}
             </div>
-            {!hasForgedOnce && (
-              <div className="flex flex-col items-center gap-3">
-                <motion.button
-                  type="button"
-                  whileHover={{ scale: 1.04 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => window.dispatchEvent(new CustomEvent("forge-trigger"))}
-                  disabled={props.isForging}
-                  className="group relative px-10 py-4 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 text-white font-bold text-base transition-all shadow-lg shadow-orange-500/20 hover:shadow-orange-500/40 overflow-hidden disabled:opacity-70"
-                >
-                  {props.isForging && (
-                    <span className="absolute inset-0 overflow-hidden pointer-events-none">
-                      <span className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/20 to-transparent forge-btn-shimmer" />
-                    </span>
-                  )}
-                  <span className="relative flex items-center gap-2">
-                    {props.isForging
-                      ? <Loader2 className="w-5 h-5 animate-spin" />
-                      : <Flame className="w-5 h-5" />}
-                    {props.isForging ? "Forging..." : "Forge First Batch"}
+            <div className="flex flex-col items-center gap-3">
+              <motion.button
+                type="button"
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => window.dispatchEvent(new CustomEvent("forge-trigger"))}
+                disabled={props.isForging}
+                className="group relative px-10 py-4 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 text-white font-bold text-base transition-all shadow-lg shadow-orange-500/20 hover:shadow-orange-500/40 overflow-hidden disabled:opacity-70"
+              >
+                {props.isForging && (
+                  <span className="absolute inset-0 overflow-hidden pointer-events-none">
+                    <span className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/20 to-transparent forge-btn-shimmer" />
                   </span>
-                </motion.button>
-                <p className="text-[10px] text-gray-600">
-                  or press <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">F</kbd>
-                </p>
-              </div>
-            )}
+                )}
+                <span className="relative flex items-center gap-2">
+                  {props.isForging
+                    ? <Loader2 className="w-5 h-5 animate-spin" />
+                    : <Flame className="w-5 h-5" />}
+                  {props.isForging ? "Forging..." : hasForgedOnce ? "Forge" : "Forge First Batch"}
+                </span>
+              </motion.button>
+              <p className="text-[10px] text-gray-600">
+                {hasForgedOnce
+                  ? <>or press <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">F</kbd></>
+                  : <>press <kbd className="px-1 py-0.5 rounded bg-white/10 text-[9px] font-mono">F</kbd> to forge · skip ahead to step 6 anytime</>}
+              </p>
+            </div>
           </motion.div>
         ) : setupStep === 6 ? (
           /* ── Step 6: AutoForge — lite config ── */
@@ -1916,11 +2238,20 @@ function CoreLaunchpadHero(props: {
           {setupStep < 6 && (
             <button
               type="button"
-              onClick={() => setSetupStep((s) => Math.min(furthestStep, s + 1))}
-              disabled={setupStep + 1 > furthestStep}
+              onClick={() => {
+                // Step 5 (Forge) is skippable — clicking Next without forging
+                // marks the step done and advances straight to AutoForge.
+                if (setupStep === 5 && !hasForgedOnce && !forgeStepDone) {
+                  setForgeStepDone(true);
+                  setSetupStep(6);
+                  return;
+                }
+                setSetupStep((s) => Math.min(furthestStep, s + 1));
+              }}
+              disabled={setupStep + 1 > furthestStep && !(setupStep === 5 && !hasForgedOnce)}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all border",
-                setupStep + 1 <= furthestStep
+                setupStep + 1 <= furthestStep || (setupStep === 5 && !hasForgedOnce)
                   ? "text-orange-200 bg-orange-500/10 hover:bg-orange-500/20 border-orange-500/30 hover:border-orange-500/50"
                   : "text-gray-700 cursor-not-allowed border-transparent",
               )}
@@ -1933,47 +2264,15 @@ function CoreLaunchpadHero(props: {
         </div>
       )}
 
-      {/* ─── AutoForge (after first send) ──────────────────────────────── */}
-      {readiness.sendReady && !readiness.autoForgeComplete && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="mt-4 w-full max-w-md"
-        >
-          <div className="flex items-center justify-between p-4 rounded-xl border border-orange-500/20 bg-orange-500/5">
-            <div className="flex items-center gap-3">
-              <Bot className="w-5 h-5 text-orange-400" />
-              <div>
-                <div className="text-sm font-bold text-gray-200">AutoForge</div>
-                <div className="text-[11px] text-gray-500">Let MADchatter decide when to speak</div>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={props.handleAutoForgeToggle}
-              className="relative w-10 h-5 rounded-full border transition-all"
-              style={{
-                background: props.autoForgeEnabled ? "rgba(249,115,22,0.3)" : "rgba(0,0,0,0.4)",
-                borderColor: props.autoForgeEnabled ? "rgba(249,115,22,0.5)" : "rgba(255,255,255,0.1)",
-              }}
-            >
-              <span className={cn(
-                "absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all",
-                props.autoForgeEnabled ? "left-5 bg-orange-400" : "left-0.5 bg-gray-600"
-              )} />
-            </button>
-          </div>
-        </motion.div>
-      )}
     </div>
   );
 }
 
 // ─── Personality Grid (shared between hero and strip) ─────────────────────
 
-const PERSONA_SCENARIO = "The streamer whiffs an easy shot in an FPS";
+export const PERSONA_SCENARIO = "The streamer whiffs an easy shot in an FPS";
 
-const PERSONA_DATA = [
+export const PERSONA_DATA = [
   { value: "Gremlin", label: "Gremlin", desc: "Troll", color: "hover:border-red-500/40 hover:bg-red-500/10", activeColor: "bg-red-500/15 border-red-500/50 text-red-200 shadow-[0_0_20px_rgba(239,68,68,0.25)]", fontClass: "italic font-black lowercase tracking-tight", image: "https://madchatter.fun/assets/gremlin.gif", imageStatic: "https://madchatter.fun/assets/gremlin.png", example: "bro really aimed at the concept of aiming and still missed 💀" },
   { value: "Hype", label: "Hype Beast", desc: "Energy", color: "hover:border-orange-500/40 hover:bg-orange-500/10", activeColor: "bg-orange-500/15 border-orange-500/50 text-orange-200 shadow-[0_0_20px_rgba(249,115,22,0.25)]", fontClass: "font-black uppercase tracking-wider", image: "https://madchatter.fun/assets/hype_beast.gif", imageStatic: "https://madchatter.fun/assets/hype_beast.png", example: "NO WAY THAT WAS ACTUALLY INSANE LMAOOO 🔥" },
   { value: "Analyst", label: "Analyst", desc: "Smart", color: "hover:border-blue-500/40 hover:bg-blue-500/10", activeColor: "bg-blue-500/15 border-blue-500/50 text-blue-200 shadow-[0_0_20px_rgba(59,130,246,0.25)]", fontClass: "font-medium tracking-wide", image: "https://madchatter.fun/assets/analyst.gif", imageStatic: "https://madchatter.fun/assets/analyst.png", example: "crosshair was off-center — flicked left when the target went right" },
@@ -1994,6 +2293,7 @@ function PersonalityGrid(props: { config: any; updateConfig: (c: any) => void; a
               side="bottom"
               align="center"
               sideOffset={6}
+              closeOnPopupHover
               content={
                 <div className="text-left space-y-1.5 max-w-[280px]">
                   <div className="text-[9px] text-gray-500 uppercase tracking-wider font-bold">Same scenario</div>
@@ -2167,17 +2467,32 @@ function PreviousCycleDecisionPanel() {
   const nextMins = lastDecision?.estimated_next_action_minutes ?? 0;
   const activityLevel = lastDecision?.activityLevel ?? 0;
 
+  const decisionLabel =
+    decision === "speak" ? "Speak"
+    : decision === "stay_silent" || decision === "deliberate_silence" ? "Silent"
+    : decision === "short_reaction" ? "Reaction"
+    : decision === "emote_only" ? "Emote"
+    : decision === "quick_followup" ? "Followup"
+    : decision === "meta_observation" ? "Meta"
+    : decision === "joke_callback" ? "Joke"
+    : decision === "full_forge" ? "Forge"
+    : decision.replace(/_/g, " ");
+
   const decisionColor =
-    decision === "speak" ? "text-emerald-400"
-    : decision === "stay_silent" ? "text-gray-500"
-    : "text-cyan-400";
+    decision === "speak" || decision === "full_forge" || decision === "short_reaction" || decision === "emote_only" || decision === "quick_followup"
+      ? "text-emerald-400"
+      : decision === "stay_silent" || decision === "deliberate_silence"
+      ? "text-gray-500"
+      : "text-cyan-400";
   const decisionBg =
-    decision === "speak" ? "bg-emerald-500/10 border-emerald-500/20"
-    : decision === "stay_silent" ? "bg-white/5 border-white/5"
-    : "bg-cyan-500/10 border-cyan-500/20";
+    decision === "speak" || decision === "full_forge" || decision === "short_reaction" || decision === "emote_only" || decision === "quick_followup"
+      ? "bg-emerald-500/10 border-emerald-500/20"
+      : decision === "stay_silent" || decision === "deliberate_silence"
+      ? "bg-white/5 border-white/5"
+      : "bg-cyan-500/10 border-cyan-500/20";
   const confColor = confidence >= 0.7 ? "bg-emerald-500" : confidence >= 0.4 ? "bg-yellow-500" : "bg-red-500";
 
-  const panelW = expanded ? 340 : 260;
+  const panelW = expanded ? 340 : 280;
 
   return (
     <motion.div
@@ -2202,26 +2517,31 @@ function PreviousCycleDecisionPanel() {
       {/* Drag handle / header */}
       <div
         onMouseDown={onDragStart}
-        className="flex items-center gap-2 px-3 py-2.5 cursor-grab active:cursor-grabbing"
+        className="flex items-center gap-2 px-3 py-2 cursor-grab active:cursor-grabbing min-w-0"
         role="button"
         aria-label="Drag panel"
         tabIndex={0}
       >
         <GripHorizontal className="w-3.5 h-3.5 text-gray-600 shrink-0" />
         <Brain className={cn("w-4 h-4 shrink-0", decisionColor)} />
-        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider truncate">
-          Previous Cycle
+        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider shrink-0">
+          Last Cycle
         </span>
-        <span className={cn("text-[11px] font-bold truncate", decisionColor)}>{decision}</span>
-        <span className="ml-auto flex items-center gap-2 shrink-0">
-          <span className="text-[9px] text-gray-600 font-mono">{ts}</span>
+        <span
+          title={decision}
+          className={cn("text-[11px] font-bold px-1.5 py-0.2 rounded bg-white/5 border border-white/10 shrink-0", decisionColor)}
+        >
+          {decisionLabel}
+        </span>
+        <span className="ml-auto flex items-center gap-1.5 shrink-0 pl-1">
+          <span className="text-[9px] text-gray-500 font-mono">{ts}</span>
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
             className="p-0.5 rounded hover:bg-white/10"
             aria-label={expanded ? "Collapse" : "Expand"}
           >
-            <ChevronDown className={cn("w-3.5 h-3.5 text-gray-600 transition-transform", expanded && "rotate-180")} />
+            <ChevronDown className={cn("w-3.5 h-3.5 text-gray-500 transition-transform", expanded && "rotate-180")} />
           </button>
         </span>
       </div>
@@ -2394,7 +2714,7 @@ function ForgeTrayButton() {
 // ─── Channel Edit Row (readiness strip → platform panel) ──────────────────
 // Uses the same archive/reset/restore flow as setup and Studio.
 
-function ChannelEditRow(props: {
+export function ChannelEditRow(props: {
   channelName: string;
   onSave: (name: string) => void | Promise<void>;
 }) {
@@ -2447,11 +2767,260 @@ function ChannelEditRow(props: {
   );
 }
 
+// ─── Compact AI provider configurator (readiness-strip AI panel) ───────────
+// Full provider switching + key management inline in Core Mode — mirrors the
+// Step 3 Launchpad experience (Ollama auto-detect, cloud pills, inline key
+// input, custom endpoint fields) so AI configuration never requires the
+// "Open Settings (Studio)" detour.
+
+function AIProviderCompactPanel() {
+  // Subscribe to authTick so the localStorage-backed getKeys()/
+  // getActiveProvider() reads below refresh after saveKeys/setActiveProvider.
+  useAppStore((s) => s.authTick);
+
+  const activeProvider = getActiveProvider();
+  const keys = getKeys();
+  const ollamaState = useOllamaAutoDetect();
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const apiKeyInputRef = useRef<HTMLInputElement>(null);
+
+  const saveApiKey = (providerId: string, label: string) => {
+    const key = apiKeyInput.trim();
+    if (!key) {
+      toast.error("Paste an API key");
+      return;
+    }
+    const field = PROVIDER_KEY_MAP[providerId];
+    if (!field) return;
+    saveKeys({ [field]: key });
+    setActiveProvider(providerId);
+    setExpandedProvider(null);
+    setApiKeyInput("");
+    toast.success(`${label} key saved — provider active`);
+    playSfx("welcome_dismiss");
+  };
+
+  const removeApiKey = (providerId: string, label: string) => {
+    const field = PROVIDER_KEY_MAP[providerId];
+    if (!field) return;
+    saveKeys({ [field]: "" });
+    setApiKeyInput("");
+    toast.success(`${label} key removed`);
+    // Removing the active provider's key would leave an unconfigured provider
+    // selected — fall back to the first provider that still has a key.
+    if (getActiveProvider() === providerId) {
+      setActiveProvider(getProviderWithKey() || "gemini");
+    }
+  };
+
+  // Custom OpenAI-compatible is "configured" on base URL + model (API key is
+  // optional); keyed providers check the stored key directly.
+  const isProviderConfigured = (id: string) =>
+    id === "custom-openai"
+      ? !!(keys.customOpenAIBaseUrl && keys.customOpenAIModel)
+      : !!(PROVIDER_KEY_MAP[id] && keys[PROVIDER_KEY_MAP[id]]);
+
+  const toggleProvider = (p: (typeof CLOUD_PROVIDER_PILLS)[number]) => {
+    const keyField = PROVIDER_KEY_MAP[p.id];
+    const hasKey = isProviderConfigured(p.id);
+    const opening = expandedProvider !== p.id;
+    // Always toggle the editor — keyed providers pre-fill the saved key
+    // (masked input) so it can be viewed/updated/removed.
+    setExpandedProvider(opening ? p.id : null);
+    setApiKeyInput(opening ? ((keyField && keys[keyField]) || "") : "");
+    if (opening) setTimeout(() => apiKeyInputRef.current?.focus(), 50);
+    if (hasKey) {
+      setActiveProvider(p.id);
+      if (opening) toast.success(`Switched to ${p.label}`);
+      playSfx("welcome_dismiss");
+    }
+  };
+
+  const ollamaActive = activeProvider === "ollama";
+
+  return (
+    <div className="space-y-2">
+      {/* Ollama (local) — one-click switch, endpoint/model fields when active */}
+      <div className={cn(
+        "rounded-lg border overflow-hidden transition-all",
+        ollamaActive
+          ? "border-emerald-500/40 bg-emerald-500/[0.04]"
+          : ollamaState === "available"
+            ? "border-emerald-500/30 bg-[#0a0a0f]"
+            : "border-white/5 bg-[#0a0a0f]"
+      )}>
+        <button
+          type="button"
+          onClick={activateLocalOllama}
+          disabled={ollamaState === "detecting" || ollamaActive}
+          aria-pressed={ollamaActive}
+          className="w-full p-2.5 flex items-center gap-2.5 text-left transition-all disabled:cursor-default"
+        >
+          <span className={cn(
+            "w-7 h-7 rounded-md flex items-center justify-center shrink-0",
+            ollamaActive || ollamaState === "available" ? "bg-emerald-500/15 text-emerald-400" : "bg-white/5 text-gray-500"
+          )}>
+            {ollamaState === "detecting" ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : ollamaActive ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <Cpu className="w-4 h-4" />
+            )}
+          </span>
+          <span className="flex-1 min-w-0">
+            <span className="text-[11px] font-bold text-gray-200 flex items-center gap-1.5">
+              Ollama (Local)
+              {ollamaState === "available" && (
+                <span className="text-[8px] font-bold uppercase text-emerald-400 bg-emerald-500/15 px-1 py-0.5 rounded">Detected</span>
+              )}
+            </span>
+            <span className="block text-[9px] text-gray-500 truncate">
+              {ollamaState === "detecting" ? "Scanning for local Ollama..." :
+               ollamaState === "available" ? "Free · Private · Runs on your GPU" :
+               "Not detected — install at ollama.com"}
+            </span>
+          </span>
+          {ollamaActive && (
+            <span className="text-[8px] font-bold uppercase text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded shrink-0">Active</span>
+          )}
+        </button>
+        <AnimatePresence>
+          {ollamaActive && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="px-2.5 pb-2.5">
+                <OllamaConfigFields />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Cloud providers — pills + inline key/endpoint editors */}
+      <div className="p-2.5 rounded-lg border border-white/5 bg-[#0a0a0f]">
+        <div className="text-[9px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">Cloud Providers</div>
+        <div className="grid grid-cols-2 gap-1.5">
+          {CLOUD_PROVIDER_PILLS.map((p) => {
+            const hasKey = isProviderConfigured(p.id);
+            const isActive = activeProvider === p.id;
+            const isExpanded = expandedProvider === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => toggleProvider(p)}
+                className={cn(
+                  "flex items-center justify-between px-2 py-1.5 rounded-lg border text-[10px] font-bold transition-all",
+                  isActive && hasKey
+                    ? "bg-white/10 border-white/20 text-white"
+                    : isExpanded
+                      ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-300"
+                      : "bg-white/5 border-white/5 text-gray-400 hover:text-gray-300"
+                )}
+              >
+                <span className={p.color}>{p.label}</span>
+                {hasKey ? (
+                  isExpanded ? (
+                    <ChevronDown className="w-3 h-3" />
+                  ) : p.id === "custom-openai" ? (
+                    // No single key to mask — config lives in base URL + model.
+                    <span className="flex items-center gap-0.5 text-[8px] font-mono text-emerald-400">
+                      <Check className="w-3 h-3" />ok
+                    </span>
+                  ) : (
+                    <span className="text-[8px] font-mono text-emerald-400">••{String(keys[PROVIDER_KEY_MAP[p.id]]).slice(-4)}</span>
+                  )
+                ) : isExpanded ? (
+                  <ChevronDown className="w-3 h-3" />
+                ) : (
+                  <span className="text-[8px] text-gray-600">{p.id === "custom-openai" ? "endpoint" : "needs key"}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Inline editor — key input for keyed providers, endpoint form for Custom */}
+        <AnimatePresence>
+          {expandedProvider && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              {expandedProvider === CUSTOM_OPENAI_PROVIDER ? (
+                <div className="mt-2 pt-2 border-t border-white/5">
+                  <div className="text-[9px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                    Custom OpenAI-compatible — Groq, OpenRouter, proxies…
+                  </div>
+                  <CustomProviderConfigFields onActive={() => setExpandedProvider(null)} />
+                </div>
+              ) : (
+                <div className="mt-2 pt-2 border-t border-white/5">
+                  <div className="text-[9px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                    {isProviderConfigured(expandedProvider)
+                      ? `${expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1)} API key — saved`
+                      : `Paste your ${expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1)} API key`}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      ref={apiKeyInputRef}
+                      type="password"
+                      value={apiKeyInput}
+                      onChange={(e) => setApiKeyInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1));
+                        if (e.key === "Escape") { setExpandedProvider(null); setApiKeyInput(""); }
+                      }}
+                      placeholder={PROVIDER_KEY_PLACEHOLDER[expandedProvider] ?? "API key..."}
+                      className="flex-1 min-w-0 px-2 py-1.5 rounded-md bg-[#0a0a0f] border border-white/10 text-[11px] font-mono text-gray-200 placeholder-gray-700 focus:border-cyan-500/50 focus:outline-none"
+                      aria-label={`${expandedProvider} API key`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => saveApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1))}
+                      className="px-2.5 py-1.5 rounded-md bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 text-[10px] font-bold transition-all shrink-0"
+                    >
+                      {isProviderConfigured(expandedProvider) ? "Update" : "Save"}
+                    </button>
+                    {isProviderConfigured(expandedProvider) && (
+                      <button
+                        type="button"
+                        onClick={() => removeApiKey(expandedProvider, expandedProvider.charAt(0).toUpperCase() + expandedProvider.slice(1))}
+                        className="px-2 py-1.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-300 hover:bg-red-500/20 text-[10px] font-bold transition-all shrink-0"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[8px] text-gray-600 mt-1">
+                    {isProviderConfigured(expandedProvider) && <span className="text-emerald-500/70">Key saved from a previous session. </span>}
+                    Press <kbd className="px-1 py-0.5 rounded bg-white/10 text-[8px] font-mono">Enter</kbd> to save · <kbd className="px-1 py-0.5 rounded bg-white/10 text-[8px] font-mono">Esc</kbd> to cancel
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
 // ─── Core Readiness Strip (Activating/Operational) ────────────────────────
 
 function CoreReadinessStrip(props: {
   readiness: ReturnType<typeof useCoreReadiness>;
-  platform: string;
+  platform: Platform;
   streamMetadata: any;
   providerSummary: ReturnType<typeof getProviderSummary>;
   config: any;
@@ -2460,8 +3029,7 @@ function CoreReadinessStrip(props: {
   multiBotEnabled: boolean;
   expandedItem: string | null;
   setExpandedItem: (s: string | null) => void;
-  setInterfaceMode: (m: "core" | "studio") => void;
-  setPlatform: (p: string) => void;
+  setPlatform: (p: Platform) => void;
   updateStreamMetadata: (m: any) => void;
   updateConfig: (c: any) => void;
   activeUser: CoreWorkspaceProps["activeUser"];
@@ -2470,7 +3038,11 @@ function CoreReadinessStrip(props: {
 }) {
   const { readiness } = props;
 
-  const items: { key: string; label: string; detail: string; done: boolean; error: boolean }[] = [
+  // The active persona's icon data — lets the strip chip and expanded panel
+  // show the persona's actual portrait (png/gif pair) instead of a text-only label.
+  const activePersona = PERSONA_DATA.find((p) => p.value === props.config.primaryProfile);
+
+  const items: { key: string; label: string; detail: string; done: boolean; error: boolean; portrait?: { image: string; still: string } }[] = [
     {
       key: "platform",
       label: props.platform.charAt(0).toUpperCase() + props.platform.slice(1),
@@ -2493,6 +3065,9 @@ function CoreReadinessStrip(props: {
         : "Default",
       done: readiness.personalityReady,
       error: false,
+      portrait: activePersona
+        ? { image: activePersona.image, still: activePersona.imageStatic }
+        : undefined,
     },
   ];
 
@@ -2507,7 +3082,7 @@ function CoreReadinessStrip(props: {
             onClick={() => props.setExpandedItem(props.expandedItem === item.key ? null : item.key)}
             aria-expanded={props.expandedItem === item.key}
             className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all",
+              "group flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all",
               item.error
                 ? "bg-red-500/10 border-red-500/30 text-red-300 hover:bg-red-500/20"
                 : item.done
@@ -2519,6 +3094,14 @@ function CoreReadinessStrip(props: {
               "w-1.5 h-1.5 rounded-full",
               item.error ? "bg-red-400" : item.done ? "bg-emerald-400" : "bg-orange-400"
             )} />
+            {item.portrait && (
+              <PersonaPortrait
+                image={item.portrait.image}
+                still={item.portrait.still}
+                active={false}
+                size={20}
+              />
+            )}
             {item.error && <AlertTriangle className="w-3 h-3" />}
             <span className="font-bold">{item.label}</span>
             <span className="text-gray-500 hidden sm:inline">· {item.detail}</span>
@@ -2618,67 +3201,72 @@ function CoreReadinessStrip(props: {
                 </div>
               )}
               {props.expandedItem === "ai" && (
-                <div className="space-y-2">
-                  <div className="text-xs text-gray-400">
-                    {props.providerSummary.label}{props.providerSummary.model ? ` · ${props.providerSummary.model}` : ""}
-                  </div>
-                  {getActiveProvider() === "ollama" && <OllamaConfigFields />}
-                  <button
-                    type="button"
-                    onClick={() => props.setInterfaceMode("studio")}
-                    className="w-full py-1.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[10px] font-bold"
-                  >
-                    Open Settings (Studio)
-                  </button>
-                </div>
+                /* Inline AI provider configurator — switch providers, manage
+                   keys, and edit endpoint/model right here in Core Mode. */
+                <AIProviderCompactPanel />
               )}
               {props.expandedItem === "personality" && (
-                <div className="grid grid-cols-3 gap-1">
-                  {["Gremlin", "Hype", "Analyst", "Short", "Questioner", "Support"].map((p) => (
-                    <button
-                      key={p}
-                      type="button"
-                      onClick={() => props.updateConfig({ primaryProfile: props.config.primaryProfile === p ? "none" : p })}
-                      aria-pressed={props.config.primaryProfile === p}
-                      className={cn(
-                        "py-1 rounded border text-[10px] font-bold transition-all",
-                        props.config.primaryProfile === p
-                          ? "bg-orange-500/20 border-orange-500/40 text-orange-300"
-                          : "bg-white/5 border-white/5 text-gray-500 hover:text-gray-400"
-                      )}
-                    >
-                      {p}
-                    </button>
-                  ))}
+                /* Beautified persona picker — same portrait/typography language as
+                   the Step 4 PersonalityGrid: static PNG normally, animated GIF
+                   when active or hovered, per-persona colors + fonts. */
+                <div className="grid grid-cols-3 gap-1.5">
+                  {PERSONA_DATA.map((p) => {
+                    const active = props.config.primaryProfile === p.value;
+                    return (
+                      <ThemedTooltip
+                        key={p.value}
+                        side="bottom"
+                        align="center"
+                        sideOffset={6}
+                        closeOnPopupHover
+                        content={
+                          <div className="text-left space-y-1.5 max-w-[240px]">
+                            <div className="text-[9px] text-gray-500 uppercase tracking-wider font-bold">Same scenario</div>
+                            <p className="text-[11px] text-gray-300 italic leading-snug">"{PERSONA_SCENARIO}"</p>
+                            <div className="text-[9px] text-gray-500 uppercase tracking-wider font-bold pt-1 border-t border-white/5">{p.label} would say</div>
+                            <p className="text-[11px] text-gray-200 font-mono leading-snug">"{p.example}"</p>
+                          </div>
+                        }
+                      >
+                        <motion.button
+                          type="button"
+                          aria-pressed={active}
+                          whileHover={{ scale: 1.04 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => {
+                            if (active) {
+                              props.updateConfig({ primaryProfile: "none" });
+                            } else {
+                              props.updateConfig({ primaryProfile: p.value });
+                              toast.success(`Profile: ${p.label}`);
+                              playSfx("memory_add");
+                            }
+                          }}
+                          className={cn(
+                            "group relative flex flex-col items-center justify-center gap-1.5 py-2.5 px-1.5 rounded-xl border transition-all overflow-hidden",
+                            active ? p.activeColor : cn("bg-[#0a0a0f] border-white/5 text-gray-400", p.color)
+                          )}
+                        >
+                          {/* Portrait — static PNG normally, animated GIF when active/hovered */}
+                          <PersonaPortrait image={p.image} still={p.imageStatic} active={active} size={44} />
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className={cn("text-[11px] leading-tight", p.fontClass)}>{p.label}</span>
+                            <span className="text-[8px] font-mono opacity-60 uppercase tracking-wider leading-none">{p.desc}</span>
+                          </div>
+                          {/* Active checkmark badge */}
+                          {active && (
+                            <span className="absolute top-1 right-1 w-3.5 h-3.5 rounded-full bg-white/10 flex items-center justify-center">
+                              <Check className="w-2 h-2" />
+                            </span>
+                          )}
+                        </motion.button>
+                      </ThemedTooltip>
+                    );
+                  })}
                 </div>
               )}
               {props.expandedItem === "autoforge" && (
                 <div className="space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400">Let MADchatter decide when to speak</span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={props.autoForgeEnabled}
-                      aria-label="AutoForge"
-                      onClick={() => {
-                        const newVal = !props.autoForgeEnabled;
-                        useAppStore.getState().setAutoForgeEnabled(newVal);
-                        toast.success(`AutoForge ${newVal ? "enabled" : "disabled"}`);
-                        playSfx(newVal ? "autoforge_on" : "autoforge_off");
-                      }}
-                      className="relative w-10 h-5 rounded-full border transition-all"
-                      style={{
-                        background: props.autoForgeEnabled ? "rgba(249,115,22,0.3)" : "rgba(0,0,0,0.4)",
-                        borderColor: props.autoForgeEnabled ? "rgba(249,115,22,0.5)" : "rgba(255,255,255,0.1)",
-                      }}
-                    >
-                      <span className={cn(
-                        "absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all",
-                        props.autoForgeEnabled ? "left-5 bg-orange-400" : "left-0.5 bg-gray-600"
-                      )} />
-                    </button>
-                  </div>
                   {/* AutoForge lite configuration — Dry Run, Auto-Check, Frequency, Confidence */}
                   <div className="rounded-lg border border-orange-500/10 bg-black/30 p-2.5">
                     <AutoForgeLiteControls />
@@ -2700,8 +3288,6 @@ function AutoForgeLiteControls() {
   const autoForgeEnabled = useAppStore((s) => s.autoForgeEnabled);
   const autoForgeDryRun = useAppStore((s) => s.autoForgeDryRun);
   const setAutoForgeDryRun = useAppStore((s) => s.setAutoForgeDryRun);
-  const autoForgeAutoCheckEnabled = useAppStore((s) => s.autoForgeAutoCheckEnabled);
-  const setAutoForgeAutoCheckEnabled = useAppStore((s) => s.setAutoForgeAutoCheckEnabled);
   const autoForgeConfidenceThreshold = useAppStore((s) => s.autoForgeConfidenceThreshold);
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
 
@@ -2712,9 +3298,12 @@ function AutoForgeLiteControls() {
       p.minCooldownMs === rateLimitConfig.minCooldownMs,
   );
 
+  // Live status shown as a pill in the hero header.
+  const statusLabel = !autoForgeEnabled ? "Off" : autoForgeDryRun ? "Dry Run" : "Live";
+
   return (
-    <>
-      {/* Master AutoForge enable */}
+    <div className="space-y-2.5">
+      {/* ── Master AutoForge — hero card with live status pill ── */}
       <button
         type="button"
         role="switch"
@@ -2727,163 +3316,173 @@ function AutoForgeLiteControls() {
           playSfx(next ? "autoforge_on" : "autoforge_off");
         }}
         className={cn(
-          "w-full flex items-center justify-between p-2.5 rounded-lg border transition-all",
+          "group relative w-full flex items-center justify-between gap-3 rounded-xl border p-3 text-left transition-all overflow-hidden",
           autoForgeEnabled
-            ? "bg-orange-500/10 border-orange-500/40"
-            : "bg-white/5 border-white/5 hover:border-white/10",
+            ? "border-orange-500/40 bg-gradient-to-br from-orange-500/15 via-orange-500/[0.06] to-transparent shadow-[0_0_28px_-8px_rgba(249,115,22,0.5)]"
+            : "border-white/5 bg-white/[0.02] hover:border-white/10 hover:bg-white/[0.04]",
         )}
       >
-        <div className="flex items-center gap-1.5">
-          <Zap className={cn("w-3.5 h-3.5", autoForgeEnabled ? "text-orange-400" : "text-gray-500")} />
-          <span className="text-[11px] font-bold text-gray-300">AutoForge</span>
+        {autoForgeEnabled && (
+          <div className="pointer-events-none absolute -top-10 -right-6 h-24 w-24 rounded-full bg-orange-500/25 blur-2xl" />
+        )}
+        <div className="relative flex items-center gap-2.5 min-w-0">
+          <span
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-all",
+              autoForgeEnabled
+                ? "border-orange-500/40 bg-orange-500/20 text-orange-300"
+                : "border-white/10 bg-white/5 text-gray-500",
+            )}
+          >
+            <Zap className="h-4 w-4" />
+          </span>
+          <span className="flex min-w-0 flex-col">
+            <span className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold text-gray-100">AutoForge</span>
+              <span
+                className={cn(
+                  "rounded px-1.5 py-px text-[8px] font-black uppercase tracking-wider",
+                  autoForgeEnabled
+                    ? autoForgeDryRun
+                      ? "bg-amber-500/20 text-amber-300"
+                      : "bg-emerald-500/20 text-emerald-300"
+                    : "bg-white/5 text-gray-500",
+                )}
+              >
+                {statusLabel}
+              </span>
+            </span>
+            <span className="truncate text-[9px] text-gray-500">
+              {autoForgeEnabled ? "Decides when to chime in" : "Manual sends only"}
+            </span>
+          </span>
         </div>
         <span
           className={cn(
-            "relative w-10 h-5 rounded-full border transition-all shrink-0",
-            autoForgeEnabled ? "bg-orange-500/30 border-orange-500/50" : "bg-white/5 border-white/10",
+            "relative h-5 w-10 shrink-0 rounded-full border transition-all",
+            autoForgeEnabled ? "border-orange-500/50 bg-orange-500/30" : "border-white/10 bg-white/5",
           )}
         >
-          <span className={cn(
-            "absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all",
-            autoForgeEnabled ? "left-5 bg-orange-400" : "left-0.5 bg-gray-600",
-          )} />
+          <span
+            className={cn(
+              "absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all",
+              autoForgeEnabled ? "left-5 bg-orange-400" : "left-0.5 bg-gray-600",
+            )}
+          />
         </span>
       </button>
 
-      {/* Dry Run + Auto-Check — side-by-side in one frame */}
-      <div className="grid grid-cols-2 gap-2">
-        {/* Dry Run (left) — with beautified tooltip */}
-        <ThemedTooltip
-          side="top"
-          align="center"
-          className="max-w-[240px] leading-relaxed"
-          content={
-            <div className="space-y-1">
-              <div className="font-bold text-amber-300">Dry Run Mode</div>
-              <div className="text-[10px] text-gray-400">
-                AutoForge runs its full decision loop — reading chat, scoring confidence, generating a message — but never sends anything to the channel.
-                Use it to preview the bot's judgment and tune confidence/frequency before going live.
-              </div>
+      {/* ── Dry Run ── */}
+      <ThemedTooltip
+        side="top"
+        align="center"
+        className="max-w-[240px] leading-relaxed"
+        content={
+          <div className="space-y-1">
+            <div className="font-bold text-amber-300">Dry Run Mode</div>
+            <div className="text-[10px] text-gray-400">
+              AutoForge runs its full decision loop — reading chat, scoring confidence, generating a message — but never sends anything to the channel.
+              Use it to preview the bot's judgment and tune confidence/frequency before going live.
             </div>
-          }
-        >
-          <button
-            type="button"
-            role="switch"
-            aria-checked={autoForgeDryRun}
-            aria-label="Dry Run"
-            onClick={() => {
-              setAutoForgeDryRun(!autoForgeDryRun);
-              playSfx("welcome_dismiss");
-            }}
-            className={cn(
-              "w-full flex flex-col items-center gap-1.5 p-2.5 rounded-lg border transition-all",
-              autoForgeDryRun
-                ? "bg-amber-500/10 border-amber-500/40"
-                : "bg-white/5 border-white/5 hover:border-white/10",
-            )}
-          >
-            <div className="flex items-center gap-1.5">
-              <FlaskConical className={cn("w-3 h-3", autoForgeDryRun ? "text-amber-400" : "text-gray-500")} />
-              <span className="text-[10px] font-bold text-gray-300">Dry Run</span>
-            </div>
-            <span
-              className={cn(
-                "relative w-8 h-4 rounded-full border transition-all shrink-0",
-                autoForgeDryRun ? "bg-amber-500/30 border-amber-500/50" : "bg-white/5 border-white/10",
-              )}
-            >
-              <span className={cn(
-                "absolute top-0.5 w-2.5 h-2.5 rounded-full transition-all",
-                autoForgeDryRun ? "left-4 bg-amber-400" : "left-0.5 bg-gray-600",
-              )} />
-            </span>
-            <span className="text-[8px] text-gray-600 text-center leading-tight">
-              {autoForgeDryRun ? "Preview only" : "Sending live"}
-            </span>
-          </button>
-        </ThemedTooltip>
-
-        {/* Auto-Check (right) */}
+          </div>
+        }
+      >
         <button
           type="button"
           role="switch"
-          aria-checked={autoForgeAutoCheckEnabled}
-          aria-label="Auto-Check"
+          aria-checked={autoForgeDryRun}
+          aria-label="Dry Run"
           onClick={() => {
-            setAutoForgeAutoCheckEnabled(!autoForgeAutoCheckEnabled);
+            setAutoForgeDryRun(!autoForgeDryRun);
             playSfx("welcome_dismiss");
           }}
           className={cn(
-            "w-full flex flex-col items-center gap-1.5 p-2.5 rounded-lg border transition-all",
-            autoForgeAutoCheckEnabled
-              ? "bg-emerald-500/10 border-emerald-500/40"
-              : "bg-white/5 border-white/5 hover:border-white/10",
+            "w-full flex items-center justify-between gap-2 rounded-xl border p-2.5 text-left transition-all",
+            autoForgeDryRun
+              ? "border-amber-500/40 bg-amber-500/10"
+              : "border-white/5 bg-white/[0.02] hover:border-white/10",
           )}
         >
-          <div className="flex items-center gap-1.5">
-            <Clock className={cn("w-3 h-3", autoForgeAutoCheckEnabled ? "text-emerald-400" : "text-gray-500")} />
-            <span className="text-[10px] font-bold text-gray-300">Auto-Check</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <FlaskConical className={cn("h-3.5 w-3.5 shrink-0", autoForgeDryRun ? "text-amber-400" : "text-gray-500")} />
+            <div className="min-w-0">
+              <div className="text-[10px] font-bold text-gray-300">Dry Run</div>
+              <div className="text-[8px] leading-tight text-gray-600">
+                {autoForgeDryRun ? "Previewing decisions — nothing sent" : "Sending live to chat"}
+              </div>
+            </div>
           </div>
           <span
             className={cn(
-              "relative w-8 h-4 rounded-full border transition-all shrink-0",
-              autoForgeAutoCheckEnabled ? "bg-emerald-500/30 border-emerald-500/50" : "bg-white/5 border-white/10",
+              "relative h-5 w-9 shrink-0 rounded-full border transition-all",
+              autoForgeDryRun ? "border-amber-500/50 bg-amber-500/30" : "border-white/10 bg-white/5",
             )}
           >
-            <span className={cn(
-              "absolute top-0.5 w-2.5 h-2.5 rounded-full transition-all",
-              autoForgeAutoCheckEnabled ? "left-4 bg-emerald-400" : "left-0.5 bg-gray-600",
-            )} />
-          </span>
-          <span className="text-[8px] text-gray-600 text-center leading-tight">
-            {autoForgeAutoCheckEnabled ? "Scans every 15s" : "Manual only"}
+            <span
+              className={cn(
+                "absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all",
+                autoForgeDryRun ? "left-5 bg-amber-400" : "left-0.5 bg-gray-600",
+              )}
+            />
           </span>
         </button>
-      </div>
+      </ThemedTooltip>
 
-      {/* Talk Frequency */}
-      <div>
-        <div className="flex items-center gap-1.5 mb-1.5">
+      {/* ── Auto-Check cadence — user-controlled cadence (Smart / 30s / 1m /
+          2m / 5m) + live progress. Matches the Mobile CORE tuning surface. ── */}
+      {autoForgeEnabled && (
+        <div className="rounded-xl border border-white/5 bg-black/30 p-2.5">
+          <AutoCheckControls variant="full" />
+        </div>
+      )}
+
+      {/* ── Talk Frequency ── */}
+      <div className="rounded-xl border border-white/5 bg-black/30 p-2.5">
+        <div className="mb-1.5 flex items-center gap-1.5">
           <Gauge className="w-3 h-3 text-cyan-400" />
-          <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Talk Frequency</span>
+          <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Talk Frequency</span>
         </div>
         <div className="grid grid-cols-3 gap-1.5">
-          {FREQ_PRESETS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              aria-pressed={activePreset?.id === p.id}
-              onClick={() => {
-                updateRateLimitConfig({
-                  maxActionsPerHour: p.maxActionsPerHour,
-                  maxActionsPerTenMinutes: p.maxActionsPerTenMinutes,
-                  minCooldownMs: p.minCooldownMs,
-                });
-                playSfx("welcome_dismiss");
-              }}
-              className={cn(
-                "py-1.5 px-1 rounded border text-center transition-all",
-                activePreset?.id === p.id
-                  ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-200"
-                  : "bg-white/5 border-white/5 text-gray-500 hover:text-gray-300",
-              )}
-            >
-              <div className="text-[10px] font-bold">{p.label}</div>
-              <div className="text-[8px] text-gray-600">{p.desc}</div>
-            </button>
-          ))}
+          {FREQ_PRESETS.map((p) => {
+            const Icon = FREQ_ICON[p.id];
+            const active = activePreset?.id === p.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  updateRateLimitConfig({
+                    maxActionsPerHour: p.maxActionsPerHour,
+                    maxActionsPerTenMinutes: p.maxActionsPerTenMinutes,
+                    minCooldownMs: p.minCooldownMs,
+                  });
+                  playSfx("welcome_dismiss");
+                }}
+                className={cn(
+                  "flex flex-col items-center gap-1 rounded-lg border px-1 py-2 text-center transition-all",
+                  active
+                    ? "border-cyan-500/50 bg-cyan-500/15 text-cyan-200 shadow-[0_0_14px_-4px_rgba(34,211,238,0.5)]"
+                    : "border-white/5 bg-white/[0.02] text-gray-500 hover:border-white/15 hover:text-gray-300",
+                )}
+              >
+                <Icon className={cn("h-3.5 w-3.5", active ? "text-cyan-300" : "text-gray-600")} />
+                <span className="text-[10px] font-bold leading-none">{p.label}</span>
+                <span className="text-[8px] leading-none text-gray-600">{p.desc}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Confidence Threshold */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
+      {/* ── Confidence Threshold ── */}
+      <div className="rounded-xl border border-white/5 bg-black/30 p-2.5">
+        <div className="mb-1.5 flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <Brain className="w-3 h-3 text-purple-400" />
-            <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Confidence</span>
+            <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400">Confidence</span>
           </div>
-          <span className="text-[10px] font-mono font-bold text-purple-300">
+          <span className="rounded bg-purple-500/15 px-1.5 py-px font-mono text-[10px] font-bold text-purple-300">
             {autoForgeConfidenceThreshold.toFixed(1)}
           </span>
         </div>
@@ -2893,16 +3492,16 @@ function AutoForgeLiteControls() {
           max={0.8}
           step={0.05}
           aria-label="AutoForge confidence threshold"
-            value={autoForgeConfidenceThreshold}
+          value={autoForgeConfidenceThreshold}
           onChange={(e) => setAutoForgeConfidenceThreshold(parseFloat(e.target.value))}
-          className="w-full accent-purple-500 h-1"
+          className="w-full accent-purple-500"
         />
-        <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
-          <span>0.3 chatty</span>
-          <span>0.8 careful</span>
+        <div className="mt-0.5 flex justify-between text-[8px] text-gray-600">
+          <span>0.3 · chatty</span>
+          <span>0.8 · careful</span>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -3022,11 +3621,11 @@ function CoreUtilityDock(props: {
               <span className="text-[10px] font-bold uppercase tracking-wider">{item.label}</span>
               {/* Activity indicator (data present but not actively shown) */}
               {item.active && !active && (
-                <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" />
+                <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" />
               )}
               {/* Inline active indicator */}
               {inline && active && (
-                <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+                <span className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
               )}
               {/* Badge */}
               {item.badge && (
@@ -3179,5 +3778,139 @@ function DockSettingsToggle(props: {
         />
       </span>
     </button>
+  );
+}
+
+// ─── Chat Pulse Composer ────────────────────────────────────────────────────
+// Compact live-chat composer at the bottom of the Chat Pulse panel in CORE
+// mode. Uses the canonical sendManualMessage pipeline — no CORE-specific
+// send path. Draft state is local (survives rerenders, not persisted).
+function ChatPulseComposer() {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const platform = useAppStore((s) => s.platform);
+  const channelName = useAppStore((s) => s.streamMetadata?.channelName);
+  const chatConnection = useAppStore((s) => s.tmiReadState);
+  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+  const bots = useAppStore((s) => s.bots);
+  const messageSoundEnabled = useAppStore((s) => s.messageSoundEnabled);
+  const ttsEnabled = useAppStore((s) => s.ttsEnabled);
+
+  // Determine if sending is available. The sendManualMessage pipeline
+  // already validates bot/session state and throws descriptive errors,
+  // but we disable the composer proactively for a better UX.
+  const connected = chatConnection === "connected";
+  const hasChannel = !!channelName?.trim();
+
+  // Multi-bot: need at least one active, signed-in bot for the platform.
+  // Joystick is single-session (no per-bot sending).
+  const usesBots = multiBotEnabled && platform !== "joystick";
+  const availableBots = bots.filter((b) => b.active && b.session && b.platform === platform);
+  const canSend = connected && hasChannel && (!usesBots || availableBots.length > 0);
+
+  const disabledReason = !hasChannel
+    ? "No channel connected"
+    : !connected
+      ? chatConnection === "connecting"
+        ? "Connecting to chat…"
+        : "Chat not connected"
+      : usesBots && availableBots.length === 0
+        ? "No active bot for this platform"
+        : null;
+
+  const handleSend = useCallback(async () => {
+    const msg = draft.trim();
+    if (!msg || sending || !channelName?.trim()) return;
+    setError(null);
+    setSending(true);
+    try {
+      await sendManualMessage({ message: msg, channel: channelName, source: "manual" });
+      if (messageSoundEnabled && platform === "joystick") playMessageSound();
+      if (ttsEnabled) speakMessage(msg);
+      setDraft("");
+      // Re-focus for rapid follow-up
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } catch (e: any) {
+      const errMsg = e?.message || String(e);
+      setError(errMsg);
+      // Don't clear the draft on failure — user may want to retry
+    } finally {
+      setSending(false);
+    }
+  }, [draft, sending, channelName, messageSoundEnabled, ttsEnabled, platform]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter sends, Shift+Enter inserts a newline. Stop propagation so
+    // global hotkeys (F=Forge, P=Snap, etc.) don't fire while typing.
+    e.stopPropagation();
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
+
+  // Auto-grow textarea up to a max height, then scroll
+  const adjustHeight = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 96) + "px";
+  }, []);
+
+  return (
+    <div className="shrink-0 border-t border-white/5 bg-[#121217]/90 px-2 py-1.5">
+      <div className="flex items-end gap-1.5">
+        <textarea
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (error) setError(null);
+            adjustHeight();
+          }}
+          onKeyDown={handleKeyDown}
+          onKeyUp={adjustHeight}
+          onInput={(e) => e.stopPropagation()}
+          placeholder={disabledReason || "Send a message…"}
+          disabled={!canSend || sending}
+          rows={1}
+          aria-label="Chat message"
+          className={cn(
+            "flex-1 min-w-0 resize-none bg-white/5 border rounded-lg px-2.5 py-1.5 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-teal-500/40 focus:bg-white/[0.07] transition-all",
+            error ? "border-red-500/40" : "border-white/10",
+            (!canSend || sending) && "opacity-50 cursor-not-allowed",
+          )}
+          style={{ maxHeight: "96px" }}
+        />
+        <ThemedTooltip content={canSend ? "Send message" : disabledReason || "Send unavailable"}>
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!canSend || sending || !draft.trim()}
+            aria-label="Send message"
+            className={cn(
+              "shrink-0 h-7 w-7 flex items-center justify-center rounded-lg border transition-all",
+              sending
+                ? "bg-teal-500/5 border-teal-500/20 text-teal-400/50"
+                : canSend && draft.trim()
+                  ? "text-teal-400 bg-teal-500/10 hover:bg-teal-500/20 border-teal-500/20 hover:border-teal-500/40"
+                  : "text-gray-600 bg-white/5 border-white/5 cursor-not-allowed",
+            )}
+          >
+            {sending
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Send className="w-3.5 h-3.5" />}
+          </button>
+        </ThemedTooltip>
+      </div>
+      {error && (
+        <div className="mt-1 text-[9px] text-red-400/80 truncate" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
   );
 }

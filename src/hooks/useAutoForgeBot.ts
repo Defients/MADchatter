@@ -35,6 +35,12 @@ import {
   labelEngagement,
   countPostSendEngagement,
 } from "../lib/autoForgeCore";
+import {
+  captureAutoCheckSignal,
+  evaluateAutoCheckCadence,
+  hasMeaningfulContextChange,
+  type AutoCheckSignal,
+} from "../lib/coreAutoCheck";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { formatThreadContext } from "../lib/conversationThread";
@@ -75,6 +81,10 @@ export function useAutoForgeBot(botId: string) {
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
   const consecutiveSilenceRef = useRef(0);
+  // Context fingerprint of this bot's LAST evaluation — Smart mode uses it to
+  // avoid spending a model call when nothing meaningful changed. Per-bot so
+  // each bot's cadence is judged against the context it last saw.
+  const autoCheckSignalRef = useRef<AutoCheckSignal | null>(null);
   const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
@@ -412,6 +422,39 @@ export function useAutoForgeBot(botId: string) {
         }
       }
 
+      // ── Auto-Check cadence gate ──────────────────────────────────────────
+      // The user chooses how often CORE may spend a model evaluation per bot.
+      // Interval mode enforces that cadence; Smart mode requires a real
+      // context change (new chat, transcript, visual frame, or bot activity).
+      // Mentions and activity spikes always pass, so a bot never ignores being
+      // addressed. The 15s tick remains a cheap scheduler heartbeat that this
+      // gate filters — no model call happens "because a timer expired".
+      if (!force && !supercharged) {
+        const signal = captureAutoCheckSignal({
+          chatLog: store.chatLog,
+          audioTranscript: store.audioTranscript,
+          visualSnapshotUrl: store.visualSnapshotUrl,
+          visualSnapshotHistoryLength: store.visualSnapshotHistory.length,
+          sentMessagesLength: store.sentMessages.length,
+          audioEnergyLabel: store.audioEnergy?.label ?? null,
+        });
+        const cadence = evaluateAutoCheckCadence({
+          mode: store.autoForgeAutoCheckMode,
+          intervalMs: store.autoForgeAutoCheckIntervalMs,
+          now: Date.now(),
+          lastCheckAt: store.autoForgeLastCheckMs,
+          signalsChanged: hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
+          urgent: isMentioned || activitySpike,
+        });
+        if (!cadence.run) {
+          store.setAutoForgeCheckArmed(cadence.armed);
+          return;
+        }
+        autoCheckSignalRef.current = signal;
+        store.setAutoForgeCheckArmed(false);
+        store.setAutoForgeLastCheckMs(Date.now());
+      }
+
       // ── Decide ───────────────────────────────────────────────────────────
       const decisionStartTime = Date.now();
       // First Message Mode: acquire the per-bot generation lock before the
@@ -550,10 +593,6 @@ export function useAutoForgeBot(botId: string) {
 
       // Dry run
       if (store.autoForgeDryRun && decision.decision !== "deliberate_silence") {
-        toast.info(`AutoForge DRY RUN [${bot.session.username}]: ${decision.decision}`, {
-          description: decision.action_payload || decision.reason,
-          icon: "🧪",
-        });
         store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "queued" });
         store.setBotAutoForgeLastActionMs(botId, Date.now());
         let nextMin = decision.estimated_next_action_minutes || 1.5;

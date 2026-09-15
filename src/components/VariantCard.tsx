@@ -4,10 +4,11 @@ import { Card } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
-import { Copy, Send, Sparkles, MessageSquare, RefreshCw, Zap, GripVertical, X, AtSign } from "lucide-react";
+import { Copy, Send, Sparkles, MessageSquare, RefreshCw, Zap, GripVertical, X, AtSign, Check } from "lucide-react";
 import { ForgeSuggestion, Bot } from "../types";
 import { toast } from "sonner";
 import { playSfx } from "../lib/sfx";
+import { useAppStore } from "../store";
 import { Input } from "./ui/input";
 import { Tooltip, TooltipTrigger, TooltipContent, ThemedTooltip } from "./ui/tooltip";
 import { cn } from "../lib/utils";
@@ -15,6 +16,7 @@ import { cn } from "../lib/utils";
 interface VariantCardProps extends React.HTMLAttributes<HTMLDivElement> {
   variant: ForgeSuggestion;
   onSend: (message: string, botId?: string) => void;
+  onDryRunSend?: (message: string) => void | Promise<void>;
   onRefine: (id: number, type: string, customInstruction?: string) => Promise<void>;
   onClose?: (id: number) => void;
   multiBotActive?: boolean;
@@ -41,6 +43,15 @@ export const VariantCard: React.FC<VariantCardProps> = ({
 }) => {
   const [isSending, setIsSending] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
+  // A card locks once its message text has actually been sent — matched against
+  // the sent-message records so the state survives re-renders and works for
+  // multi-bot sends. Refining changes the text, which naturally unlocks the card.
+  const sentMessages = useAppStore((s) => s.sentMessages);
+  const bots = useAppStore((s) => s.bots);
+  const trimmedMsg = variant.message.trim();
+  const hasSent =
+    sentMessages.some((m) => !m.dryRun && m.message.trim() === trimmedMsg) ||
+    bots.some((b) => b.runtime.sentMessages.some((m) => !m.dryRun && m.message.trim() === trimmedMsg));
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customRefineInput, setCustomRefineInput] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -139,7 +150,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
     { label: "🔥 Hype", type: "hype" },
     { label: "👹 Troll", type: "gremlin" },
     { label: "✂️ Shorten", type: "short" },
-    { label: "🇯🇵 JP Slang", type: "translation" },
+    { label: "🧠 Analyst", type: "analyze" },
     { label: "😏 Sarcastic", type: "sarcasm" }
   ];
 
@@ -353,16 +364,18 @@ export const VariantCard: React.FC<VariantCardProps> = ({
                   render={
                     <button
                       onClick={() => handleSendAsBot(bot.id)}
-                      disabled={isSending}
+                      disabled={isSending || hasSent}
                       className={cn(
                         "flex-1 h-8 min-w-0 rounded-lg font-black text-xs flex items-center justify-center transition-all border",
-                        isSending
+                        hasSent
+                          ? "bg-white/5 text-gray-600 border-white/5 cursor-not-allowed"
+                          : isSending
                           ? "bg-green-600/30 text-green-300 border-green-500/30"
                           : "bg-green-500/15 border-green-500/30 text-green-300 hover:bg-green-500 hover:text-black hover:border-green-400",
                       )}
                     >
                       <span className="flex flex-col items-center gap-0.5">
-                        <Send className="w-3 h-3 shrink-0" />
+                        {hasSent ? <Check className="w-3 h-3 shrink-0" /> : <Send className="w-3 h-3 shrink-0" />}
                         <span className="text-[9px] leading-none">{idx + 1}</span>
                       </span>
                     </button>
@@ -382,19 +395,30 @@ export const VariantCard: React.FC<VariantCardProps> = ({
             ))}
           </div>
         ) : (
-          <Button
-            className={`flex-1 h-8 font-black tracking-widest text-xs shadow-[0_0_15px_rgba(34,197,94,0.2)] rounded-lg ${isSending ? "bg-green-600 text-white" : "bg-green-500 hover:bg-green-400 text-black"}`}
-            onClick={handleSend}
-            disabled={isSending}
-          >
-            {isSending ? (
-              "SENT!"
-            ) : (
-              <span className="flex items-center gap-1.5 justify-center">
-                <Send className="w-3.5 h-3.5 shrink-0" /> SEND TO CHAT
-              </span>
-            )}
-          </Button>
+          <div className="flex-1 flex gap-1.5 items-stretch">
+            <Button
+              className={cn(
+                "flex-1 h-8 font-black tracking-widest text-xs rounded-lg",
+                hasSent
+                  ? "bg-white/5 text-gray-600 border border-white/5 cursor-not-allowed shadow-none"
+                  : `shadow-[0_0_15px_rgba(34,197,94,0.2)] ${isSending ? "bg-green-600 text-white" : "bg-green-500 hover:bg-green-400 text-black"}`,
+              )}
+              onClick={handleSend}
+              disabled={isSending || hasSent}
+            >
+              {hasSent ? (
+                <span className="flex items-center gap-1.5 justify-center">
+                  <Check className="w-3.5 h-3.5 shrink-0" /> SENT
+                </span>
+              ) : isSending ? (
+                "SENT!"
+              ) : (
+                <span className="flex items-center gap-1.5 justify-center">
+                  <Send className="w-3.5 h-3.5 shrink-0" /> SEND TO CHAT
+                </span>
+              )}
+            </Button>
+          </div>
         )}
       </div>
     </Card>

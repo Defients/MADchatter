@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppStore } from '../store';
 
@@ -154,9 +154,17 @@ interface TrailParticle {
   angularVel: number;
 }
 
+// Max trail length across all personas (Hype: trailLength 30, max factor 1.0 → 30).
+// Rounded up to a power-of-two-friendly bound for the ring buffer.
+const TRAIL_MAX = 32;
+
+// Hard cap on active particles — prevents unbounded growth under heavy mouse
+// activity. The intensity-scaled cap is always ≤ this.
+const MAX_PARTICLES_HARD = 220;
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function RageCursor() {
+function RageCursorImpl() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const config = useAppStore((s) => s.config);
   // Refs for animation loop to avoid stale closures
@@ -187,7 +195,11 @@ export function RageCursor() {
     resize();
     window.addEventListener('resize', resize);
 
-    // Mouse state
+    // ── Mouse state ──────────────────────────────────────────────────────
+    // The mousemove handler only stores the latest position in refs (O(1),
+    // zero allocations). All trail/particle work is deferred to the rAF
+    // loop, so high-frequency mouse polling (up to 1000 Hz on gaming mice)
+    // doesn't flood the main thread with expensive per-event work.
     let mouseX = width / 2;
     let mouseY = height / 2;
     let prevMouseX = mouseX;
@@ -199,14 +211,67 @@ export function RageCursor() {
     let globalTime = 0;
     let lastTime = performance.now();
 
-    // Trail history (smooth positions for the cursor body)
-    const trailHistory: { x: number; y: number }[] = [];
+    // Pending pointer position (written by mousemove, consumed by rAF)
+    let pendingMouseX = mouseX;
+    let pendingMouseY = mouseY;
+    let mouseMoved = false;
 
-    // Active particles
+    // ── Trail history (ring buffer) ──────────────────────────────────────
+    // Fixed-size Float32Array ring buffer — O(1) push, O(1) pop-oldest.
+    // Replaces the Array + shift() approach which was O(n) per mousemove.
+    const trailX = new Float32Array(TRAIL_MAX);
+    const trailY = new Float32Array(TRAIL_MAX);
+    let trailHead = 0;   // next write index
+    let trailCount = 0;  // number of valid entries
+
+    function pushTrail(x: number, y: number) {
+      trailX[trailHead] = x;
+      trailY[trailHead] = y;
+      trailHead = (trailHead + 1) % TRAIL_MAX;
+      if (trailCount < TRAIL_MAX) trailCount++;
+    }
+
+    // ── Particle pool ────────────────────────────────────────────────────
+    // Recycled particle objects to avoid per-frame allocation/GC pressure.
+    // Dead particles are swap-removed (O(1)) and returned to the pool.
+    const particlePool: TrailParticle[] = [];
     const particles: TrailParticle[] = [];
-
-    // Click burst particles
+    const burstPool: TrailParticle[] = [];
     const burstParticles: TrailParticle[] = [];
+
+    function acquireParticle(pool: TrailParticle[]): TrailParticle {
+      const p = pool.pop();
+      if (p) return p;
+      return { x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, size: 0, color: '', angle: 0, angularVel: 0 };
+    }
+
+    // ── Pre-rendered glow sprite ─────────────────────────────────────────
+    // The cursor glow uses a radial gradient that, in the original code, was
+    // recreated every frame. The gradient's color stops only depend on
+    // theme.primary and intensity (not on position or pulse), so we
+    // pre-render it to an offscreen canvas and drawImage it each frame —
+    // drawImage is GPU-composited and far cheaper than createRadialGradient.
+    const glowSprite = document.createElement('canvas');
+    const glowCtx = glowSprite.getContext('2d')!;
+    let glowCacheKey = '';
+
+    function updateGlowSprite(theme: PersonaTheme, intensity: number) {
+      const key = theme.primary + '|' + intensity.toFixed(3);
+      if (key === glowCacheKey) return;
+      glowCacheKey = key;
+      // Max radius accounts for the max pulse factor (1 + 0.15 = 1.15).
+      const maxRadius = Math.ceil(theme.glowSize * 1.15 * (0.6 + intensity * 0.6));
+      glowSprite.width = maxRadius * 2;
+      glowSprite.height = maxRadius * 2;
+      const cx = maxRadius;
+      const grad = glowCtx.createRadialGradient(cx, cx, 0, cx, cx, maxRadius);
+      grad.addColorStop(0, `rgba(${theme.primary}, ${0.15 + intensity * 0.2})`);
+      grad.addColorStop(0.4, `rgba(${theme.primary}, ${0.05 + intensity * 0.08})`);
+      grad.addColorStop(1, `rgba(${theme.primary}, 0)`);
+      glowCtx.clearRect(0, 0, maxRadius * 2, maxRadius * 2);
+      glowCtx.fillStyle = grad;
+      glowCtx.fillRect(0, 0, maxRadius * 2, maxRadius * 2);
+    }
 
     function getTheme(): PersonaTheme {
       const cfg = configRef.current;
@@ -228,61 +293,12 @@ export function RageCursor() {
       return configRef.current.humorLevel / 100;
     }
 
+    // ── Pointer event handlers (minimal — O(1), zero allocations) ────────
     function onMouseMove(e: MouseEvent) {
-      prevMouseX = mouseX;
-      prevMouseY = mouseY;
-      mouseX = e.clientX;
-      mouseY = e.clientY;
-      mouseVelocityX = mouseX - prevMouseX;
-      mouseVelocityY = mouseY - prevMouseY;
+      pendingMouseX = e.clientX;
+      pendingMouseY = e.clientY;
       mouseInside = true;
-
-      // Add to trail history
-      trailHistory.push({ x: mouseX, y: mouseY });
-      const theme = getTheme();
-      const maxTrail = Math.floor(theme.trailLength * (0.5 + getIntensity() * 0.5));
-      while (trailHistory.length > maxTrail) trailHistory.shift();
-
-      // Spawn trail particles based on intensity & speed
-      const speed = Math.sqrt(mouseVelocityX * mouseVelocityX + mouseVelocityY * mouseVelocityY);
-      const intensity = getIntensity();
-      const chaos = getChaosFactor();
-
-      // Particle spawn rate scales with speed and intensity
-      const spawnChance = Math.min(0.9, 0.15 + intensity * 0.5 + (speed / 200) * 0.3);
-      const numToSpawn = Math.random() < spawnChance ? 1 + Math.floor(intensity * 2) : 0;
-
-      for (let i = 0; i < numToSpawn; i++) {
-        const angle = theme.erratic
-          ? Math.random() * Math.PI * 2
-          : Math.atan2(mouseVelocityY, mouseVelocityX) + Math.PI + (Math.random() - 0.5) * 0.8;
-
-        const spread = theme.spread * (0.5 + intensity * 0.5);
-        const particleSpeed = theme.speed * (0.3 + intensity * 0.7) * (0.5 + Math.random() * 0.8);
-        const jitter = theme.jitter * (0.5 + chaos * 0.8);
-
-        const px = mouseX + (Math.random() - 0.5) * spread;
-        const py = mouseY + (Math.random() - 0.5) * spread;
-
-        particles.push({
-          x: px + (Math.random() - 0.5) * jitter,
-          y: py + (Math.random() - 0.5) * jitter,
-          vx: Math.cos(angle) * particleSpeed + (Math.random() - 0.5) * chaos * 2,
-          vy: Math.sin(angle) * particleSpeed + (Math.random() - 0.5) * chaos * 2,
-          life: 30 + Math.random() * 30 + intensity * 20,
-          maxLife: 50 + intensity * 30,
-          size: theme.size * (0.6 + Math.random() * 0.8) * (0.5 + getHumorFactor() * 0.5),
-          color: Math.random() < 0.6 ? theme.primary : Math.random() < 0.5 ? theme.secondary : theme.accent,
-          angle: Math.random() * Math.PI * 2,
-          angularVel: (Math.random() - 0.5) * 0.1 * (1 + chaos),
-        });
-      }
-
-      // Cap particles
-      const maxParticles = 80 + Math.floor(intensity * 120);
-      if (particles.length > maxParticles) {
-        particles.splice(0, particles.length - maxParticles);
-      }
+      mouseMoved = true;
     }
 
     function onMouseDown(e: MouseEvent) {
@@ -290,24 +306,23 @@ export function RageCursor() {
       // Burst on click
       const theme = getTheme();
       const intensity = getIntensity();
-      const chaos = getChaosFactor();
       const burstCount = 12 + Math.floor(intensity * 20);
 
       for (let i = 0; i < burstCount; i++) {
         const angle = (i / burstCount) * Math.PI * 2 + Math.random() * 0.3;
         const speed = (2 + Math.random() * 4) * (0.5 + intensity * 0.8);
-        burstParticles.push({
-          x: mouseX,
-          y: mouseY,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          life: 40 + Math.random() * 30,
-          maxLife: 60,
-          size: theme.size * (1 + Math.random()),
-          color: Math.random() < 0.5 ? theme.primary : theme.accent,
-          angle: 0,
-          angularVel: 0,
-        });
+        const p = acquireParticle(burstPool);
+        p.x = mouseX;
+        p.y = mouseY;
+        p.vx = Math.cos(angle) * speed;
+        p.vy = Math.sin(angle) * speed;
+        p.life = 40 + Math.random() * 30;
+        p.maxLife = 60;
+        p.size = theme.size * (1 + Math.random());
+        p.color = Math.random() < 0.5 ? theme.primary : theme.accent;
+        p.angle = 0;
+        p.angularVel = 0;
+        burstParticles.push(p);
       }
     }
 
@@ -337,23 +352,23 @@ export function RageCursor() {
       for (let i = 0; i < count; i++) {
         const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
         const speed = (3 + Math.random() * 5) * (0.8 + Math.random() * 0.6);
-        burstParticles.push({
-          x: mouseX,
-          y: mouseY,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          life: 50 + Math.random() * 30,
-          maxLife: 70,
-          size: 3 + Math.random() * 2,
-          color,
-          angle: 0,
-          angularVel: 0,
-        });
+        const p = acquireParticle(burstPool);
+        p.x = mouseX;
+        p.y = mouseY;
+        p.vx = Math.cos(angle) * speed;
+        p.vy = Math.sin(angle) * speed;
+        p.life = 50 + Math.random() * 30;
+        p.maxLife = 70;
+        p.size = 3 + Math.random() * 2;
+        p.color = color;
+        p.angle = 0;
+        p.angularVel = 0;
+        burstParticles.push(p);
       }
     }
     window.addEventListener('easter-egg-particles', onEasterEggParticles);
 
-    // ── Render loop ──────────────────────────────────────────────────────────
+    // ── Render loop ──────────────────────────────────────────────────────
 
     function render(now: number) {
       const dt = Math.min(33, now - lastTime);
@@ -361,9 +376,71 @@ export function RageCursor() {
       globalTime += dt;
       const dtFactor = dt / 16.67;
 
+      // ── Process pending pointer movement (rAF-batched) ─────────────────
+      // Trail history updates and particle spawning happen at most once per
+      // frame (60 Hz), not at the mouse polling rate. This decouples the
+      // expensive trail/particle work from high-frequency mouse events.
+      if (mouseMoved) {
+        prevMouseX = mouseX;
+        prevMouseY = mouseY;
+        mouseX = pendingMouseX;
+        mouseY = pendingMouseY;
+        mouseVelocityX = mouseX - prevMouseX;
+        mouseVelocityY = mouseY - prevMouseY;
+        mouseMoved = false;
+
+        // Add to trail history (ring buffer — O(1))
+        pushTrail(mouseX, mouseY);
+        const theme = getTheme();
+        const intensity = getIntensity();
+        const maxTrail = Math.floor(theme.trailLength * (0.5 + intensity * 0.5));
+        if (trailCount > maxTrail) trailCount = maxTrail;
+
+        // Spawn trail particles based on intensity & speed
+        const speed = Math.sqrt(mouseVelocityX * mouseVelocityX + mouseVelocityY * mouseVelocityY);
+        const chaos = getChaosFactor();
+
+        // Particle spawn rate scales with speed and intensity
+        const spawnChance = Math.min(0.9, 0.15 + intensity * 0.5 + (speed / 200) * 0.3);
+        const numToSpawn = Math.random() < spawnChance ? 1 + Math.floor(intensity * 2) : 0;
+
+        for (let i = 0; i < numToSpawn; i++) {
+          const angle = theme.erratic
+            ? Math.random() * Math.PI * 2
+            : Math.atan2(mouseVelocityY, mouseVelocityX) + Math.PI + (Math.random() - 0.5) * 0.8;
+
+          const spread = theme.spread * (0.5 + intensity * 0.5);
+          const particleSpeed = theme.speed * (0.3 + intensity * 0.7) * (0.5 + Math.random() * 0.8);
+          const jitter = theme.jitter * (0.5 + chaos * 0.8);
+
+          const px = mouseX + (Math.random() - 0.5) * spread;
+          const py = mouseY + (Math.random() - 0.5) * spread;
+
+          const p = acquireParticle(particlePool);
+          p.x = px + (Math.random() - 0.5) * jitter;
+          p.y = py + (Math.random() - 0.5) * jitter;
+          p.vx = Math.cos(angle) * particleSpeed + (Math.random() - 0.5) * chaos * 2;
+          p.vy = Math.sin(angle) * particleSpeed + (Math.random() - 0.5) * chaos * 2;
+          p.life = 30 + Math.random() * 30 + intensity * 20;
+          p.maxLife = 50 + intensity * 30;
+          p.size = theme.size * (0.6 + Math.random() * 0.8) * (0.5 + getHumorFactor() * 0.5);
+          p.color = Math.random() < 0.6 ? theme.primary : Math.random() < 0.5 ? theme.secondary : theme.accent;
+          p.angle = Math.random() * Math.PI * 2;
+          p.angularVel = (Math.random() - 0.5) * 0.1 * (1 + chaos);
+          particles.push(p);
+        }
+
+        // Cap particles (recycle excess into pool)
+        const maxParticles = Math.min(MAX_PARTICLES_HARD, 80 + Math.floor(intensity * 120));
+        while (particles.length > maxParticles) {
+          const excess = particles.shift()!;
+          particlePool.push(excess);
+        }
+      }
+
       ctx.clearRect(0, 0, width, height);
 
-      if (!mouseInside && trailHistory.length === 0 && particles.length === 0) {
+      if (!mouseInside && trailCount === 0 && particles.length === 0 && burstParticles.length === 0) {
         animationFrameId = requestAnimationFrame(render);
         return;
       }
@@ -373,24 +450,25 @@ export function RageCursor() {
       const chaos = getChaosFactor();
       const humor = getHumorFactor();
 
-      // If mouse left, fade out trail history
-      if (!mouseInside && trailHistory.length > 0) {
-        trailHistory.shift();
+      // If mouse left, fade out trail history (decrement count — O(1))
+      if (!mouseInside && trailCount > 0) {
+        trailCount--;
       }
 
       // ── 1. Draw trail line (connecting trail history points) ───────────────
-      if (trailHistory.length >= 2) {
+      if (trailCount >= 2) {
         const trailAlpha = 0.15 + intensity * 0.35;
-        for (let i = 1; i < trailHistory.length; i++) {
-          const p0 = trailHistory[i - 1];
-          const p1 = trailHistory[i];
-          const t = i / trailHistory.length;
+        const start = (trailHead - trailCount + TRAIL_MAX) % TRAIL_MAX;
+        for (let i = 1; i < trailCount; i++) {
+          const idx0 = (start + i - 1) % TRAIL_MAX;
+          const idx1 = (start + i) % TRAIL_MAX;
+          const t = i / trailCount;
           const alpha = trailAlpha * t;
           const lineWidth = (1 + intensity * 3) * t;
 
           ctx.beginPath();
-          ctx.moveTo(p0.x, p0.y);
-          ctx.lineTo(p1.x, p1.y);
+          ctx.moveTo(trailX[idx0], trailY[idx0]);
+          ctx.lineTo(trailX[idx1], trailY[idx1]);
           ctx.strokeStyle = `rgba(${theme.primary}, ${alpha})`;
           ctx.lineWidth = lineWidth;
           ctx.lineCap = 'round';
@@ -421,7 +499,11 @@ export function RageCursor() {
 
         p.life -= dtFactor;
         if (p.life <= 0) {
-          particles.splice(i, 1);
+          // Swap-remove (O(1)) and recycle to pool
+          const last = particles.length - 1;
+          if (i !== last) particles[i] = particles[last];
+          particles.pop();
+          particlePool.push(p);
           continue;
         }
 
@@ -450,7 +532,11 @@ export function RageCursor() {
         b.vy *= 0.94;
         b.life -= dtFactor;
         if (b.life <= 0) {
-          burstParticles.splice(i, 1);
+          // Swap-remove (O(1)) and recycle to pool
+          const last = burstParticles.length - 1;
+          if (i !== last) burstParticles[i] = burstParticles[last];
+          burstParticles.pop();
+          burstPool.push(b);
           continue;
         }
         const lifeRatio = b.life / b.maxLife;
@@ -476,16 +562,11 @@ export function RageCursor() {
         // Click squeeze
         const clickScale = mouseDown ? 0.7 : 1;
 
-        // Outer glow halo
+        // Outer glow halo — pre-rendered sprite, GPU-composited drawImage
         const glowRadius = theme.glowSize * combinedPulse * (0.6 + intensity * 0.6);
-        const glowGrad = ctx.createRadialGradient(mouseX, mouseY, 0, mouseX, mouseY, glowRadius);
-        glowGrad.addColorStop(0, `rgba(${theme.primary}, ${0.15 + intensity * 0.2})`);
-        glowGrad.addColorStop(0.4, `rgba(${theme.primary}, ${0.05 + intensity * 0.08})`);
-        glowGrad.addColorStop(1, `rgba(${theme.primary}, 0)`);
-        ctx.fillStyle = glowGrad;
-        ctx.beginPath();
-        ctx.arc(mouseX, mouseY, glowRadius, 0, Math.PI * 2);
-        ctx.fill();
+        updateGlowSprite(theme, intensity);
+        const drawSize = glowRadius * 2;
+        ctx.drawImage(glowSprite, mouseX - glowRadius, mouseY - glowRadius, drawSize, drawSize);
 
         // Outer ring
         const ringRadius = theme.ringSize * combinedPulse * clickScale;
@@ -582,3 +663,11 @@ export function RageCursor() {
     document.body,
   );
 }
+
+// React.memo prevents re-renders triggered by parent component updates (chat
+// bursts, transcript updates, visual captures, etc.). The only re-renders
+// that reach RageCursor are from the useAppStore((s) => s.config) selector —
+// i.e. only when the persona config actually changes. The effect has []
+// deps so the canvas/animation setup runs once; configRef stays current via
+// the ref assignment on each render.
+export const RageCursor = memo(RageCursorImpl);

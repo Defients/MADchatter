@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "../store";
 import { useCoreReadiness, type CoreStage } from "../hooks/useCoreReadiness";
+import { useStudioAvailable, useEffectiveMode } from "../hooks/useMediaQuery";
 import { getActiveProvider, getKeys, hasAnyApiKey } from "../lib/keys";
 import { checkOllamaHealth, getCachedOllamaHealth, type OllamaHealthState } from "../lib/ollamaHealth";
 import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
@@ -48,8 +49,10 @@ import { playSfx } from "../lib/sfx";
 // ─── Interface Mode Toggle ───────────────────────────────────────────────
 
 export function InterfaceModeToggle() {
-  const interfaceMode = useAppStore((s) => s.interfaceMode);
+  // effectiveMode is what actually renders (CORE when STUDIO is unavailable).
+  const interfaceMode = useEffectiveMode();
   const setInterfaceMode = useAppStore((s) => s.setInterfaceMode);
+  const studioAvailable = useStudioAvailable();
 
   return (
     <div className="flex items-center gap-0.5 bg-black/40 rounded border border-white/5 p-0.5" role="group" aria-label="Interface mode">
@@ -70,11 +73,17 @@ export function InterfaceModeToggle() {
         type="button"
         onClick={() => setInterfaceMode("studio")}
         aria-pressed={interfaceMode === "studio"}
+        // aria-disabled (not disabled): stays focusable/clickable so a tap
+        // surfaces the "larger screen" gate instead of silently doing nothing.
+        aria-disabled={!studioAvailable}
+        title={studioAvailable ? undefined : "STUDIO needs a larger screen"}
         className={cn(
           "px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded transition-colors",
           interfaceMode === "studio"
             ? "bg-cyan-500/30 text-cyan-300 border border-cyan-500/30"
-            : "text-gray-600 hover:text-gray-400"
+            : studioAvailable
+              ? "text-gray-600 hover:text-gray-400"
+              : "text-gray-700 cursor-not-allowed"
         )}
       >
         Studio
@@ -185,7 +194,6 @@ function StageDot({ stage, currentStage, operational }: { stage: CoreStage; curr
 export function CoreLaunchpad() {
   const readiness = useCoreReadiness();
   const [expanded, setExpanded] = useState(!readiness.operational);
-  const interfaceMode = useAppStore((s) => s.interfaceMode);
   const setInterfaceMode = useAppStore((s) => s.setInterfaceMode);
   const activationCelebrated = useAppStore((s) => s.activationCelebrated);
   const setActivationCelebrated = useAppStore((s) => s.setActivationCelebrated);

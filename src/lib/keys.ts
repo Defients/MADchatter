@@ -6,7 +6,43 @@ export interface ApiKeys {
   openRouterKey: string;
   customBaseUrl: string;
   customModel: string;
+  // Custom OpenAI-Compatible provider (generic escape hatch for Groq,
+  // OpenRouter, Cerebras, Together, local proxies, self-hosted gateways,
+  // and any other OpenAI-style API). Kept separate from the shared
+  // customBaseUrl/customModel pair (which OpenRouter + Ollama reuse) so a
+  // custom endpoint never overwrites those presets.
+  customOpenAIKey: string;
+  customOpenAIBaseUrl: string;
+  customOpenAIModel: string;
+  customOpenAILabel: string;
 }
+
+/** Internal provider id for the generic OpenAI-compatible escape hatch. */
+export const CUSTOM_OPENAI_PROVIDER = "custom-openai";
+
+/** Providers that speak the OpenAI chat-completions schema. Adding a new
+ *  OpenAI-compatible preset here automatically wires it through every
+ *  generation path (Forge, AutoForge, smart replies, memory, vision). */
+export const OPENAI_COMPATIBLE_PROVIDERS = [
+  "openai",
+  "openrouter",
+  "ollama",
+  CUSTOM_OPENAI_PROVIDER,
+] as const;
+
+/** True for any provider that dispatches through the OpenAI-compatible
+ *  branch in the AI pipeline. Use this instead of listing providers
+ *  inline so new presets are wired automatically. */
+export function isOpenAICompatibleProvider(provider: string): boolean {
+  return (OPENAI_COMPATIBLE_PROVIDERS as readonly string[]).includes(provider);
+}
+
+/** Sentinel returned by getApiKey() for OpenAI-compatible endpoints that
+ *  are configured (base URL + model present) but require no API key. The
+ *  OpenAI SDK always sends an Authorization header when apiKey is truthy;
+ *  no-auth local servers (LM Studio, localai, …) ignore it, so this keeps
+ *  the SDK happy without pretending the provider is unconfigured. */
+const NO_KEY_SENTINEL = "custom-openai-no-key";
 
 const KEYS_STORAGE_KEY = "autoforge_api_keys";
 
@@ -23,6 +59,10 @@ export function getKeys(): ApiKeys {
         openRouterKey: parsed.openRouterKey || "",
         customBaseUrl: parsed.customBaseUrl || "",
         customModel: parsed.customModel || "",
+        customOpenAIKey: parsed.customOpenAIKey || "",
+        customOpenAIBaseUrl: parsed.customOpenAIBaseUrl || "",
+        customOpenAIModel: parsed.customOpenAIModel || "",
+        customOpenAILabel: parsed.customOpenAILabel || "",
       };
     }
   } catch (e) {
@@ -37,6 +77,10 @@ export function getKeys(): ApiKeys {
     openRouterKey: "",
     customBaseUrl: "",
     customModel: "",
+    customOpenAIKey: "",
+    customOpenAIBaseUrl: "",
+    customOpenAIModel: "",
+    customOpenAILabel: "",
   };
 }
 
@@ -70,6 +114,16 @@ export function getApiKey(provider: string): string | null {
     if (!keys.customBaseUrl || !keys.customModel) return null;
     return "ollama-local";
   }
+  if (normProvider === CUSTOM_OPENAI_PROVIDER) {
+    // Custom OpenAI-compatible endpoint: base URL + model are required; the
+    // API key is optional (local proxies / self-hosted gateways may not need
+    // one). Return null when not configured so readiness guards treat it as
+    // unconfigured, and a sentinel when configured without a key so the
+    // OpenAI SDK (which requires a non-null apiKey) still constructs.
+    const k = getKeys();
+    if (!k.customOpenAIBaseUrl || !k.customOpenAIModel) return null;
+    return k.customOpenAIKey || NO_KEY_SENTINEL;
+  }
   return null;
 }
 
@@ -78,7 +132,10 @@ export function hasAnyApiKey(): boolean {
   if (keys.geminiKey || keys.chatGptKey || keys.claudeKey || keys.openRouterKey) return true;
   // Ollama needs no key, but it does need a base URL and model to actually
   // function. Only count it as configured when both are set.
-  return getActiveProvider() === "ollama" && !!keys.customBaseUrl && !!keys.customModel;
+  if (getActiveProvider() === "ollama" && !!keys.customBaseUrl && !!keys.customModel) return true;
+  // Custom OpenAI-compatible: needs base URL + model; key optional.
+  if (getActiveProvider() === CUSTOM_OPENAI_PROVIDER && !!keys.customOpenAIBaseUrl && !!keys.customOpenAIModel) return true;
+  return false;
 }
 
 export function getProviderWithKey(): string | null {
@@ -87,6 +144,8 @@ export function getProviderWithKey(): string | null {
   if (keys.geminiKey) return "gemini";
   if (keys.chatGptKey) return "openai";
   if (keys.claudeKey) return "claude";
+  // Custom OpenAI-compatible: configured without a key still counts.
+  if (keys.customOpenAIBaseUrl && keys.customOpenAIModel) return CUSTOM_OPENAI_PROVIDER;
   // No cloud keys configured — fall back to Ollama if it's the active provider
   // AND has a base URL + model set.
   if (getActiveProvider() === "ollama" && keys.customBaseUrl && keys.customModel) return "ollama";
@@ -117,6 +176,15 @@ export function openAiCompatEndpoint(
       // Recommended local model: qwen3.5:9b (balanced quality/speed on 16GB GPUs).
       // Fast alternative: qwen3.5:4b. Users can override via customModel.
       model: keys.customModel || "qwen3.5:9b",
+    };
+  }
+  if (provider === CUSTOM_OPENAI_PROVIDER) {
+    // Generic OpenAI-compatible escape hatch. Base URL + model are required
+    // (getApiKey returns null otherwise, so this branch is only reached when
+    // configured). No defaults — the user owns the endpoint completely.
+    return {
+      baseUrl: keys.customOpenAIBaseUrl,
+      model: keys.customOpenAIModel,
     };
   }
   // plain OpenAI

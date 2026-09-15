@@ -42,6 +42,12 @@ import {
   labelEngagement,
   countPostSendEngagement,
 } from "../lib/autoForgeCore";
+import {
+  captureAutoCheckSignal,
+  evaluateAutoCheckCadence,
+  hasMeaningfulContextChange,
+  type AutoCheckSignal,
+} from "../lib/coreAutoCheck";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response
 const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
@@ -55,6 +61,11 @@ export function useAutoForge() {
   const {
     autoForgeEnabled,
     autoForgeAutoCheckEnabled,
+    autoForgeAutoCheckMode,
+    autoForgeAutoCheckIntervalMs,
+    autoForgeLastCheckMs,
+    setAutoForgeLastCheckMs,
+    setAutoForgeCheckArmed,
     config,
     streamMetadata,
     audioTranscript,
@@ -108,15 +119,18 @@ export function useAutoForge() {
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
   const consecutiveSilenceRef = useRef(0);
+  // Context fingerprint of the LAST evaluation that actually ran. Smart mode
+  // compares against this to decide whether a fresh model call is worthwhile.
+  const autoCheckSignalRef = useRef<AutoCheckSignal | null>(null);
   const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Concurrency guard: prevents overlapping checkAutoForge executions
   const isAutoForgingRef = useRef(false);
   const forgingStartedAtRef = useRef(0);
   // Track engagement-check timers for cleanup on unmount
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled });
+  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null });
 
-  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled };
+  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null };
 
   // Sync rate limiter config
   actionRateLimiter.updateConfig(rateLimitConfig);
@@ -458,6 +472,43 @@ export function useAutoForge() {
         }
       }
 
+      // Auto-Check cadence gate — the user (not a hard-coded timer) decides how
+      // often CORE may spend a model evaluation. Interval mode enforces the
+      // chosen cadence; Smart mode requires a real context change (new chat,
+      // transcript, visual frame, or bot activity). Mentions and activity
+      // spikes always pass, so the bot never ignores being addressed.
+      // The signal fingerprint is only advanced when a check actually runs, so
+      // a change that arrives during a blocked tick stays "new" until it is
+      // evaluated. Nothing is scheduled here — the 15s tick is now a cheap
+      // scheduler heartbeat that this gate filters.
+      if (!force && !supercharged) {
+        const signal = captureAutoCheckSignal({
+          chatLog: state.chatLog,
+          audioTranscript: state.audioTranscript,
+          visualSnapshotUrl: state.visualSnapshotUrl,
+          visualSnapshotHistoryLength: useAppStore.getState().visualSnapshotHistory.length,
+          sentMessagesLength: state.sentMessages.length,
+          audioEnergyLabel: state.audioEnergy,
+        });
+        const cadence = evaluateAutoCheckCadence({
+          mode: state.autoForgeAutoCheckMode,
+          intervalMs: state.autoForgeAutoCheckIntervalMs,
+          now: Date.now(),
+          lastCheckAt: state.autoForgeLastCheckMs,
+          signalsChanged: hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
+          urgent: isMentioned || activitySpike,
+        });
+        if (!cadence.run) {
+          // Cheap heartbeat return — no model call, no reschedule. The tick
+          // re-evaluates in 15s and runs as soon as the gate opens.
+          setAutoForgeCheckArmed(cadence.armed);
+          return;
+        }
+        autoCheckSignalRef.current = signal;
+        setAutoForgeCheckArmed(false);
+        setAutoForgeLastCheckMs(Date.now());
+      }
+
       const decisionStartTime = Date.now();
 
       const decision = await autoforgeDecide({
@@ -566,7 +617,6 @@ export function useAutoForge() {
       // Dry run mode — log the decision but don't send anything
       if (state.autoForgeDryRun && decision.decision !== "deliberate_silence") {
         console.log(`[AutoForge] DRY RUN: would have sent ${decision.decision}: ${decision.action_payload || "(full forge)"}`);
-        toast.info(`AutoForge DRY RUN: ${decision.decision}`, { description: decision.action_payload || decision.reason, icon: "🧪" });
         addEventRef.current({
           timestamp: Date.now(),
           type: "action_sent",

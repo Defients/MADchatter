@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey, getKeys, openAiCompatEndpoint } from "./keys";
+import { getApiKey, getKeys, openAiCompatEndpoint, isOpenAICompatibleProvider } from "./keys";
 import { getTwitchSession } from "./twitch";
 import { AutoForgeEvent, ForgeConfig, ForgeSuggestion } from "../types";
 import {
@@ -442,7 +442,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+  } else if (isOpenAICompatibleProvider(provider)) {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({
       apiKey,
@@ -450,10 +450,12 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       dangerouslyAllowBrowser: true,
       ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
     });
-    const content: any[] = [{ type: "text", text: userMessageContent }];
-    if (params.screenshot) {
-      content.push({ type: "image_url", image_url: { url: params.screenshot } });
-    }
+    const content: any = params.screenshot
+      ? [
+          { type: "text", text: userMessageContent },
+          { type: "image_url", image_url: { url: params.screenshot } },
+        ]
+      : userMessageContent;
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
       (signal) => ai.chat.completions.create({
@@ -531,6 +533,8 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   const rawSuggestions = Array.isArray(parsedResponse.suggestions) ? parsedResponse.suggestions : [];
   const validSuggestions = rawSuggestions.filter((s: any) => s && typeof s.message === "string" && s.message.trim().length > 0);
   if (validSuggestions.length === 0) {
+    console.warn("[generateChat] No usable suggestions. Raw model output (first 500 chars):", generatedJsonStr?.slice(0, 500));
+    console.warn("[generateChat] Parsed response keys:", Object.keys(parsedResponse));
     throw new Error("Model returned no usable suggestions. Try again or lower the effort level.");
   }
   parsedResponse.suggestions = validSuggestions;
@@ -708,7 +712,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
       };
     }
     return { text: response.text || "", tokenUsage: usage };
-  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+  } else if (isOpenAICompatibleProvider(provider)) {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({
       apiKey,
@@ -841,7 +845,7 @@ Custom Instruction: ${params.customInstruction || "None"}
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+  } else if (isOpenAICompatibleProvider(provider)) {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({
       apiKey,
@@ -1040,7 +1044,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
       };
     }
     return { text: response.text || "Unable to generate briefing.", tokenUsage: usage };
-  } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+  } else if (isOpenAICompatibleProvider(provider)) {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({
       apiKey,
@@ -1205,7 +1209,7 @@ DECIDE NOW.`;
             total_tokens: response.usageMetadata.totalTokenCount,
           };
         }
-      } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
+      } else if (isOpenAICompatibleProvider(provider)) {
         const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
         const ai = new OpenAI({
       apiKey,

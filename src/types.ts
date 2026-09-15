@@ -8,6 +8,13 @@ export interface ChatMessage {
   badges?: string[];
   sentiment?: SentimentLabel;
   banned?: boolean;
+  dryRun?: boolean;
+  /** Message was sent by the user/bot (not received from chat). Styled in gold. */
+  selfSent?: boolean;
+  /** Source of the self-sent message: "manual" or "autoforge". */
+  selfSentSource?: "manual" | "autoforge";
+  /** Twitch native emotes from IRC tags: emoteId → array of [start, end] ranges. */
+  twitchEmotes?: Record<string, number[][]>;
 }
 
 export interface ForgeSuggestion {
@@ -120,6 +127,8 @@ export interface SentMessage {
   source: "manual" | "autoforge" | "followup";
   // Multi-bot mode: which bot account sent this. Absent in legacy single-bot mode.
   botId?: string;
+  // Dry run: message was previewed locally, never posted to the live channel.
+  dryRun?: boolean;
 }
 
 export interface SessionStats {

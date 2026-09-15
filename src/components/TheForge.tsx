@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useAppStore, selectMultiBotActive } from "../store";
+import { useEffectiveMode, useIsMobile } from "../hooks/useMediaQuery";
 import { Button } from "./ui/button";
 import { VariantCard } from "./VariantCard";
 import { toast } from "sonner";
@@ -70,7 +71,10 @@ export function TheForge() {
   const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const streamCaptureActive = useAppStore((s) => s.streamCaptureActive);
   const authTick = useAppStore((s) => s.authTick);
-  const interfaceMode = useAppStore((s) => s.interfaceMode);
+  // effectiveMode: the mode that actually renders (CORE when STUDIO is
+  // unavailable on the current viewport). Drives core-vs-studio behavior.
+  const interfaceMode = useEffectiveMode();
+  const isMobile = useIsMobile();
   // Multi-bot: active authenticated bots for per-bot send squares on variant cards.
   const multiBotActive = useAppStore(selectMultiBotActive);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
@@ -102,7 +106,8 @@ export function TheForge() {
     if (isForging) return;
     setIsForging(true);
     playSfx('forge_start');
-    const toastId = toast.loading("Forging co-pilot variant batch...");
+    const isMobileCore = isMobile && interfaceMode === "core";
+    const toastId = isMobileCore ? undefined : toast.loading("Forging co-pilot variant batch...");
 
     try {
       const provider = getActiveProvider();
@@ -202,11 +207,17 @@ export function TheForge() {
       }
       incrementForgeCount();
       useAppStore.getState().setHasForgedOnce(true);
-      toast.success("Co-pilot variants forged successfully!", { id: toastId });
+      if (toastId) {
+        toast.success("Co-pilot variants forged successfully!", { id: toastId });
+      }
       playSfx('forge_complete');
       window.dispatchEvent(new CustomEvent('bg-forge-pulse', { detail: { count: 14 } }));
     } catch (e: any) {
-      toast.error(e.message || "Error forging variants", { id: toastId });
+      if (toastId) {
+        toast.error(e.message || "Error forging variants", { id: toastId });
+      } else {
+        toast.error(e.message || "Error forging variants");
+      }
       playSfx('error');
     } finally {
       setIsForging(false);

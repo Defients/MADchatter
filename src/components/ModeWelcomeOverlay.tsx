@@ -1,8 +1,10 @@
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
-import { Sparkles, Sliders, ChevronRight, Check } from "lucide-react";
+import { Sparkles, Sliders, ChevronRight, Check, Monitor } from "lucide-react";
 import { useAppStore } from "../store";
+import { useStudioAvailable } from "../hooks/useMediaQuery";
 import { playSfx } from "../lib/sfx";
+import { cn } from "../lib/utils";
 import { VersionBadge } from "./VersionBadge";
 import logoUrl from "../../madchatter-logo1.png";
 
@@ -12,11 +14,17 @@ import logoUrl from "../../madchatter-logo1.png";
  * Shows once (gated by `modeWelcomeSeen` in the store). Presents two cards:
  * Core (recommended, focused workflow) and Studio (full control). Selecting
  * either sets `interfaceMode` and marks the welcome as seen.
+ *
+ * When the viewport is too narrow for STUDIO, the STUDIO card remains visible
+ * (so STUDIO stays discoverable as a larger-screen feature) but is disabled
+ * and annotated "Larger screen required" — onboarding never leads the user
+ * into an unsupported interface. CORE is the obvious primary choice.
  */
 export function ModeWelcomeOverlay() {
   const visible = useAppStore((s) => !s.modeWelcomeSeen);
   const setModeWelcomeSeen = useAppStore((s) => s.setModeWelcomeSeen);
   const setInterfaceMode = useAppStore((s) => s.setInterfaceMode);
+  const studioAvailable = useStudioAvailable();
 
   const choose = (mode: "core" | "studio") => {
     setInterfaceMode(mode);
@@ -140,10 +148,26 @@ export function ModeWelcomeOverlay() {
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: 0.4, duration: 0.4 }}
-                  whileHover={{ y: -2 }}
-                  whileTap={{ scale: 0.99 }}
-                  onClick={() => choose("studio")}
-                  className="group relative text-left bg-gradient-to-b from-cyan-500/[0.08] to-[#0a0a0f]/80 border-2 border-cyan-500/30 rounded-2xl p-5 transition-all hover:border-cyan-500/60 hover:shadow-[0_0_24px_rgba(34,211,238,0.18)] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 overflow-hidden"
+                  whileHover={studioAvailable ? { y: -2 } : undefined}
+                  whileTap={studioAvailable ? { scale: 0.99 } : undefined}
+                  onClick={() => {
+                    if (studioAvailable) {
+                      choose("studio");
+                    } else {
+                      // Surface the gate without dismissing the welcome —
+                      // the user still needs to pick a supported mode.
+                      useAppStore.getState().setInterfaceMode("studio");
+                    }
+                  }}
+                  // aria-disabled (not disabled): a tap opens the
+                  // "larger screen" gate overlay rather than dead-ending.
+                  aria-disabled={!studioAvailable}
+                  className={cn(
+                    "group relative text-left bg-gradient-to-b from-cyan-500/[0.08] to-[#0a0a0f]/80 border-2 rounded-2xl p-5 overflow-hidden",
+                    studioAvailable
+                      ? "border-cyan-500/30 hover:border-cyan-500/60 hover:shadow-[0_0_24px_rgba(34,211,238,0.18)] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50"
+                      : "border-cyan-500/15 opacity-60 cursor-not-allowed"
+                  )}
                 >
                   <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[9px] font-black uppercase tracking-wider text-cyan-300">
                     <Sliders className="w-2.5 h-2.5" />
@@ -167,10 +191,22 @@ export function ModeWelcomeOverlay() {
                     ))}
                   </ul>
 
-                  <div className="flex items-center justify-center gap-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold text-sm transition-all group-hover:shadow-lg group-hover:shadow-cyan-500/30">
-                    OPEN STUDIO
-                    <ChevronRight className="w-4 h-4" />
-                  </div>
+                  {studioAvailable ? (
+                    <div className="flex items-center justify-center gap-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold text-sm transition-all group-hover:shadow-lg group-hover:shadow-cyan-500/30">
+                      OPEN STUDIO
+                      <ChevronRight className="w-4 h-4" />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-1 px-4 py-2.5 rounded-xl bg-white/[0.03] border border-white/10 text-center">
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-gray-400">
+                        <Monitor className="w-3.5 h-3.5" />
+                        Larger screen required
+                      </div>
+                      <div className="text-[10px] text-gray-600 leading-snug">
+                        Open MADchatter on a wider display to use STUDIO.
+                      </div>
+                    </div>
+                  )}
                 </motion.button>
               </div>
 

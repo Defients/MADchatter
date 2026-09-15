@@ -11,11 +11,13 @@ export async function sendManualMessage({
   channel,
   botId,
   source = "manual",
+  dryRun = false,
 }: {
   message: string;
   channel: string;
   botId?: string;
   source?: ManualSendSource;
+  dryRun?: boolean;
 }): Promise<void> {
   const state = useAppStore.getState();
   const text = message.trim();
@@ -38,36 +40,44 @@ export async function sendManualMessage({
   }
 
   // Covers double clicks and overlapping keyboard/card sends until delivery resolves.
-  const pendingKey = JSON.stringify([state.platform, destination, sentBot?.id, text]);
+  const pendingKey = JSON.stringify([state.platform, destination, sentBot?.id, text, dryRun]);
   if (pendingSends.has(pendingKey)) throw new Error("This message is already being sent.");
   pendingSends.add(pendingKey);
   try {
-    await getPlatformSendFn(state.platform, sentBot?.id)(destination, text);
+    // Dry run: skip the platform send entirely. Record the message locally so
+    // it appears in the chat log, but never post to the live channel.
+    if (!dryRun) {
+      await getPlatformSendFn(state.platform, sentBot?.id)(destination, text);
+    }
     const timestamp = Date.now();
-    if (source !== "autoforge") state.setLastManualSendMs(timestamp);
+    if (source !== "autoforge" && !dryRun) state.setLastManualSendMs(timestamp);
     const event = {
       timestamp,
       type: "action_sent" as const,
       severity: "high" as const,
-      summary: `${source === "autoforge" ? "AutoForge send" : source === "smart_reply" ? "Smart reply" : "Manual send"}${sentBot ? ` as @${sentBot.session?.username}` : ""}: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
-      details: { source, message: text, channel: destination, ...(sentBot ? { botId: sentBot.id } : {}) },
+      summary: `${dryRun ? "[DRY RUN] " : ""}${source === "autoforge" ? "AutoForge send" : source === "smart_reply" ? "Smart reply" : "Manual send"}${sentBot ? ` as @${sentBot.session?.username}` : ""}: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
+      details: { source, message: text, channel: destination, dryRun, ...(sentBot ? { botId: sentBot.id } : {}) },
     };
-    const sentMessage = { message: text, channel: destination, timestamp, source: source === "autoforge" ? "autoforge" as const : "manual" as const };
+    const sentMessage = { message: text, channel: destination, timestamp, source: source === "autoforge" ? "autoforge" as const : "manual" as const, ...(dryRun ? { dryRun: true } : {}) };
     if (sentBot) {
       state.addBotSentMessage(sentBot.id, { ...sentMessage, botId: sentBot.id });
-      state.incrementBotStat(sentBot.id, "messagesSent");
-      state.incrementBotStat(sentBot.id, source === "autoforge" ? "autoForgeActions" : "manualActions");
+      if (!dryRun) {
+        state.incrementBotStat(sentBot.id, "messagesSent");
+        state.incrementBotStat(sentBot.id, source === "autoforge" ? "autoForgeActions" : "manualActions");
+      }
       state.addBotAutoForgeEvent(sentBot.id, event);
     } else {
       state.addSentMessage(sentMessage);
-      state.incrementMessagesSent();
-      state.incrementStat(source === "autoforge" ? "autoForgeActions" : "manualActions");
+      if (!dryRun) {
+        state.incrementMessagesSent();
+        state.incrementStat(source === "autoforge" ? "autoForgeActions" : "manualActions");
+      }
       state.addAutoForgeEvent(event);
     }
     // Onboarding milestone: first successful send (not dry-run). Derived from
     // actual send success, not button click — if the platform rejects, auth
     // is expired, or the request fails, the throw above prevents this.
-    if (!state.autoForgeDryRun && !state.hasSentMessage) {
+    if (!state.autoForgeDryRun && !state.hasSentMessage && !dryRun) {
       state.setHasSentMessage(true);
     }
   } finally {

@@ -11,10 +11,11 @@ import { VersionBadge } from "./VersionBadge";
 import { TuningDeck } from "./TuningDeck";
 import { CoreTuningControls, CoreLaunchpad, InterfaceModeToggle } from "./CoreMode";
 import { CoreWorkspace } from "./CoreWorkspace";
+import { CoreMobileWorkspace } from "./CoreMobileWorkspace";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { useAppStore } from "../store";
 import { buttonVariants } from "./ui/button";
-import { useIsMobile } from "../hooks/useMediaQuery";
+import { useIsMobile, useEffectiveMode } from "../hooks/useMediaQuery";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
 import { MultiBotPanel, MultiBotButton, MultiBotModeBadge } from "./MultiBotPanel";
@@ -84,6 +85,7 @@ import { ActionTimeline } from "./ActionTimeline";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
+import { UserAvatar, userDisplayName } from "./UserAvatar";
 import deffySigUrl from "/deffy-sig_whiteblack.png";
 
 function DeffySigLogo() {
@@ -265,7 +267,11 @@ export function ForgeLayout() {
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
-  const interfaceMode = useAppStore((s) => s.interfaceMode);
+  // effectiveMode is the mode that actually renders (preferred mode clamped
+  // to CORE when STUDIO is unavailable on the current viewport). Using this
+  // instead of the raw preferred `interfaceMode` ensures a narrow viewport
+  // never renders a broken STUDIO workspace.
+  const interfaceMode = useEffectiveMode();
   const whisperDownloadProgress = useAppStore((s) => s.whisperDownloadProgress);
 
   // Active auth based on platform
@@ -375,6 +381,9 @@ export function ForgeLayout() {
   const [visualCooldown, setVisualCooldown] = useState(false);
   const visualCooldownRef = useRef<number | null>(null);
   const handleManualCaptureRef = useRef<(forceStreamCrop?: boolean) => void>(() => {});
+  // Refs updated by CoreWorkspace when the inline Visual panel is hidden/shown.
+  // When hidden, auto-capture pauses (no point capturing for a hidden panel).
+  const visualInlineHiddenRef = useRef(false);
   const [windowSelected, setWindowSelected] = useState(false);
   const cachedStreamRef = useRef<MediaStream | null>(null);
   const captureVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -394,6 +403,10 @@ export function ForgeLayout() {
   // captures include the browser chrome (search bar, tabs) in the video frame,
   // so viewport-relative coordinates need an offset to map correctly.
   const captureSurfaceTypeRef = useRef<string>("window");
+  // True once we detect that the Window Capture source is the MADchatter
+  // window itself (self-capture). Used to crop frames to the Stream Embed
+  // only and to show the warning toast once per capture session.
+  const selfWindowCaptureRef = useRef(false);
   // Smart capture — AI dynamically adjusts interval based on scene change rate
   // Levels: 0=Fixed (60s), 1=Lite (smart)
   const SMART_LEVELS = [
@@ -438,6 +451,16 @@ export function ForgeLayout() {
   }, [visualCaptureInterval]);
 
   useEffect(() => {
+    // Pause auto-capture when:
+    //  - the active provider is Ollama (vision competes with Forge for the single slot,
+    //    causing "no usable suggestions" when it preempts mid-Forge)
+    //  - the Visual panel is hidden in Core mode (no point capturing for a hidden panel)
+    const isOllama = getActiveProvider() === "ollama";
+    if (isOllama) {
+      setVisualCountdown(0);
+      return;
+    }
+    if (visualInlineHiddenRef.current) return;
     if (!visualAutoCapture || !windowSelected) return;
     setVisualCountdown(visualCaptureInterval);
     const tickId = setInterval(() => {
@@ -449,6 +472,19 @@ export function ForgeLayout() {
     }, visualCaptureInterval * 1000);
     return () => { clearInterval(tickId); clearInterval(id); };
   }, [visualAutoCapture, visualCaptureInterval, windowSelected]);
+
+  // One-time notice when auto-capture is paused due to Ollama
+  const ollamaVisualNoticeRef = useRef(false);
+  useEffect(() => {
+    if (getActiveProvider() !== "ollama") return;
+    if (!visualAutoCapture || !windowSelected) return;
+    if (ollamaVisualNoticeRef.current) return;
+    ollamaVisualNoticeRef.current = true;
+    toast.info("Visual auto-capture paused (Ollama)", {
+      description: "Ollama uses a single slot — vision would compete with Forge. Manual snapshots still work.",
+      duration: 6000,
+    });
+  }, [visualAutoCapture, windowSelected]);
 
   const handleManualCapture = (forceStreamCrop = false) => {
     if (visualCooldown) return;
@@ -742,10 +778,18 @@ export function ForgeLayout() {
     }
     if (sentMessages.length > prevSentCountRef.current) {
       const lastSent = sentMessages[sentMessages.length - 1];
-      if (lastSent.source === "manual") {
-        appendChatLog(createMarker("manual"));
+      if (lastSent.dryRun) {
+        // Dry run: append the actual message text as a preview entry
+        appendChatLog({ id: lastSent.id, user: "You (dry run)", text: lastSent.message, timestamp: lastSent.timestamp, dryRun: true });
+      } else if (lastSent.source === "manual") {
+        // Manual send: show the actual message text highlighted in gold
+        appendChatLog({ id: lastSent.id, user: "You", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "manual" });
       } else if (lastSent.source === "autoforge" || lastSent.source === "followup") {
-        appendChatLog(createMarker("autoforge"));
+        // AutoForge: show the actual message text highlighted in gold
+        const botName = lastSent.botId
+          ? useAppStore.getState().bots.find((b) => b.id === lastSent.botId)?.session?.username
+          : undefined;
+        appendChatLog({ id: lastSent.id, user: botName || "Bot", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "autoforge" });
       }
     }
     prevSentCountRef.current = sentMessages.length;
@@ -775,10 +819,10 @@ export function ForgeLayout() {
       if (cur > prev) {
         const lastSent = bot.runtime.sentMessages[cur - 1];
         if (lastSent?.source === "manual") {
-          appendChatLog(createMarker("manual"));
+          appendChatLog({ id: lastSent.id, user: bot.session?.username || "Bot", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "manual" });
           appended = true;
         } else if (lastSent?.source === "autoforge" || lastSent?.source === "followup") {
-          appendChatLog(createMarker("autoforge"));
+          appendChatLog({ id: lastSent.id, user: bot.session?.username || "Bot", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "autoforge" });
           appended = true;
         }
       }
@@ -1494,6 +1538,7 @@ export function ForgeLayout() {
       setTabCaptureMode(false);
       tabCaptureModeRef.current = false;
       captureSurfaceTypeRef.current = "window";
+      selfWindowCaptureRef.current = false;
       if (cachedStreamRef.current) {
         cachedStreamRef.current.getTracks().forEach(t => t.stop());
         cachedStreamRef.current = null;
@@ -1784,6 +1829,48 @@ export function ForgeLayout() {
           tabCaptureModeRef.current = false;
           setTabCaptureMode(false);
         }
+      } else {
+        // ── Window self-capture detection ───────────────────────────────────
+        // When the user selected Window Capture and chose the MADchatter
+        // window itself (the one displaying CORE mode), the captured frame
+        // is a recursive screenshot of the entire interface. Detect this by
+        // matching the video dimensions against the browser window's outer
+        // dimensions × DPR (same heuristic as the SNAP path). When detected
+        // and the Stream Embed is visible, crop to the Stream Embed bounds
+        // only — excluding all surrounding MADchatter UI (chat, controls,
+        // headers, panels, overlays, Memory, Visual UI). cropToStreamEmbed()
+        // runs on every capture, so resizing/layout changes stay aligned.
+        // Monitor capture is intentionally out of scope here — we can't
+        // reliably tell whether MADchatter is on the captured screen, so
+        // regular monitor captures keep using the full frame.
+        const surface = captureSurfaceTypeRef.current;
+        if (surface === "window") {
+          const dpr = window.devicePixelRatio || 1;
+          const expectedW = Math.round(window.outerWidth * dpr);
+          const expectedH = Math.round(window.outerHeight * dpr);
+          const selfCapture = Math.abs(videoWidth - expectedW) <= 10 && Math.abs(videoHeight - expectedH) <= 10;
+          if (selfCapture) {
+            if (!selfWindowCaptureRef.current) {
+              selfWindowCaptureRef.current = true;
+              console.log(`[Visual] Window self-capture detected (video=${videoWidth}x${videoHeight}, expected=${expectedW}x${expectedH}) — cropping to stream embed`);
+              toast.warning("MADchatter window detected as the capture source — frames will be cropped to the stream embed only. Keep the stream embed visible and avoid resizing panels, or the crop region will be wrong.", { duration: 8000 });
+            }
+            const cropped = cropToStreamEmbed();
+            if (!cropped) {
+              // Self-capture detected but the Stream Embed can't be reliably
+              // located or isn't visible. Fail gracefully — skip this capture
+              // entirely rather than feeding VISUAL a recursive full-window
+              // screenshot. The interval keeps ticking, so captures resume
+              // automatically once the Stream Embed is visible again.
+              console.log('[Visual] Self-capture detected but stream embed not visible — skipping capture');
+              return;
+            }
+          } else {
+            selfWindowCaptureRef.current = false;
+          }
+        } else {
+          selfWindowCaptureRef.current = false;
+        }
       }
 
       const canvas = document.createElement("canvas");
@@ -1980,6 +2067,20 @@ export function ForgeLayout() {
                 </div>
               );
             })
+          ) : !isMobile && !streamMetadata?.channelName ? (
+            <div className="flex flex-col items-center justify-center py-10 gap-2">
+              <AudioLines className="w-8 h-8 text-purple-500/30" />
+              <span className="text-[11px] text-gray-600 italic text-center leading-snug">
+                Audio requires an active stream connection. Audio capture and transcription will begin when the stream channel is connected.
+              </span>
+              <button
+                type="button"
+                onClick={() => toggleWidget("stream")}
+                className="text-[10px] font-bold uppercase px-3 py-1.5 rounded bg-purple-500/10 border border-purple-500/30 text-purple-300 hover:bg-purple-500/20 transition-colors mt-2"
+              >
+                Open Stream
+              </button>
+            </div>
           ) : !isMobile ? (
             <div className="flex flex-col items-center justify-center py-10 gap-2">
               <AudioLines className="w-8 h-8 text-purple-500/30" />
@@ -2126,11 +2227,14 @@ export function ForgeLayout() {
               const text = msg.text;
               const badges = msg.badges || [];
               const isBanned = msg.banned;
+              const isDryRun = msg.dryRun;
+              const isSelfSent = msg.selfSent;
+              const selfSentSource = msg.selfSentSource;
               const sentimentColor = msg.sentiment ? SENTIMENT_DOT_COLORS[msg.sentiment as SentimentLabel] : null;
               return (
                 <div
                   key={msg.id || `msg-${i}`}
-                  className={`group relative flex items-start hover:bg-teal-500/5 p-1.5 rounded-md border-b border-white/[0.02]${isBanned ? ' banned-message' : ''}`}
+                  className={`group relative flex items-start hover:bg-teal-500/5 p-1.5 rounded-md border-b border-white/[0.02]${isBanned ? ' banned-message' : ''}${isDryRun ? ' border-l-2 border-l-amber-500/50 bg-amber-500/[0.03]' : ''}${isSelfSent ? ' border-l-2 border-l-yellow-400/50 bg-yellow-500/[0.04]' : ''}`}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     navigator.clipboard.writeText(`${username}: ${text}`).then(() => {
@@ -2148,8 +2252,14 @@ export function ForgeLayout() {
                       <ThemedTooltip content="Subscriber"><span className="text-[8px] text-purple-400 cursor-help">⭐</span></ThemedTooltip>
                     )}
                   </div>
-                  <span className={`font-bold text-[10px] shrink-0${isBanned ? ' banned-username' : ' text-teal-400'}`}>@{username}:</span>
-                  <EmoteText text={text} channel={streamMetadata?.channelName} className={`leading-snug break-words flex-1 min-w-0 ml-1.5${isBanned ? ' banned-text' : ' text-gray-200'}`} />
+                  <span className={`font-bold text-[10px] shrink-0${isBanned ? ' banned-username' : isDryRun ? ' text-amber-400' : isSelfSent ? ' text-yellow-300' : ' text-teal-400'}`}>@{username}:</span>
+                  <EmoteText text={text} channel={streamMetadata?.channelName} twitchEmotes={msg.twitchEmotes} className={`leading-snug break-words flex-1 min-w-0 ml-1.5${isBanned ? ' banned-text' : isDryRun ? ' text-amber-200/80 italic' : isSelfSent ? ' text-yellow-200' : ' text-gray-200'}`} />
+                  {isDryRun && (
+                    <span className="text-[8px] font-bold uppercase tracking-wider text-amber-500/70 shrink-0 self-center">preview</span>
+                  )}
+                  {isSelfSent && selfSentSource === "autoforge" && (
+                    <span className="text-[8px] font-bold uppercase tracking-wider text-orange-400/70 shrink-0 self-center">auto</span>
+                  )}
                   {sentimentColor && (
                     <ThemedTooltip content={`Sentiment: ${msg.sentiment}`}>
                       <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 self-center', sentimentColor)} />
@@ -2215,6 +2325,20 @@ export function ForgeLayout() {
                   <Pin className="w-4 h-4" />
                 </button>
               </ThemedTooltip>
+            </div>
+          ) : !streamMetadata?.channelName ? (
+            <div className="aspect-video w-full bg-black/40 rounded-lg border border-white/10 flex flex-col items-center justify-center gap-2">
+              <Eye className="w-8 h-8 text-orange-500/30" />
+              <span className="text-[10px] text-gray-600 font-mono leading-snug text-center">
+                Visual frame analysis requires an active stream. Frame analysis will begin once the live stream is connected.
+              </span>
+              <button
+                type="button"
+                onClick={() => toggleWidget("stream")}
+                className="text-[10px] font-bold uppercase px-3 py-1.5 rounded bg-orange-500/10 border border-orange-500/30 text-orange-300 hover:bg-orange-500/20 transition-colors mt-2"
+              >
+                Open Stream
+              </button>
             </div>
           ) : (
             <div className="aspect-video w-full bg-black/40 rounded-lg border border-white/10 flex flex-col items-center justify-center gap-2">
@@ -2360,27 +2484,47 @@ export function ForgeLayout() {
 
   return (
     <TooltipProvider>
-      {interfaceMode === "core" && !isMobile ? (
-        /* ═══ Core Mode — centered, panel-free workspace ═══ */
-        <CoreWorkspace
-          renderWidgetContent={renderWidgetContent}
-          openWidgetFromDock={openWidgetFromDock}
-          toggleWidget={toggleWidget}
-          openWidgets={openWidgets}
-          activeUser={activeUser}
-          activeAuthLoading={activeAuthLoading}
-          activeLoginError={activeLoginError}
-          activeLoginInProgress={activeLoginInProgress}
-          activeLogin={activeLogin}
-          activeLogout={activeLogout}
-          activeClearLoginError={activeClearLoginError}
-          onVisualCapture={handleVoiceCapture}
-          onManualSnapshot={handleManualCapture}
-          isVisualCapturing={windowSelected}
-          visualCooldown={visualCooldown}
-          smartLevel={smartLevel}
-          onCycleSmartLevel={cycleSmartLevel}
-        />
+      {interfaceMode === "core" ? (
+        isMobile ? (
+          /* ═══ Core Mobile Workspace ═══ */
+          <CoreMobileWorkspace
+            activeUser={activeUser}
+            activeAuthLoading={activeAuthLoading}
+            activeLoginError={activeLoginError}
+            activeLoginInProgress={activeLoginInProgress}
+            activeLogin={activeLogin}
+            activeLogout={activeLogout}
+            activeClearLoginError={activeClearLoginError}
+            onVisualCapture={handleVoiceCapture}
+            onManualSnapshot={handleManualCapture}
+            isVisualCapturing={windowSelected}
+            visualCooldown={visualCooldown}
+            smartLevel={smartLevel}
+            onCycleSmartLevel={cycleSmartLevel}
+          />
+        ) : (
+          /* ═══ Core Mode — centered, panel-free desktop workspace ═══ */
+          <CoreWorkspace
+            renderWidgetContent={renderWidgetContent}
+            openWidgetFromDock={openWidgetFromDock}
+            toggleWidget={toggleWidget}
+            openWidgets={openWidgets}
+            activeUser={activeUser}
+            activeAuthLoading={activeAuthLoading}
+            activeLoginError={activeLoginError}
+            activeLoginInProgress={activeLoginInProgress}
+            activeLogin={activeLogin}
+            activeLogout={activeLogout}
+            activeClearLoginError={activeClearLoginError}
+            onVisualCapture={handleVoiceCapture}
+            onManualSnapshot={handleManualCapture}
+            isVisualCapturing={windowSelected}
+            visualCooldown={visualCooldown}
+            smartLevel={smartLevel}
+            onCycleSmartLevel={cycleSmartLevel}
+            onVisualInlineHiddenChange={(hidden) => { visualInlineHiddenRef.current = hidden; }}
+          />
+        )
       ) : isMobile ? (
         /* ═══ Mobile Layout — tabbed, bottom bar, single panel at a time ═══ */
         <div className="flex flex-col h-full w-full bg-transparent relative z-10 overflow-hidden">
@@ -2393,9 +2537,12 @@ export function ForgeLayout() {
             <div className="flex items-center gap-2 shrink-0">
               {activeUser ? (
                 <div className="flex items-center h-7 rounded-md overflow-hidden border bg-[#18181B] border-white/10">
-                  <span className="text-[11px] font-bold tracking-wide text-white truncate max-w-[80px] px-2">
-                    @{activeUser.display_name || activeUser.login || activeUser.username}
-                  </span>
+                  <div className="flex items-center gap-1.5 pl-1.5 pr-2.5 min-w-0">
+                    <UserAvatar user={activeUser} platform={platform} sizeClass="h-5 w-5" textClass="text-[10px]" />
+                    <span className="text-[11px] font-bold tracking-wide text-white truncate max-w-[80px]">
+                      @{userDisplayName(activeUser)}
+                    </span>
+                  </div>
                   <ThemedTooltip content="Disconnect">
                     <button onClick={activeLogout} className="h-full px-2 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors">
                       <LogOut className="w-3.5 h-3.5" />
@@ -2429,7 +2576,7 @@ export function ForgeLayout() {
             )}
             {mobileTab === "tuning" && (
               <div className="mobile-panel">
-                {interfaceMode === "core" ? <CoreTuningControls /> : <TuningDeck rightSize={22} />}
+                <TuningDeck rightSize={22} />
               </div>
             )}
             {mobileTab === "context" && (
@@ -3357,23 +3504,13 @@ export function ForgeLayout() {
                           style={{ filter: "drop-shadow(0 0 4px rgba(145,70,255,0.5))" }}
                         />
                       )
-                    ) : platform === 'kick' ? (
-                      <div
-                        className="h-[28px] w-[28px] rounded-full flex items-center justify-center border border-[#53fc18]/50 font-black text-[#53fc18] text-sm"
-                      >
-                        {(activeUser.display_name || activeUser.login || activeUser.username || 'K')[0].toUpperCase()}
-                      </div>
-                    ) : platform === 'joystick' ? (
-                      <div
-                        className="h-[28px] w-[28px] rounded-full flex items-center justify-center border border-[#FF6B35]/50 font-black text-[#FF6B35] text-sm"
-                      >
-                        {(activeUser.display_name || activeUser.login || activeUser.username || 'J')[0].toUpperCase()}
-                      </div>
                     ) : (
-                      <img
-                        src={activeUser.profile_image_url || twitchLogoUrl}
-                        alt="Twitch"
-                        className="h-[28px] w-[28px] rounded-full object-cover border border-[#9146FF]/50"
+                      <UserAvatar
+                        user={activeUser}
+                        platform={platform}
+                        sizeClass="h-[28px] w-[28px]"
+                        textClass="text-sm"
+                        fallbackSrc={platform === 'twitch' ? twitchLogoUrl : undefined}
                       />
                     )}
 
@@ -3510,20 +3647,9 @@ export function ForgeLayout() {
               className="bg-[#121217] border-l border-white/5 z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]"
             >
               <div className="flex flex-col h-full">
-                {/* Core Mode shows a compact launchpad + minimal controls.
-                    Studio Mode shows the full TuningDeck. */}
-                {interfaceMode === "core" ? (
-                  <div className="flex flex-col h-full">
-                    <CoreLaunchpad />
-                    <div className="flex-1 overflow-hidden">
-                      <CoreTuningControls />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex-1 overflow-hidden">
-                    <TuningDeck rightSize={rightSize} />
-                  </div>
-                )}
+                <div className="flex-1 overflow-hidden">
+                  <TuningDeck rightSize={rightSize} />
+                </div>
               </div>
             </ResizablePanel>
         </ResizablePanelGroup>

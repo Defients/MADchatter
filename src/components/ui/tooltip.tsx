@@ -87,6 +87,7 @@ function ThemedTooltip({
   className,
   zIndex,
   collisionAvoidance,
+  closeOnPopupHover = false,
 }: {
   children: ReactElement;
   content: ReactNode;
@@ -97,9 +98,11 @@ function ThemedTooltip({
   className?: string;
   zIndex?: number;
   collisionAvoidance?: TooltipPrimitive.Positioner.Props["collisionAvoidance"];
+  /** Close the tooltip as soon as the pointer leaves the trigger — hovering the tooltip popup itself no longer keeps it open. */
+  closeOnPopupHover?: boolean;
 }) {
   return (
-    <Tooltip>
+    <Tooltip disableHoverablePopup={closeOnPopupHover}>
       <TooltipTrigger render={children} />
       <TooltipContent
         side={side}

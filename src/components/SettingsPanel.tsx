@@ -12,9 +12,14 @@ import {
   Bot,
   Copy,
   Wand2,
+  Plug,
+  Loader2,
+  RefreshCw,
+  Zap,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { getKeys, saveKeys, getActiveProvider, setActiveProvider, getProviderWithKey, getApiKey } from "../lib/keys";
+import { getKeys, saveKeys, getActiveProvider, setActiveProvider, getProviderWithKey, getApiKey, CUSTOM_OPENAI_PROVIDER } from "../lib/keys";
+import { fetchAvailableModels, testProviderConnection, suggestBaseUrlFromLabel, isPresetOrDefaultUrl, type ConnectionTestResult } from "../lib/customProvider";
 import { getTwitchClientId, setTwitchClientId } from "../lib/twitch";
 import { getKickClientId, setKickClientId } from "../lib/kick";
 import { getJoystickClientId, setJoystickClientId, getJoystickClientSecret, setJoystickClientSecret, getJoystickBotUsername, setJoystickBotUsername } from "../lib/joystick";
@@ -42,7 +47,7 @@ export function SettingsPanel({
   const showConfig = variant === "config" || variant === "full";
 
   const [activeProvider, setActiveProviderState] = useState<
-    "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter" | "ollama"
+    "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai"
   >("gemini");
   const [keys, setKeys] = useState({
     geminiKey: "",
@@ -52,9 +57,19 @@ export function SettingsPanel({
     openRouterKey: "",
     customBaseUrl: "",
     customModel: "",
+    customOpenAIKey: "",
+    customOpenAIBaseUrl: "",
+    customOpenAIModel: "",
+    customOpenAILabel: "",
   });
   const [savingKeys, setSavingKeys] = useState(false);
   const [keysSavedState, setKeysSavedState] = useState(false);
+
+  // Custom OpenAI-compatible provider: model loading + connection testing state.
+  const [customModels, setCustomModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [testingConn, setTestingConn] = useState(false);
+  const [connResult, setConnResult] = useState<ConnectionTestResult | null>(null);
 
   const [devUsername, setDevUsername] = useState("");
   const [devToken, setDevToken] = useState("");
@@ -69,7 +84,7 @@ export function SettingsPanel({
     const savedProvider = getActiveProvider();
     if (
       savedProvider &&
-      ["gemini", "gemini-pro", "gemini-env", "openai", "claude", "openrouter", "ollama"].includes(savedProvider)
+      ["gemini", "gemini-pro", "gemini-env", "openai", "claude", "openrouter", "ollama", "custom-openai"].includes(savedProvider)
     ) {
       setActiveProviderState(savedProvider as any);
     }
@@ -95,7 +110,7 @@ export function SettingsPanel({
     setJoystickBotUsernameState(getJoystickBotUsername());
   }, [user]);
 
-  const handleProviderSelect = (p: "gemini" | "openai" | "claude" | "openrouter" | "ollama") => {
+  const handleProviderSelect = (p: "gemini" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai") => {
     setActiveProviderState(p);
     setActiveProvider(p);
     // Selecting Ollama pre-fills the local endpoint + a default model tag so the
@@ -106,6 +121,50 @@ export function SettingsPanel({
         customBaseUrl: k.customBaseUrl || "http://localhost:11434/v1",
         customModel: k.customModel || "qwen3.5:9b",
       }));
+    }
+    // Reset connection-test state when switching away from the custom provider.
+    if (p !== "custom-openai") {
+      setConnResult(null);
+      setCustomModels([]);
+    }
+  };
+
+  // ── Custom OpenAI-compatible: load models from GET /models ──────────────
+  const handleLoadCustomModels = async () => {
+    setLoadingModels(true);
+    setConnResult(null);
+    try {
+      const result = await fetchAvailableModels({
+        baseUrl: keys.customOpenAIBaseUrl,
+        apiKey: keys.customOpenAIKey,
+      });
+      if (result.ok && result.models.length > 0) {
+        setCustomModels(result.models);
+        addToast(`Loaded ${result.models.length} models`, "success");
+      } else {
+        setCustomModels([]);
+        addToast(result.message || "No models found — enter a model manually.", "error");
+      }
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  // ── Custom OpenAI-compatible: test connection ───────────────────────────
+  const handleTestCustomConnection = async () => {
+    setTestingConn(true);
+    setConnResult(null);
+    try {
+      const result = await testProviderConnection({
+        baseUrl: keys.customOpenAIBaseUrl,
+        apiKey: keys.customOpenAIKey,
+        model: keys.customOpenAIModel,
+      });
+      setConnResult(result);
+      if (result.models.length > 0) setCustomModels(result.models);
+      addToast(result.message, result.ok ? "success" : "error");
+    } finally {
+      setTestingConn(false);
     }
   };
 
@@ -141,6 +200,10 @@ export function SettingsPanel({
       openRouterKey: keys.openRouterKey,
       customBaseUrl: keys.customBaseUrl,
       customModel: keys.customModel,
+      customOpenAIKey: keys.customOpenAIKey,
+      customOpenAIBaseUrl: keys.customOpenAIBaseUrl,
+      customOpenAIModel: keys.customOpenAIModel,
+      customOpenAILabel: keys.customOpenAILabel,
     });
 
     const currentActive = getActiveProvider();
@@ -175,7 +238,7 @@ export function SettingsPanel({
       {showKeys && (
         <section className="flex flex-col min-h-0 flex-1 gap-4">
           <div className="flex gap-2 flex-wrap shrink-0">
-            {(["openrouter", "ollama", "gemini", "openai", "claude"] as const).map((p) => (
+            {(["openrouter", "ollama", "gemini", "openai", "claude", "custom-openai"] as const).map((p) => (
               <button
                 key={p}
                 onClick={() => handleProviderSelect(p)}
@@ -187,7 +250,9 @@ export function SettingsPanel({
                       ? "bg-orange-500/10 border-orange-500/30 text-orange-300 hover:bg-orange-500/15"
                       : p === "ollama"
                         ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/15"
-                        : "bg-white/5 border-white/10 text-gray-500 opacity-50 hover:opacity-100",
+                        : p === "custom-openai"
+                          ? "bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/15"
+                          : "bg-white/5 border-white/10 text-gray-500 opacity-50 hover:opacity-100",
                 )}
               >
                 <div
@@ -199,14 +264,18 @@ export function SettingsPanel({
                         // Ollama needs no key, but it does need a base URL and model
                         // to actually function. Show green only when both are set.
                         ? (keys.customBaseUrl && keys.customModel ? "bg-green-500" : "bg-gray-700")
-                        : keys[
-                            `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
-                          ]
-                            ? "bg-green-500"
-                            : "bg-gray-700",
+                        : p === "custom-openai"
+                          // Custom OpenAI-compatible: configured when base URL + model
+                          // are set (key optional for local/no-auth endpoints).
+                          ? (keys.customOpenAIBaseUrl && keys.customOpenAIModel ? "bg-green-500" : "bg-gray-700")
+                          : keys[
+                              `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
+                            ]
+                              ? "bg-green-500"
+                              : "bg-gray-700",
                   )}
                 />
-                {p === "openai" ? "GPT" : (p === "openrouter" ? "OpenRouter" : p === "ollama" ? "Ollama" : p)}
+                {p === "openai" ? "GPT" : (p === "openrouter" ? "OpenRouter" : p === "ollama" ? "Ollama" : p === "custom-openai" ? "Custom" : p)}
               </button>
             ))}
           </div>
@@ -226,6 +295,131 @@ export function SettingsPanel({
                 <p className="text-[10px] text-gray-400 leading-relaxed">
                   Set your <span className="text-emerald-300 font-semibold">Custom API Base URL</span> to your Ollama endpoint (default <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">http://localhost:11434/v1</code>) and <span className="text-emerald-300 font-semibold">Custom Model Name</span> to a pulled model tag (e.g. <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">qwen3.5:9b</code>). Start Ollama with <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">OLLAMA_ORIGINS=* ollama serve</code> so the browser can reach it.
                 </p>
+              </div>
+            )}
+
+            {/* Custom OpenAI-Compatible provider config — shown when selected */}
+            {activeProvider === "custom-openai" && (
+              <div className="bg-sky-500/[0.06] border border-sky-500/25 rounded-lg p-2.5 space-y-2.5">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-sky-300 flex items-center gap-1.5">
+                    <Plug className="w-3 h-3 text-sky-400" />
+                    Custom OpenAI-Compatible
+                  </span>
+                  <p className="text-[10px] text-gray-400 leading-relaxed">
+                    Works with Groq, OpenRouter, Cerebras, Together, self-hosted gateways, and other OpenAI-style APIs. Base URL should usually end with <code className="font-mono bg-white/5 px-1 py-0.5 rounded text-gray-300">/v1</code>.
+                  </p>
+                </div>
+
+                {/* Provider nickname (optional) */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Provider Label (optional)</span>
+                  <input
+                    type="text"
+                    value={keys.customOpenAILabel}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setKeys((k) => ({ ...k, customOpenAILabel: next }));
+                      // Autofill Base URL when the label matches a known preset
+                      // and the URL field is still empty or a preset default.
+                      const suggested = suggestBaseUrlFromLabel(next);
+                      if (suggested && isPresetOrDefaultUrl(keys.customOpenAIBaseUrl)) {
+                        setKeys((k) => ({ ...k, customOpenAIBaseUrl: suggested }));
+                      }
+                    }}
+                    className="w-full bg-black/30 border border-sky-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-sky-500/50 text-white placeholder-gray-700 font-mono"
+                    placeholder="Groq, OpenRouter, My Proxy…"
+                  />
+                </div>
+
+                {/* Base URL (required) */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Base URL (required)</span>
+                  <input
+                    type="text"
+                    value={keys.customOpenAIBaseUrl}
+                    onChange={(e) => { setKeys((k) => ({ ...k, customOpenAIBaseUrl: e.target.value })); setConnResult(null); }}
+                    className="w-full bg-black/30 border border-sky-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-sky-500/50 text-white placeholder-gray-700 font-mono"
+                    placeholder="https://api.groq.com/openai/v1"
+                  />
+                </div>
+
+                {/* API Key (optional for no-auth endpoints) */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">API Key (optional)</span>
+                  <input
+                    type="password"
+                    value={keys.customOpenAIKey}
+                    onChange={(e) => { setKeys((k) => ({ ...k, customOpenAIKey: e.target.value })); setConnResult(null); }}
+                    className="w-full bg-black/30 border border-sky-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-sky-500/50 text-white placeholder-gray-700 font-mono"
+                    placeholder="Paste API key (leave blank for no-auth endpoints)"
+                  />
+                </div>
+
+                {/* Model (required) — dropdown of loaded models or manual entry */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Model (required)</span>
+                    <button
+                      type="button"
+                      onClick={handleLoadCustomModels}
+                      disabled={loadingModels || !keys.customOpenAIBaseUrl.trim()}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider text-sky-300 hover:bg-sky-500/20 hover:border-sky-400/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {loadingModels ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      Load Models
+                    </button>
+                  </div>
+                  {customModels.length > 0 ? (
+                    <select
+                      value={keys.customOpenAIModel}
+                      onChange={(e) => setKeys((k) => ({ ...k, customOpenAIModel: e.target.value }))}
+                      className="w-full bg-black/30 border border-sky-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-sky-500/50 text-white font-mono cursor-pointer"
+                    >
+                      <option value="">Select a model…</option>
+                      {customModels.map((m) => (
+                        <option key={m} value={m} className="bg-[#1E1E2A] text-white">{m}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={keys.customOpenAIModel}
+                      onChange={(e) => setKeys((k) => ({ ...k, customOpenAIModel: e.target.value }))}
+                      className="w-full bg-black/30 border border-sky-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-sky-500/50 text-white placeholder-gray-700 font-mono"
+                      placeholder="openai/gpt-oss-120b"
+                    />
+                  )}
+                  <p className="text-[9px] text-gray-500 leading-relaxed">
+                    Type a model name or load available models from the endpoint. Manual entry always works as a fallback.
+                  </p>
+                </div>
+
+                {/* Test Connection */}
+                <div className="space-y-1.5 pt-1 border-t border-sky-500/15">
+                  <button
+                    type="button"
+                    onClick={handleTestCustomConnection}
+                    disabled={testingConn || !keys.customOpenAIBaseUrl.trim()}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-[10px] font-bold uppercase tracking-wider text-sky-300 hover:bg-sky-500/20 hover:border-sky-400/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {testingConn ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                    Test Connection
+                  </button>
+                  {connResult && (
+                    <div className={cn(
+                      "flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10px] leading-relaxed",
+                      connResult.ok
+                        ? "bg-green-500/10 border border-green-500/25 text-green-300"
+                        : "bg-red-500/10 border border-red-500/25 text-red-300",
+                    )}>
+                      {connResult.ok
+                        ? <Check className="w-3 h-3 mt-0.5 shrink-0" />
+                        : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />}
+                      <span>{connResult.message}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

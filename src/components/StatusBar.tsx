@@ -10,6 +10,7 @@ import { playSfx } from '../lib/sfx';
 import { SENTIMENT_DOT_COLORS } from '../lib/sentiment';
 import type { SentimentLabel } from '../types';
 import { ThemedTooltip } from "./ui/tooltip";
+import { useStudioAvailable, useEffectiveMode } from '../hooks/useMediaQuery';
 import {
   Wifi,
   WifiOff,
@@ -70,7 +71,7 @@ export function StatusBar() {
     sessionStats: s.sessionStats,
     tmiReadState: s.tmiReadState,
     tmiSendState: s.tmiSendState,
-    sentMessages: s.sentMessages,
+    sentMessages: s.sentMessages ?? [],
     clearSentMessages: s.clearSentMessages,
     streamMetadata: s.streamMetadata,
     enhancedStats: s.enhancedStats,
@@ -80,10 +81,21 @@ export function StatusBar() {
     messageQueueDepth: s.messageQueueDepth,
     audioEnergy: s.audioEnergy,
     streamHealth: s.streamHealth,
-    bots: s.bots,
+    bots: s.bots ?? [],
   })));
 
   const platform = useAppStore((s) => s.platform);
+
+  // Mobile Core: narrow viewport in core mode. The sent log header absorbs
+  // the rate counter and becomes the drag handle to expand the log to the
+  // top of the screen (the tiny 5px resize handle is hard to grab on a phone).
+  // NOTE: both hooks must be called unconditionally — `useEffectiveMode` is a
+  // hook (it calls useAppStore + useStudioAvailable). Chaining it behind a
+  // `&&` short-circuit would change the hook count between renders and trip
+  // React's "Should have a queue" invariant.
+  const studioAvailable = useStudioAvailable();
+  const effectiveMode = useEffectiveMode();
+  const isMobileCore = !studioAvailable && effectiveMode === 'core';
 
   const [now, setNow] = useState(Date.now());
   const [expanded, setExpanded] = useState(false);
@@ -95,27 +107,42 @@ export function StatusBar() {
     return Number.isFinite(parsed) && parsed >= 108 ? parsed : null;
   });
   const [isDragging, setIsDragging] = useState(false);
+  // Mobile Core: double-tap the grip handle to horizontally collapse the
+  // status info (everything right of the grip). Toggled only by double-tap;
+  // a single tap/drag still repositions the bar. Persisted per session.
+  const [infoCollapsed, setInfoCollapsed] = useState(() => {
+    try { return localStorage.getItem('forge-statusbar-collapsed') === '1'; } catch { return false; }
+  });
+  const lastTapRef = useRef(0);
   const [dockX, setDockX] = useState(() => {
     const saved = localStorage.getItem('forge-statusbar-x');
     const value = Number(saved);
     return Number.isFinite(value) ? Math.max(0, value) : 0;
   });
-  const dragRef = useRef<{ startX: number; startDockX: number } | null>(null);
+  const [dockY, setDockY] = useState(() => {
+    const saved = localStorage.getItem('forge-statusbar-y');
+    const value = Number(saved);
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+  });
+  const dragRef = useRef<{ startX: number; startY: number; startDockX: number; startDockY: number } | null>(null);
 
   // Conditional status segments — only the separator before each is shown if the segment is active
-  const showAutoForge = enhancedStats.autoForgeActions > 0;
+  // Defensive: store fields can be undefined during state transitions / migrations.
+  const showAutoForge = !!(enhancedStats && enhancedStats.autoForgeActions > 0);
   const showAudio = !!audioEnergy;
   const showHealth = !!streamHealth;
-  const showSentiment = !!sentimentSummary && sentimentSummary.readings.length > 0;
+  const showSentiment = !!sentimentSummary && !!(sentimentSummary.readings && sentimentSummary.readings.length > 0);
   const showQueue = messageQueueDepth > 0;
   const showAudioHealth = showAudio || showHealth;
   const showSentimentQueue = showSentiment || showQueue;
   const dockRef = useRef<HTMLDivElement>(null);
-  // A saved position from a wider display must never hide the dock.
+  // A saved position from a wider/smaller display must never hide the dock.
   useEffect(() => {
     const clampDock = () => {
       const width = dockRef.current?.offsetWidth ?? 0;
-      setDockX(x => Math.max(0, Math.min(x, window.innerWidth - width)));
+      const height = dockRef.current?.offsetHeight ?? 0;
+      setDockX(x => Math.max(0, Math.min(x, Math.max(0, window.innerWidth - width))));
+      setDockY(y => Math.max(0, Math.min(y, Math.max(0, window.innerHeight - height))));
     };
     const observer = new ResizeObserver(clampDock);
     if (dockRef.current) observer.observe(dockRef.current);
@@ -127,15 +154,17 @@ export function StatusBar() {
 
   const DEFAULT_LOG_HEIGHT = 256; // max-h-64 = 16rem = 256px
 
-  const startResize = useCallback((e: React.MouseEvent) => {
+  const startResize = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const currentHeight = dragHeight ?? DEFAULT_LOG_HEIGHT;
-    resizeRef.current = { startY: e.clientY, startHeight: currentHeight };
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    resizeRef.current = { startY: clientY, startHeight: currentHeight };
     setIsDragging(true);
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: MouseEvent | TouchEvent) => {
       if (!resizeRef.current) return;
-      const dy = resizeRef.current.startY - ev.clientY;
+      const cy = 'touches' in ev ? ev.touches[0].clientY : (ev as MouseEvent).clientY;
+      const dy = resizeRef.current.startY - cy;
       const newHeight = Math.max(108, Math.min(window.innerHeight - 48, resizeRef.current.startHeight + dy));
       setDragHeight(newHeight);
     };
@@ -149,9 +178,13 @@ export function StatusBar() {
       });
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
   }, [dragHeight]);
 
   useEffect(() => {
@@ -167,41 +200,82 @@ export function StatusBar() {
     localStorage.setItem('forge-statusbar-x', dockX.toString());
   }, [dockX]);
 
+  useEffect(() => {
+    localStorage.setItem('forge-statusbar-y', dockY.toString());
+  }, [dockY]);
+
+  useEffect(() => {
+    try { localStorage.setItem('forge-statusbar-collapsed', infoCollapsed ? '1' : '0'); } catch { /* private mode */ }
+  }, [infoCollapsed]);
+
   // Merge global sentMessages with per-bot runtime.sentMessages so the log
   // shows multi-bot activity. Per-bot sends go to bots[].runtime.sentMessages,
   // not the global sentMessages list, so without this merge the log stays
   // empty in multi-bot mode.
   const allSent = useMemo(() => {
     type DisplayMsg = { id: string; message: string; channel?: string; timestamp: number; source: string; botName?: string };
-    const global: DisplayMsg[] = sentMessages.map((m) => ({ ...m, botName: undefined }));
-    const perBot: DisplayMsg[] = bots.flatMap((b) =>
-      b.runtime.sentMessages.map((m) => ({ ...m, botName: b.session?.username }))
-    );
+    const safeSent = Array.isArray(sentMessages) ? sentMessages : [];
+    const safeBots = Array.isArray(bots) ? bots : [];
+    const global: DisplayMsg[] = safeSent.map((m) => ({ ...m, botName: undefined }));
+    const perBot: DisplayMsg[] = safeBots.flatMap((b) => {
+      const sm = b?.runtime?.sentMessages;
+      return Array.isArray(sm) ? sm.map((m) => ({ ...m, botName: b.session?.username })) : [];
+    });
     return [...global, ...perBot].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
   }, [sentMessages, bots]);
 
-  const startDrag = useCallback((e: React.MouseEvent) => {
+  const startDrag = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    // Double-tap on the grip (mobile core only) toggles horizontal collapse
+    // of the status info. Detected before drag setup so the second tap never
+    // starts a drag. A single tap still falls through to the drag handler
+    // (which is a no-op without pointer movement).
+    if (isMobileCore) {
+      const t = Date.now();
+      if (t - lastTapRef.current < 320) {
+        lastTapRef.current = 0;
+        setInfoCollapsed((c) => !c);
+        playSfx('history_toggle');
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      lastTapRef.current = t;
+    }
     e.preventDefault();
     e.stopPropagation();
-    dragRef.current = { startX: e.clientX, startDockX: dockX };
-    const onMove = (ev: MouseEvent) => {
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    dragRef.current = { startX: clientX, startY: clientY, startDockX: dockX, startDockY: dockY };
+    const onMove = (ev: MouseEvent | TouchEvent) => {
       if (!dragRef.current || !dockRef.current) return;
-      const dx = ev.clientX - dragRef.current.startX;
+      const ex = 'touches' in ev ? ev.touches[0].clientX : (ev as MouseEvent).clientX;
+      const ey = 'touches' in ev ? ev.touches[0].clientY : (ev as MouseEvent).clientY;
+      const dx = ex - dragRef.current.startX;
+      // Dragging up (ey < startY) raises the bar: bottom offset increases.
+      const dy = dragRef.current.startY - ey;
       const dockWidth = dockRef.current.offsetWidth;
-      const maxX = window.innerWidth - dockWidth;
-      const newX = Math.max(0, Math.min(maxX, dragRef.current.startDockX + dx));
-      setDockX(newX);
+      const dockHeight = dockRef.current.offsetHeight;
+      const maxX = Math.max(0, window.innerWidth - dockWidth);
+      const maxY = Math.max(0, window.innerHeight - dockHeight);
+      setDockX(Math.max(0, Math.min(maxX, dragRef.current.startDockX + dx)));
+      setDockY(Math.max(0, Math.min(maxY, dragRef.current.startDockY + dy)));
     };
     const onUp = () => {
       dragRef.current = null;
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [dockX]);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+  }, [dockX, dockY, isMobileCore]);
 
-  const sessionDuration = now - sessionStats.sessionStart;
+  const sessionDuration = now - (sessionStats?.sessionStart ?? now);
+
+  const rateMax = platform === 'kick' ? '50' : platform === 'joystick' ? '20' : '20';
 
   const readColor = {
     connected: 'text-green-400',
@@ -237,8 +311,8 @@ export function StatusBar() {
 
   return (
     <>
-      {/* Collapsible Status Bar — bottom-left */}
-      <div ref={dockRef} data-tutorial="statusbar" className="forge-status-dock fixed bottom-0 z-40 flex flex-col max-w-full" style={{ left: `${dockX}px` }}>
+      {/* Collapsible Status Bar — bottom-left, draggable (2D on touch) */}
+      <div ref={dockRef} data-tutorial="statusbar" className="forge-status-dock fixed z-40 flex flex-col max-w-full touch-none" style={{ left: `${dockX}px`, bottom: `${dockY}px` }}>
         <AnimatePresence>
           {showHistory && (
             <motion.div
@@ -264,11 +338,29 @@ export function StatusBar() {
                   </div>
                 </ThemedTooltip>
 
-                <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-black/40">
+                <div
+                  onMouseDown={isMobileCore ? startResize : undefined}
+                  onTouchStart={isMobileCore ? startResize : undefined}
+                  className={cn(
+                    "flex items-center justify-between px-3 py-2 border-b border-white/5 bg-black/40",
+                    isMobileCore && "cursor-row-resize select-none touch-none",
+                  )}
+                >
                   <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400 font-mono flex items-center gap-1.5">
                     <History className="w-3 h-3" /> Sent Message Log
+                    {/* On mobile core, the rate counter lives here (moved out of
+                        the status bar row to free up horizontal space). */}
+                    {isMobileCore && (
+                      <span className={cn('ml-1 text-[9px] font-mono font-bold', rateUsed >= 15 ? 'text-red-400' : rateUsed >= 10 ? 'text-yellow-400' : 'text-gray-500')}>
+                        {rateUsed}/{rateMax}
+                      </span>
+                    )}
                   </span>
-                  <div className="flex items-center gap-1">
+                  <div
+                    className="flex items-center gap-1"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onTouchStart={(e) => e.stopPropagation()}
+                  >
                     <ThemedTooltip content="Copy log">
                       <button
                         type="button"
@@ -325,16 +417,29 @@ export function StatusBar() {
 
         {/* Status Bar */}
         <div className="forge-status-surface flex items-center gap-3 px-3 py-1.5 bg-[#121217]/95 backdrop-blur-md border border-white/10 border-b-0 rounded-tr-lg shadow-xl">
-          {/* Drag Handle */}
-          <ThemedTooltip content="Drag to reposition along bottom">
+          {/* Drag Handle — 2D reposition (mouse + touch). On mobile core this
+              is how the bar is lifted up/down the screen. */}
+          <ThemedTooltip content={isMobileCore ? "Drag to reposition · Double-tap to collapse" : "Drag to reposition"}>
             <div
               onMouseDown={startDrag}
-              className="flex items-center cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 transition-colors -ml-1.5"
+              onTouchStart={startDrag}
+              className={cn(
+                "flex items-center cursor-grab active:cursor-grabbing text-gray-600 hover:text-gray-400 transition-colors -ml-1.5 shrink-0",
+                isMobileCore && "p-1.5 -m-1.5 touch-none",
+              )}
             >
               <GripHorizontal className="w-4 h-4" />
             </div>
           </ThemedTooltip>
 
+          {/* Status info — horizontally collapsible on mobile core via
+              double-tap on the grip. Animated width + opacity. On desktop
+              the bar is always fully expanded (infoCollapsed is ignored). */}
+          <motion.div
+            animate={isMobileCore && infoCollapsed ? { width: 0, opacity: 0 } : { width: 'auto', opacity: 1 }}
+            transition={{ duration: 0.28, ease: 'easeInOut' }}
+            className="flex items-center gap-3 overflow-hidden whitespace-nowrap min-w-0"
+          >
           {/* Connection Indicators */}
           <div className="flex items-center gap-2">
             <ThemedTooltip content={`Chat Read: ${tmiReadState}`}>
@@ -372,19 +477,19 @@ export function StatusBar() {
             <ThemedTooltip content="Messages received">
               <div className="flex items-center gap-1">
                 <MessageSquare className="w-3 h-3 text-teal-500" />
-                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.messagesReceived}</span>
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats?.messagesReceived ?? 0}</span>
               </div>
             </ThemedTooltip>
             <ThemedTooltip content="Messages sent">
               <div className="flex items-center gap-1">
                 <Send className="w-3 h-3 text-green-500" />
-                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.messagesSent}</span>
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats?.messagesSent ?? 0}</span>
               </div>
             </ThemedTooltip>
             <ThemedTooltip content="Forge batches">
               <div className="flex items-center gap-1">
                 <Flame className="w-3 h-3 text-orange-500" />
-                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats.forgeCount}</span>
+                <span className="text-[9px] font-mono text-gray-400 font-bold">{sessionStats?.forgeCount ?? 0}</span>
               </div>
             </ThemedTooltip>
           </div>
@@ -395,7 +500,7 @@ export function StatusBar() {
           {showAutoForge && (
             <ThemedTooltip content="AutoForge actions this session">
               <div className="flex items-center gap-1">
-                <span className="text-[9px] font-mono text-indigo-400 font-bold">AF:{enhancedStats.autoForgeActions}</span>
+                <span className="text-[9px] font-mono text-indigo-400 font-bold">AF:{enhancedStats?.autoForgeActions ?? 0}</span>
               </div>
             </ThemedTooltip>
           )}
@@ -471,27 +576,32 @@ export function StatusBar() {
 
           {(showAutoForge || showAudioHealth || showSentimentQueue) && <div className="w-px h-3 bg-white/10" />}
 
-          {/* Rate Limit Indicator */}
-          <ThemedTooltip content="Send rate limit (messages per 30s)">
-            <div className="flex items-center gap-1">
-              <span className={cn('text-[9px] font-mono font-bold', rateUsed >= 15 ? 'text-red-400' : rateUsed >= 10 ? 'text-yellow-400' : 'text-gray-500')}>
-                {rateUsed}/{platform === 'kick' ? '50' : platform === 'joystick' ? '20' : '20'}
-              </span>
-            </div>
-          </ThemedTooltip>
-
-          {/* Expand/Collapse History */}
+          {/* Expand/Collapse History — placed left of the rate counter so it
+              isn't the extreme edge-most control (easier to hit on mobile). */}
           <ThemedTooltip content={showHistory ? 'Hide sent log' : 'Show sent log'}>
             <button
               type="button"
               onClick={() => { setShowHistory(!showHistory); playSfx('history_toggle'); }}
               aria-label={showHistory ? 'Hide sent message log' : 'Show sent message log'}
               aria-expanded={showHistory}
-              className="ml-1 p-0.5 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors"
+              className="p-0.5 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors"
             >
               {showHistory ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
             </button>
           </ThemedTooltip>
+
+          {/* Rate Limit Indicator — hidden on mobile core (moved into the sent
+              log header to free up horizontal space in the bar). */}
+          {!isMobileCore && (
+            <ThemedTooltip content="Send rate limit (messages per 30s)">
+              <div className="flex items-center gap-1">
+                <span className={cn('text-[9px] font-mono font-bold', rateUsed >= 15 ? 'text-red-400' : rateUsed >= 10 ? 'text-yellow-400' : 'text-gray-500')}>
+                  {rateUsed}/{rateMax}
+                </span>
+              </div>
+            </ThemedTooltip>
+          )}
+          </motion.div>
         </div>
       </div>
     </>

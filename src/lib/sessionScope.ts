@@ -1,15 +1,17 @@
 import { useAppStore, selectMultiBotActive } from "../store";
 import type { Platform } from "./kick";
+// Pure channel normalization lives in its own leaf module so pure consumers
+// (coreAutoCheck) can import it without touching the store (see normalizeChannel.ts).
+import { normalizeSessionChannel } from "./normalizeChannel";
+
+// Public API stays the same — existing importers keep working.
+export { normalizeSessionChannel };
 
 /** A session revision prevents old work from surviving a channel round trip. */
 export interface SessionScope {
   revision: number;
   platform: Platform;
   channel: string;
-}
-
-export function normalizeSessionChannel(channel: string): string {
-  return channel.trim().replace(/^#/, "").toLowerCase();
 }
 
 export function captureSessionScope(): SessionScope {

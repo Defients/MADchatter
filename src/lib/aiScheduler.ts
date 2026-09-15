@@ -653,6 +653,13 @@ export function createOllamaFetch(): typeof fetch {
       model: openaiBody.model,
       messages: nativeMessages,
       stream: false,
+      // Disable thinking for qwen3.5 and other thinking-capable models.
+      // Without this, the model spends its output token budget on internal
+      // reasoning tokens, leaving little/no room for the actual JSON response
+      // (causing "Model returned no usable suggestions" on Forge).
+      // The OpenAI-compatible endpoint ignores `reasoning_effort`, so we must
+      // set `think: false` on the native endpoint instead.
+      think: false,
       // keep_alive: 30m keeps the model loaded in memory between requests
       // so the user doesn't pay the cold-load penalty (30s+ for a 9B model)
       // on every Forge after a brief pause. Ollama's default is 5m.

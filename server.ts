@@ -31,6 +31,11 @@ interface TwitchSession {
   openRouterKey?: string;
   customBaseUrl?: string;
   customModel?: string;
+  // Custom OpenAI-Compatible provider (server-side mirror of ApiKeys).
+  customOpenAIKey?: string;
+  customOpenAIBaseUrl?: string;
+  customOpenAIModel?: string;
+  customOpenAILabel?: string;
 }
 
 const twitchSessions = new Map<string, TwitchSession>();
@@ -89,6 +94,13 @@ const getApiKey = (provider: string, session: TwitchSession | undefined, bodyKey
     // Ollama / local runs without a key — return a dummy so downstream guards pass.
     return 'ollama-local';
   }
+  if (normProvider === 'custom-openai') {
+    // Custom OpenAI-compatible endpoint: base URL + model required (checked in
+    // openAiCompatEndpoint); key optional. Return a sentinel when no key is set
+    // so the OpenAI SDK (which requires a non-null apiKey) still constructs.
+    if (!session?.customOpenAIBaseUrl || !session?.customOpenAIModel) return null;
+    return session.customOpenAIKey || bodyKey || 'custom-openai-no-key';
+  }
   return null;
 };
 
@@ -109,6 +121,13 @@ function openAiCompatEndpoint(
     return {
       baseUrl: session?.customBaseUrl || 'http://localhost:11434/v1',
       model: session?.customModel || 'qwen3.5:9b',
+    };
+  }
+  if (provider === 'custom-openai') {
+    // Generic OpenAI-compatible escape hatch — user owns the endpoint.
+    return {
+      baseUrl: session?.customOpenAIBaseUrl,
+      model: session?.customOpenAIModel || '',
     };
   }
   return { baseUrl: undefined, model: 'gpt-5.6-luna' };
@@ -579,7 +598,8 @@ app.post('/api/set-keys', (req, res) => {
     twitchSessions.set(sid, session);
   }
 
-  const { geminiKey, chatGptKey, claudeKey, deepgramKey, openRouterKey, customBaseUrl, customModel } = req.body;
+  const { geminiKey, chatGptKey, claudeKey, deepgramKey, openRouterKey, customBaseUrl, customModel,
+    customOpenAIKey, customOpenAIBaseUrl, customOpenAIModel, customOpenAILabel } = req.body;
   if (geminiKey !== undefined) session.geminiKey = geminiKey;
   if (chatGptKey !== undefined) session.chatGptKey = chatGptKey;
   if (claudeKey !== undefined) session.claudeKey = claudeKey;
@@ -587,6 +607,10 @@ app.post('/api/set-keys', (req, res) => {
   if (openRouterKey !== undefined) session.openRouterKey = openRouterKey;
   if (customBaseUrl !== undefined) session.customBaseUrl = customBaseUrl;
   if (customModel !== undefined) session.customModel = customModel;
+  if (customOpenAIKey !== undefined) session.customOpenAIKey = customOpenAIKey;
+  if (customOpenAIBaseUrl !== undefined) session.customOpenAIBaseUrl = customOpenAIBaseUrl;
+  if (customOpenAIModel !== undefined) session.customOpenAIModel = customOpenAIModel;
+  if (customOpenAILabel !== undefined) session.customOpenAILabel = customOpenAILabel;
   
   res.json({ success: true });
 });
@@ -615,6 +639,7 @@ app.get('/api/get-keys', (req, res) => {
     isOpenRouterCustom: !!session?.openRouterKey,
     hasCustomBaseUrl: !!session?.customBaseUrl,
     hasCustomModel: !!session?.customModel,
+    hasCustomOpenAI: !!(session?.customOpenAIBaseUrl && session?.customOpenAIModel),
     hasGeminiEnvKey: !!process.env.GEMINI_API_KEY,
     hasChatGptEnvKey: !!process.env.OPENAI_API_KEY,
     hasClaudeEnvKey: !!process.env.ANTHROPIC_API_KEY,
@@ -683,7 +708,7 @@ const generateVisionContext = async (provider: string, apiKey: string, screensho
       }]
     });
     return response.text;
-  } else if (normProvider === 'openai' || normProvider === 'openrouter' || normProvider === 'ollama') {
+  } else if (normProvider === 'openai' || normProvider === 'openrouter' || normProvider === 'ollama' || normProvider === 'custom-openai') {
     const { baseUrl, model } = openAiCompatEndpoint(normProvider, session);
     const ai = new OpenAI({ apiKey, baseURL: baseUrl });
     const response = await ai.chat.completions.create({
@@ -840,7 +865,7 @@ ${count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${count} suggestion${
           total_tokens: response.usageMetadata.totalTokenCount
         };
       }
-    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama') {
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'custom-openai') {
       const { baseUrl, model } = openAiCompatEndpoint(provider, session);
       const ai = new OpenAI({ apiKey, baseURL: baseUrl });
       const content: any[] = [{ type: 'text', text: userMessageContent }];
@@ -1003,7 +1028,7 @@ Keep messages authentic, casual, and highly human-like. Avoid formal translation
           total_tokens: response.usageMetadata.totalTokenCount
         };
       }
-    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama') {
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'custom-openai') {
       const { baseUrl, model } = openAiCompatEndpoint(provider, session);
       const ai = new OpenAI({ apiKey, baseURL: baseUrl });
       const response = await ai.chat.completions.create({
@@ -1287,7 +1312,7 @@ DECIDE NOW.`;
         }
       });
       generatedJsonStr = response.text || '{}';
-    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama') {
+    } else if (provider === 'openai' || provider === 'openrouter' || provider === 'ollama' || provider === 'custom-openai') {
       const { baseUrl, model } = openAiCompatEndpoint(provider, session);
       const ai = new OpenAI({ apiKey, baseURL: baseUrl });
       const response = await ai.chat.completions.create({

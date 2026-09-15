@@ -1,18 +1,25 @@
 import React, { useMemo } from "react";
-import { parseEmotes, getCachedChannelEmotes, type TextSegment } from "../lib/emotes";
+import { parseEmotes, parseTwitchEmotes, getCachedChannelEmotes, type TextSegment } from "../lib/emotes";
 import { ThemedTooltip } from "./ui/tooltip";
 
 interface EmoteTextProps {
   text: string;
   channel?: string;
   className?: string;
+  /** Twitch native emotes from IRC tags: emoteId → array of [start, end] ranges. */
+  twitchEmotes?: Record<string, number[][]>;
 }
 
-export function EmoteText({ text, channel, className }: EmoteTextProps) {
+export function EmoteText({ text, channel, className, twitchEmotes }: EmoteTextProps) {
   const segments = useMemo<TextSegment[]>(() => {
+    // Twitch native emotes (from IRC tags) take priority — they're exact
+    // character ranges, not name-matching heuristics.
+    if (twitchEmotes && Object.keys(twitchEmotes).length > 0) {
+      return parseTwitchEmotes(text, twitchEmotes);
+    }
     const emoteMap = channel ? getCachedChannelEmotes(channel) : null;
     return parseEmotes(text, emoteMap);
-  }, [text, channel]);
+  }, [text, channel, twitchEmotes]);
 
   return (
     <span className={className}>
