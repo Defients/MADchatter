@@ -63,7 +63,8 @@ import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
 import { switchChannel } from "../lib/channelSwitch";
 import { getPlatformSendFn } from "../lib/platformSend";
-import { refineSuggestion } from "../lib/ai";
+import { refineSuggestion, visionRequest } from "../lib/ai";
+import { fetchStreamThumbnailDataUrl } from "../lib/streamThumbnail";
 import { cn } from "../lib/utils";
 import { toast } from "sonner";
 import { VersionBadge } from "./VersionBadge";
@@ -653,6 +654,12 @@ function MobileContextTab(props: {
   const [autoScrollLocked, setAutoScrollLocked] = useState(true);
   const [newMessagesWhileScrolled, setNewMessagesWhileScrolled] = useState(0);
 
+  // Thumbnail Snap — fetches the platform's live preview thumbnail (Twitch
+  // CDN / Kick API) and feeds it through the same vision pipeline as desktop
+  // canvas capture. Works on mobile where getDisplayMedia is unavailable.
+  const [thumbSnapLoading, setThumbSnapLoading] = useState(false);
+  const [thumbSnapCooldown, setThumbSnapCooldown] = useState(false);
+
   // Visual capture capability. getDisplayMedia() (screen/window capture) is not
   // supported on mobile browsers — iOS Safari lacks it entirely and Android
   // Chrome's support is effectively unusable. The stream is also a cross-origin
@@ -676,12 +683,18 @@ function MobileContextTab(props: {
   const visualSnapshotHistory = useAppStore((s) => s.visualSnapshotHistory);
   const visualContextTags = useAppStore((s) => s.visualContextTags);
   const setVisualHistoryOpen = useAppStore((s) => s.setVisualHistoryOpen);
+  const setVisualSnapshot = useAppStore((s) => s.setVisualSnapshot);
+  const recordTokenUsage = useAppStore((s) => s.recordTokenUsage);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const lastChatLenRef = useRef(chatLog.length);
 
   const channel = streamMetadata.channelName || "";
   const parent = typeof window !== "undefined" ? window.location.hostname : "localhost";
+
+  // Whether the embedded video is on screen. Drives the header/controls
+  // overlay treatment so the chrome doesn't eat vertical space the chat needs.
+  const videoVisible = !streamMinimized && !!channel;
 
   // Twitch Player SDK — the embed script (player.twitch.tv/js/embed/v1.js)
   // is loaded by StreamOverlay on desktop STUDIO, but that component never
@@ -763,6 +776,55 @@ function MobileContextTab(props: {
     setNewMessagesWhileScrolled(0);
   };
 
+  // Thumbnail Snap — fetch the platform's live preview thumbnail and run it
+  // through the vision pipeline. This is the mobile-friendly alternative to
+  // getDisplayMedia: no screen capture needed, just a public CDN/API image.
+  const handleThumbnailSnap = async () => {
+    if (thumbSnapLoading || thumbSnapCooldown) return;
+    if (!channel) {
+      toast.error("No channel set — add a channel first.");
+      return;
+    }
+    if (platform === "joystick") {
+      toast.error("Joystick doesn't expose a public thumbnail. Use desktop capture instead.");
+      return;
+    }
+    setThumbSnapLoading(true);
+    playSfx("forge_start");
+    const toastId = toast.loading("Fetching stream preview…");
+    try {
+      const dataUrl = await fetchStreamThumbnailDataUrl(platform, channel, 1280, 720);
+      if (!dataUrl) {
+        toast.error("Couldn't fetch the stream preview. The stream may be offline.", { id: toastId });
+        return;
+      }
+      // Store the raw snapshot immediately so the history sheet shows it.
+      setVisualSnapshot(dataUrl, ["Captured"], "manual");
+      toast.loading("Analyzing stream frame…", { id: toastId });
+      const provider = getActiveProvider();
+      const data = await visionRequest(dataUrl, provider, null);
+      if (data.tokenUsage) {
+        recordTokenUsage("vision", data.tokenUsage);
+      }
+      if (data.visualContext) {
+        setVisualSnapshot(dataUrl, [data.visualContext], "manual");
+        toast.success("Stream frame analyzed!", { id: toastId });
+        playSfx("send_message");
+      } else {
+        setVisualSnapshot(dataUrl, ["Captured — no analysis"], "manual");
+        toast.success("Snapshot saved (no analysis).", { id: toastId });
+      }
+      // 5s cooldown — matches the desktop manual capture cooldown.
+      setThumbSnapCooldown(true);
+      setTimeout(() => setThumbSnapCooldown(false), 5000);
+    } catch (e: any) {
+      toast.error(e.message || "Failed to analyze stream frame", { id: toastId });
+      playSfx("error");
+    } finally {
+      setThumbSnapLoading(false);
+    }
+  };
+
   // Filtered chat messages
   const filteredChat = useMemo(() => {
     if (!chatSearchQuery.trim()) return chatLog;
@@ -775,9 +837,19 @@ function MobileContextTab(props: {
   return (
     <div className="flex flex-col h-full w-full min-h-0 bg-[#0B0B10]">
       {/* ─── Stream Video Area ─── */}
-      <div className="shrink-0 border-b border-white/5 bg-black">
-        {/* Stream Header Bar */}
-        <div className="flex items-center justify-between px-3 py-1.5 bg-[#121218] border-b border-white/5">
+      <div className="shrink-0 border-b border-white/5 bg-black relative">
+        {/* Stream Header Bar — overlays the top of the video behind a
+            translucent scrim while the video is showing (reclaims its vertical
+            space for the chat); falls back to a normal bar when the video is
+            hidden or no channel is set. */}
+        <div
+          className={cn(
+            "flex items-center justify-between px-3 py-1.5",
+            videoVisible
+              ? "absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/80 via-black/40 to-transparent"
+              : "bg-[#121218] border-b border-white/5",
+          )}
+        >
           <div className="flex items-center gap-2 text-xs font-bold text-gray-300">
             <Tv className="w-3.5 h-3.5 text-purple-400" />
             <span>{channel ? `@${channel}` : "No stream selected"}</span>
@@ -790,7 +862,7 @@ function MobileContextTab(props: {
           <button
             type="button"
             onClick={() => setStreamMinimized((v) => !v)}
-            className="text-[10px] font-bold text-gray-400 hover:text-white px-2 py-1 rounded bg-white/5 transition-colors touch-action-manipulation"
+            className="text-[10px] font-bold text-gray-400 hover:text-white px-2 py-1 rounded bg-white/10 transition-colors touch-action-manipulation"
           >
             {streamMinimized ? "Show Video" : "Hide Video"}
           </button>
@@ -810,7 +882,7 @@ function MobileContextTab(props: {
               ) : platform === "joystick" ? (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-2 p-4 text-center">
                   <span className="text-xs text-orange-400 font-bold">Joystick stream active</span>
-                  {visualCaptureSupported ? (
+                  {visualCaptureSupported && (
                     <button
                       type="button"
                       onClick={props.onVisualCapture}
@@ -818,10 +890,6 @@ function MobileContextTab(props: {
                     >
                       {props.isVisualCapturing ? "Stop Window Capture" : "Capture Window"}
                     </button>
-                  ) : (
-                    <span className="text-[10px] text-gray-500 leading-snug max-w-[200px]">
-                      Visual capture needs a desktop browser. Screen capture isn't available on mobile.
-                    </span>
                   )}
                 </div>
               ) : (
@@ -831,9 +899,11 @@ function MobileContextTab(props: {
           </div>
         )}
 
-        {/* Stream Controls Bar */}
-        {!streamMinimized && channel && (
-          <div className="flex items-center flex-nowrap gap-1 px-2 py-1.5 bg-[#121217] border-t border-white/5">
+        {/* Stream Controls Bar — overlays the bottom of the video behind a
+            translucent scrim so the row doesn't consume vertical space the
+            chat could use. */}
+        {videoVisible && (
+          <div className="absolute inset-x-0 bottom-0 z-20 flex items-center flex-nowrap gap-1 px-2 py-1.5 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
             {/* Mute — icon-only (label is conveyed via aria-label + icon state) */}
             {platform !== "kick" && platform !== "joystick" && (
               <button
@@ -898,6 +968,39 @@ function MobileContextTab(props: {
               </>
             )}
 
+            {/* Thumbnail Snap — the mobile alternative to getDisplayMedia.
+                Fetches the platform's live preview thumbnail (Twitch CDN /
+                Kick API) and runs it through the same vision pipeline. Works
+                on phones where screen capture is unavailable. Twitch + Kick
+                only (Joystick has no public thumbnail). */}
+            {!visualCaptureSupported && platform !== "joystick" && channel && (
+              <button
+                type="button"
+                onClick={handleThumbnailSnap}
+                disabled={thumbSnapLoading || thumbSnapCooldown}
+                title="Analyze the current stream frame from the live preview thumbnail"
+                aria-label="Snap stream frame from thumbnail"
+                className={cn(
+                  "h-8 flex-1 min-w-0 px-1 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
+                  thumbSnapLoading
+                    ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
+                    : thumbSnapCooldown
+                    ? "bg-white/5 text-gray-500 border-white/10"
+                    : "bg-blue-500/15 text-blue-400 border-blue-500/25"
+                )}
+              >
+                {thumbSnapLoading ? (
+                  <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                ) : (
+                  <Camera className="w-3 h-3 shrink-0" />
+                )}
+                <span>{thumbSnapLoading ? "Analyzing…" : thumbSnapCooldown ? "Cooldown" : "Snap"}</span>
+                {!thumbSnapLoading && !thumbSnapCooldown && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
+                )}
+              </button>
+            )}
+
             {/* Visual history — opens the canonical snapshot history (pinned /
                 delete / inspect) as a compact sheet on phones. Always available
                 as a view over previously-captured frames (e.g. from desktop). */}
@@ -936,20 +1039,6 @@ function MobileContextTab(props: {
             >
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
-          </div>
-        )}
-
-        {/* Visual capture unsupported notice — shown when getDisplayMedia is
-            unavailable (mobile browsers). Mirrors the Audio Transcript notice
-            pattern so the user understands why the controls are absent. */}
-        {!streamMinimized && channel && !visualCaptureSupported && (
-          <div className="px-3 py-1.5 bg-[#121217] border-t border-white/5">
-            <div className="flex items-start gap-1.5 text-[10px] text-gray-500 leading-snug">
-              <MonitorUp className="w-3 h-3 text-gray-600 shrink-0 mt-0.5" />
-              <span>
-                <span className="font-bold text-gray-400">Visual capture</span> needs a desktop browser (screen capture isn't available on mobile). Snapshot history is still viewable via the Visual button.
-              </span>
-            </div>
           </div>
         )}
       </div>
@@ -1462,64 +1551,6 @@ function MobileForgeTab(props: {
         </button>
       )}
 
-      {/* ─── Generated Variant Cards (When Available) ─── */}
-      {variants.length > 0 && (
-        <div className="space-y-2.5">
-          {/* Variants Header & Hold to Clear */}
-          <div className="flex items-center justify-between px-1">
-            <span className="text-xs font-bold uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
-              <Flame className="w-3.5 h-3.5" />
-              Forged Variants ({variants.length})
-            </span>
-
-            {/* Hold to Clear */}
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId);
-                startHold();
-              }}
-              onPointerUp={(e) => {
-                try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
-                cancelHold();
-              }}
-              onPointerCancel={cancelHold}
-              className="relative px-3 py-1 rounded-lg border text-[10px] font-bold uppercase tracking-wider overflow-hidden select-none touch-none transition-all flex items-center gap-1"
-              style={{
-                color: holdProgress > 0 ? "#fff" : "#f87171",
-                backgroundColor: holdProgress > 0 ? holdColor : "rgba(239, 68, 68, 0.08)",
-                borderColor: holdProgress > 0 ? holdColor : "rgba(239, 68, 68, 0.3)",
-              }}
-              aria-label="Hold to clear all variants"
-            >
-              <Trash2 className="w-3 h-3" />
-              <span>{holdProgress > 0 ? "Clearing…" : "Hold to Clear"}</span>
-              {holdProgress > 0 && (
-                <span
-                  className="absolute bottom-0 left-0 h-0.5 bg-white transition-none"
-                  style={{ width: `${holdProgress * 100}%` }}
-                />
-              )}
-            </button>
-          </div>
-
-          {/* Cards List */}
-          <div className="space-y-2.5">
-            {variants.map((v) => (
-              <VariantCard
-                key={v.variant_id}
-                variant={v}
-                onSend={handleSend}
-                onRefine={handleRefine}
-                onClose={(id) => setVariants(variants.filter((item) => item.variant_id !== id))}
-                multiBotActive={props.multiBotActive}
-                activeBots={props.activeBots}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* ─── Persona Selector ─── */}
       <div className="p-3 rounded-xl bg-[#121218] border border-white/5 space-y-2">
         <div className="flex items-center justify-between text-xs font-bold text-gray-300">
@@ -1731,6 +1762,67 @@ function MobileForgeTab(props: {
           </p>
         )}
       </div>
+
+      {/* ─── Generated Variant Cards (When Available) ───
+          Rendered below the Forge buttons so the action row stays anchored
+          at the top of the tab and results fill in underneath, matching the
+          mobile mental model (action first, results below). */}
+      {variants.length > 0 && (
+        <div className="space-y-2.5">
+          {/* Variants Header & Hold to Clear */}
+          <div className="flex items-center justify-between px-1">
+            <span className="text-xs font-bold uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
+              <Flame className="w-3.5 h-3.5" />
+              Forged Variants ({variants.length})
+            </span>
+
+            {/* Hold to Clear */}
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                startHold();
+              }}
+              onPointerUp={(e) => {
+                try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+                cancelHold();
+              }}
+              onPointerCancel={cancelHold}
+              className="relative px-3 py-1 rounded-lg border text-[10px] font-bold uppercase tracking-wider overflow-hidden select-none touch-none transition-all flex items-center gap-1"
+              style={{
+                color: holdProgress > 0 ? "#fff" : "#f87171",
+                backgroundColor: holdProgress > 0 ? holdColor : "rgba(239, 68, 68, 0.08)",
+                borderColor: holdProgress > 0 ? holdColor : "rgba(239, 68, 68, 0.3)",
+              }}
+              aria-label="Hold to clear all variants"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>{holdProgress > 0 ? "Clearing…" : "Hold to Clear"}</span>
+              {holdProgress > 0 && (
+                <span
+                  className="absolute bottom-0 left-0 h-0.5 bg-white transition-none"
+                  style={{ width: `${holdProgress * 100}%` }}
+                />
+              )}
+            </button>
+          </div>
+
+          {/* Cards List */}
+          <div className="space-y-2.5">
+            {variants.map((v) => (
+              <VariantCard
+                key={v.variant_id}
+                variant={v}
+                onSend={handleSend}
+                onRefine={handleRefine}
+                onClose={(id) => setVariants(variants.filter((item) => item.variant_id !== id))}
+                multiBotActive={props.multiBotActive}
+                activeBots={props.activeBots}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ─── AutoForge Controls ─── */}
       <div

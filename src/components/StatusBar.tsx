@@ -323,7 +323,7 @@ export function StatusBar() {
               className="overflow-hidden"
             >
               <div
-                className="w-80 h-full max-h-[calc(100vh-48px)] bg-[#121217]/95 backdrop-blur-md border border-white/10 rounded-tr-xl shadow-2xl flex flex-col"
+                className="w-80 h-full max-h-[calc(100vh-48px)] bg-[#121217]/95 backdrop-blur-md border border-white/10 border-t-0 rounded-br-lg shadow-2xl flex flex-col"
               >
                 {/* Drag-to-resize handle */}
                 <ThemedTooltip content="Drag up to expand — height persists">

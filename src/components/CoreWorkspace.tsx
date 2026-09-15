@@ -559,11 +559,14 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                         </div>
                       )}
 
-                      {/* Visual Snapshot (bottom) */}
+                      {/* Visual Snapshot (bottom) — sizes to its content so
+                          the snapshot + analysis + History button fit without
+                          an inner scrollbar; capped so it can't starve Memory
+                          of all space. Memory above absorbs the remainder. */}
                       {showVisual && (
                         <div className={cn(
                           "rounded-xl border border-orange-500/20 bg-[#0F0F12] overflow-hidden flex flex-col min-h-0",
-                          showMemory ? "flex-[3]" : "flex-1"
+                          showMemory ? "shrink max-h-[68%]" : "flex-1"
                         )}>
                           <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-white/[0.02] shrink-0">
                             <span className="text-xs font-bold uppercase tracking-wider text-gray-300 flex items-center gap-2">
@@ -974,6 +977,12 @@ export function OllamaConfigFields() {
   );
 }
 
+/** Recommended vision-capable model for custom OpenAI-compatible endpoints
+ *  (Groq, etc.). Surfaced as a highlighted chip so users running text-only
+ *  providers can discover a model that accepts Visual snapshots — avoiding
+ *  the "content must be a string" 400 a text model throws on image input. */
+const VISION_MODEL_SUGGESTION = "qwen/qwen3.8-27b";
+
 /** Custom OpenAI-compatible endpoint + model editor (Groq, OpenRouter,
  *  Cerebras, Together, local proxies, self-hosted gateways…).
  *  Self-contained like OllamaConfigFields: reads/saves keys directly and
@@ -1109,25 +1118,46 @@ export function CustomProviderConfigFields({ onActive }: { onActive?: () => void
         aria-label="Model"
       />
 
-      {models.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {models.slice(0, 10).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => { setModel(m); save({ customOpenAIModel: m }); }}
-              className={cn(
-                "px-1.5 py-0.5 rounded text-[9px] font-mono border transition-all",
-                model === m
-                  ? "bg-sky-500/20 border-sky-500/40 text-sky-300"
-                  : "bg-white/5 border-white/10 text-gray-500 hover:text-gray-300",
-              )}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Recommended vision-capable model — always pinned first, with a
+          special emblem explaining it accepts Visual snapshots. Merged ahead
+          of any fetched model list so it stays highlighted at the top. */}
+      {(() => {
+        const list = [
+          VISION_MODEL_SUGGESTION,
+          ...models.filter((m) => m !== VISION_MODEL_SUGGESTION),
+        ];
+        return (
+          <div className="flex flex-wrap gap-1">
+            {list.slice(0, 11).map((m) => {
+              const isSuggested = m === VISION_MODEL_SUGGESTION;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setModel(m); save({ customOpenAIModel: m }); }}
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[9px] font-mono border transition-all flex items-center gap-1",
+                    model === m
+                      ? isSuggested
+                        ? "bg-orange-500/25 border-orange-500/60 text-orange-200"
+                        : "bg-sky-500/20 border-sky-500/40 text-sky-300"
+                      : isSuggested
+                      ? "bg-orange-500/10 border-orange-500/40 text-orange-300 hover:bg-orange-500/20"
+                      : "bg-white/5 border-white/10 text-gray-500 hover:text-gray-300",
+                  )}
+                >
+                  {isSuggested && (
+                    <ThemedTooltip content="Vision-capable on Groq — accepts Visual snapshots (image input). Recommended if your text-only model rejects Forge with 'content must be a string'.">
+                      <Eye className="w-3 h-3 shrink-0" />
+                    </ThemedTooltip>
+                  )}
+                  {m}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       <div className="flex gap-1.5">
         <button
@@ -3129,11 +3159,24 @@ function CoreReadinessStrip(props: {
           </span>
         </button>
 
-        {/* Multi-Bot badge */}
+        {/* Multi-Bot badge — tappable: expands a read-only bot roster.
+            Multi-bot management lives in Studio, but the engine keeps running
+            in Core (per-bot AutoForge, send-as-bot, merged sent log), so the
+            badge doubles as the only visible signal that it's active. */}
         {props.multiBotEnabled && (
-          <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-purple-500/10 border border-purple-500/30 text-purple-300 text-[10px] font-bold uppercase">
+          <button
+            type="button"
+            onClick={() => props.setExpandedItem(props.expandedItem === "multibot" ? null : "multibot")}
+            aria-expanded={props.expandedItem === "multibot"}
+            className={cn(
+              "flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] font-bold uppercase transition-all",
+              props.expandedItem === "multibot"
+                ? "bg-purple-500/25 border-purple-500/50 text-purple-200"
+                : "bg-purple-500/10 border-purple-500/30 text-purple-300 hover:bg-purple-500/20"
+            )}
+          >
             <Bot className="w-3 h-3" /> Multi-Bot
-          </span>
+          </button>
         )}
 
         {/* Forge button — opens tray with SMART + fixed counts */}
@@ -3273,10 +3316,114 @@ function CoreReadinessStrip(props: {
                   </div>
                 </div>
               )}
+              {props.expandedItem === "multibot" && (
+                <MultiBotRosterPanel />
+              )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── Multi-Bot roster (read-only — management lives in Studio Mode) ────────
+// Shown when the Multi-Bot chip in the readiness strip is expanded. Core keeps
+// the multi-bot engine running (per-bot AutoForge, send-as-bot, merged sent
+// log) but has no management UI, so this panel is a status roster with an
+// escape hatch into Studio — routed through setInterfaceMode, which opens the
+// StudioGateOverlay instead when the viewport can't host Studio.
+function MultiBotRosterPanel() {
+  const bots = useAppStore((s) => s.bots);
+  const setInterfaceMode = useAppStore((s) => s.setInterfaceMode);
+  const studioAvailable = useStudioAvailable();
+
+  // Sendable bots (active + signed in). Numbering matches the send-as-bot
+  // squares on Forge variant cards, which enumerate this same filtered set.
+  const activeBots = bots.filter((b) => b.active && b.session);
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-[10px] text-gray-500 leading-snug">
+        These bot identities are running in the channel — each has its own persona, memory, and AutoForge brain. Numbered badges match the send-as-bot buttons on Forge cards.
+      </p>
+
+      <div className="space-y-1.5">
+        {bots.length === 0 && (
+          <p className="text-[10px] text-gray-600">No bots configured.</p>
+        )}
+        {bots.map((bot) => {
+          const sendIdx = activeBots.indexOf(bot); // -1 when not sendable
+          const live = sendIdx >= 0;
+          const needsAuth = bot.active && !bot.session;
+          const personaId = bot.persona?.config?.primaryProfile;
+          const persona = personaId && personaId !== "none" ? personaId : null;
+          return (
+            <div
+              key={bot.id}
+              className={cn(
+                "flex items-center gap-2 rounded-lg border px-2 py-1.5",
+                live ? "border-purple-500/20 bg-purple-500/[0.06]" : "border-white/5 bg-white/[0.02] opacity-60",
+              )}
+            >
+              {/* Send-as number (VariantCard parity) — only for sendable bots */}
+              {live ? (
+                <span className="w-5 h-5 shrink-0 rounded-md bg-green-500/15 border border-green-500/30 text-green-300 text-[10px] font-black flex items-center justify-center">
+                  {sendIdx + 1}
+                </span>
+              ) : (
+                <span className="w-5 h-5 shrink-0 rounded-md bg-white/5 border border-white/10 text-gray-600 text-[10px] font-black flex items-center justify-center">
+                  –
+                </span>
+              )}
+
+              {/* Avatar — bot's platform profile picture when signed in */}
+              {bot.session?.profileImageUrl ? (
+                <img src={bot.session.profileImageUrl} alt="" className="w-6 h-6 rounded-full shrink-0 border border-white/10" />
+              ) : (
+                <span className="w-6 h-6 rounded-full shrink-0 bg-white/5 border border-white/10 flex items-center justify-center">
+                  <Bot className="w-3 h-3 text-gray-500" />
+                </span>
+              )}
+
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold text-gray-200 truncate">{bot.label}</div>
+                <div className="text-[9px] text-gray-500 truncate">
+                  {bot.session?.username ? `@${bot.session.username}` : "Not signed in"}
+                  {persona && <span className="text-purple-400/80"> · {persona}</span>}
+                </div>
+              </div>
+
+              <span className="text-[8px] uppercase px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 font-mono shrink-0">
+                {bot.platform}
+              </span>
+              <span
+                className={cn(
+                  "flex items-center gap-1 text-[9px] font-bold uppercase shrink-0",
+                  live ? "text-emerald-400" : needsAuth ? "text-amber-400" : "text-gray-600",
+                )}
+              >
+                <span className={cn("w-1.5 h-1.5 rounded-full", live ? "bg-emerald-400" : needsAuth ? "bg-amber-400" : "bg-gray-600")} />
+                {live ? "Live" : needsAuth ? "Sign-in" : "Off"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Escape hatch into Studio — the canonical chokepoint. When the viewport
+          can't host Studio this opens the StudioGateOverlay explaining why. */}
+      <button
+        type="button"
+        onClick={() => { playSfx("hud_open"); setInterfaceMode("studio"); }}
+        className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-300 text-[10px] font-bold hover:bg-white/10 hover:text-white transition-colors"
+      >
+        <MonitorUp className="w-3.5 h-3.5" />
+        Manage in Studio Mode
+        {!studioAvailable && (
+          <span className="text-gray-500 font-normal">· requires a wider window</span>
+        )}
+      </button>
     </div>
   );
 }

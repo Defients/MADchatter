@@ -2310,7 +2310,7 @@ export function ForgeLayout() {
                 src={visualSnapshotUrl}
                 alt="Visual Context"
                 referrerPolicy="no-referrer"
-                className="w-full rounded-lg border border-white/10 object-cover"
+                className="w-full aspect-video rounded-lg border border-white/10 object-cover"
               />
               <ThemedTooltip content="Pin to Long-Term Memory">
                 <button

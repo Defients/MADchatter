@@ -181,6 +181,24 @@ function normalizeProvider(rawProvider: string): string {
   return rawProvider;
 }
 
+/** Detect an error that means the endpoint rejected image/array content
+ *  because the configured model is text-only (Groq, Cerebras, most custom
+ *  OpenAI-compatible proxies, and many Ollama models all throw a 400 like
+ *  "messages[1].content must be a string" when an image part is sent). */
+function isVisionUnsupportedError(e: any): boolean {
+  const msg = (e?.message || String(e)).toLowerCase();
+  return /content must be a string|image_url.*not supported|does not support (image|vision|multimodal)|images? (are )?not (supported|allowed)|invalid.*content.*type/.test(msg);
+}
+
+/** True when this provider should be treated as able to receive image input.
+ *  Gemini and Claude are multimodal by design. For OpenAI-compatible endpoints
+ *  the model is user-configured, so we can't know for sure — we optimistically
+ *  try, then degrade to text-only on a vision-unsupported error (see
+ *  isVisionUnsupportedError). */
+function providerSupportsVision(provider: string): boolean {
+  return provider === "gemini" || provider === "claude" || isOpenAICompatibleProvider(provider);
+}
+
 function cleanJsonStr(str: string): string {
   let clean = str.trim();
   if (!clean) return "{}";
@@ -450,27 +468,45 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       dangerouslyAllowBrowser: true,
       ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
     });
-    const content: any = params.screenshot
-      ? [
-          { type: "text", text: userMessageContent },
-          { type: "image_url", image_url: { url: params.screenshot } },
-        ]
-      : userMessageContent;
     const ollamaOpts = buildProviderRequestOptions(provider);
-    const response = await aiScheduler.execute(
-      (signal) => ai.chat.completions.create({
-        model,
-        temperature: temp,
-        max_tokens: maxTokensToUse,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content },
-        ],
-        ...ollamaOpts,
-      }, { signal }),
-      { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
-    );
+    // Text-only requests send `content` as a plain string (strict endpoints
+    // like Groq reject the array form). Multimodal requests need the array —
+    // but a text-only model will 400 on it, so we retry once without the
+    // image and rely on the vision text context instead.
+    const makeRequest = (withImage: boolean) =>
+      aiScheduler.execute(
+        (signal) => ai.chat.completions.create({
+          model,
+          temperature: temp,
+          max_tokens: maxTokensToUse,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: withImage && params.screenshot
+                ? [
+                    { type: "text", text: userMessageContent },
+                    { type: "image_url", image_url: { url: params.screenshot } },
+                  ]
+                : userMessageContent,
+            },
+          ],
+          ...ollamaOpts,
+        }, { signal }),
+        { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+      );
+    let response;
+    try {
+      response = await makeRequest(true);
+    } catch (e) {
+      if (params.screenshot && isVisionUnsupportedError(e)) {
+        console.warn(`[generateChat/${provider}] Model rejected image input — retrying text-only`);
+        response = await makeRequest(false);
+      } else {
+        throw e;
+      }
+    }
     generatedJsonStr = response.choices[0].message.content || "{}";
     if (response.usage) {
       usage = {
