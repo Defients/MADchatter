@@ -20,11 +20,13 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 20 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 24 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
 - Bot-scoped action twins (`addBotSentMessage`, `incrementBotStat`, etc.) mirror global actions per-bot.
+- **Interface Mode (v1.0.7):** `interfaceMode: 'core' | 'studio'` — one authoritative mode drives presentation density. Core = minimal operational surface; Studio = full-density experience. Mode changes presentation only, never engine behavior or config. Default: `'core'` for new users; v22/v23 migrations force all users (including existing) to `'core'` — users who prefer Studio switch via the header toggle and their choice persists from then on.
+- **Onboarding milestones (v1.0.7):** `hasSentMessage` (set on actual send success via `manualSend.ts`, not button click — dry-run sends don't count), `hasEnabledAutoForgeOnce` (set in `setAutoForgeEnabled`), `activationCelebrated` (fires once when operational), `microToursSeen` (tracks micro-tour dismissals), `personaChosen` (set when user picks a persona in Core setup; drives `personalityReady` in `useCoreReadiness`), `modeWelcomeSeen` (gates the first-run `ModeWelcomeOverlay`). `hasForgedOnce` (pre-existing) is reused for the Forge milestone.
 
 ### AI Pipeline (`src/lib/ai.ts`)
 - `generateChat()` — main Forge generation; returns `{ suggestions, analysis, tokenUsage }`.
@@ -53,7 +55,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Tests: `npx tsx src/lib/aiScheduler.test.ts` (41 deterministic tests).
 
 ### Ollama Health Check (`src/lib/ollamaHealth.ts`)
-- `checkOllamaHealth(baseUrl, model)` — lightweight `/v1/models` check with 30s cache.
+- `checkOllamaHealth(baseUrl, model)` — lightweight `/v1/models` check with a 30s cache keyed by endpoint/model, bounded to 20 configurations. In-flight deduplication is configuration-specific; invalidation aborts pending checks and prevents stale cache writes. `getCachedOllamaHealth(baseUrl, model)` returns only fresh evidence for that pair.
 - States: `configured`, `connecting`, `ready`, `model_unavailable`, `endpoint_unreachable`.
 - `invalidateOllamaHealthCache()` — call when endpoint/model changes.
 
@@ -177,6 +179,18 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Celebration: `FirstMessageWatcher` (`src/components/FirstMessageWatcher.tsx`) fires a one-shot dual-corner `fireConfetti("bottom")` when all members complete. Guarded by `cohort.celebrated` + a per-cohort-id ref.
 - Stream/channel change → `resetFirstMessageCohort()` (clean state, no leak). Reload → re-arms from current active bots if the preference is on.
 
+### Core Mode + Interactive Launchpad (v1.0.7)
+- **Two interface-density modes:** `interfaceMode: 'core' | 'studio'` — one authoritative mode drives presentation density. Core = minimal operational surface (connect, AI, personality, Forge, send, AutoForge, chat). Studio = the existing full-density experience. Mode changes presentation only, never engine behavior or config.
+- **`useCoreReadiness()` hook** (`src/hooks/useCoreReadiness.ts`) — derives Launchpad readiness from real application state. Stages: Platform → AI → Personality → Forge → Send → AutoForge → Operational. Each stage derives from source-of-truth state (channel + chat connection, provider config + first Forge, active profiles, persisted milestones). AutoForge is optional — operational = Platform + AI + Personality + Forge + Send. Readiness policy is in `src/lib/coreReadiness.ts`: selected-provider configuration and cooldown plus actual connected chat determine live availability; historical milestones preserve workspace presentation without implying a live session. Provider keys and health are observed via `useSyncExternalStore` (shared 1s interval), same-tab auth ticks, and cross-tab storage events. Regression tests: `npx tsx src/lib/coreReadiness.test.ts` and `npx tsx src/lib/ollamaHealth.test.ts`.
+- **`CoreMode.tsx`** (`src/components/CoreMode.tsx`) — exports `CoreTuningControls` (persona grid, humor/chaos sliders, Forge button, AutoForge toggle, Advanced disclosure), `CoreLaunchpad` (readiness bar + expandable stage details + Studio discovery), `InterfaceModeToggle` (header `[ CORE ] [ STUDIO ]` toggle), and `CoreActivationCelebration` (one-shot "MADchatter is live" overlay).
+- **`CoreGreeting.tsx`** (`src/components/CoreGreeting.tsx`) — minimal first-run greeting that drops new users into Core Mode. Replaces the feature-encyclopedia Welcome overlay for first-time users. The original `WelcomeOverlay` is retained for manual "Reopen Welcome Screen" access.
+- **Chat visibility:** Core Mode auto-opens the chat widget so the user always has visible stream context. Other widgets stay in their user-set state.
+- **Advanced disclosure:** Core Mode's Advanced drawer shows read-only summaries of R34L, AutoMemory, context tokens, dry run, and Multi-Bot state, with a "Open Studio for full controls" link. Underlying systems continue running with their existing/default configuration.
+- **AutoForge transparency:** Core Mode never hides active automation. The Launchpad shows an "AutoForge" badge (with Dry Run indicator) when AutoForge is enabled. Multi-Bot active state is shown as a badge.
+- **Migration safety:** Schema v21 seeds onboarding milestones; v22/v23 force all users to `'core'` (Core Mode is the primary experience). v24 persists `personaChosen` and `modeWelcomeSeen` (previously declared but missing from `partialize`). New users get the store default `'core'`. All onboarding milestones default false. `microToursSeen` defaults empty.
+- **Tutorial changes:** The 22-step monolithic tutorial no longer auto-starts (marked as seen on first load). It's retained for manual access via command palette. Core Mode's Launchpad replaces it as the onboarding surface.
+- **Tests:** `npx tsx src/lib/coreMode.test.ts` (52 tests: new-user defaults, mode switching preserves settings, onboarding milestones, dry-run no send milestone, Multi-Bot survives mode switch, provider survives, micro-tour dismissal, activation celebration, phase transitions, essential vs automation readiness, error states, `personaChosen`/`modeWelcomeSeen` persistence through `partialize`).
+
 ## Conventions
 
 - **No new features without explicit request** — prefer polish, bug fixes, and code health.
@@ -192,12 +206,16 @@ Known non-fatal Vite build warnings (safe to ignore):
 
 | File | Responsibility |
 |------|---------------|
-| `src/store.ts` | Zustand store, persistence, multi-bot state |
+| `src/store.ts` | Zustand store, persistence, multi-bot state, interface mode, onboarding milestones |
 | `src/types.ts` | All domain types (55+ exports) |
 | `src/App.tsx` | App shell, chat clients, shortcuts, hook mounting |
 | `src/lib/ai.ts` | All AI generation + dispatch + JSON repair |
 | `src/lib/aiScheduler.ts` | AI request orchestrator (priority, preemption, cancellation, telemetry) |
 | `src/lib/aiScheduler.test.ts` | Scheduler test suite (run: `npx tsx src/lib/aiScheduler.test.ts`) |
+| `src/lib/coreMode.test.ts` | Core Mode + onboarding tests (run: `npx tsx src/lib/coreMode.test.ts`) |
+| `src/hooks/useCoreReadiness.ts` | Core Launchpad readiness derivation from real app state |
+| `src/components/CoreMode.tsx` | CoreTuningControls, CoreLaunchpad, InterfaceModeToggle, CoreActivationCelebration |
+| `src/components/CoreGreeting.tsx` | Minimal first-run greeting (drops new users into Core Mode) |
 | `src/lib/sentiment.test.ts` | Sentiment classifier tests (run: `npx tsx src/lib/sentiment.test.ts`) |
 | `src/lib/autoForgeCore.test.ts` | AutoForge core computation tests (run: `npx tsx src/lib/autoForgeCore.test.ts`) |
 | `src/lib/antiRepetition.test.ts` | Anti-repetition + Jaccard dedup tests (run: `npx tsx src/lib/antiRepetition.test.ts`) |

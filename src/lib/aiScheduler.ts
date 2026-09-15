@@ -567,6 +567,11 @@ export const aiScheduler = new AIScheduler();
  * reasoning that wastes GPU time on latency-sensitive tasks.
  *
  * For cloud providers: no reasoning_effort is added (semantics differ).
+ *
+ * NOTE: `num_ctx` is NOT set here because Ollama's OpenAI-compatible
+ * `/v1/chat/completions` endpoint ignores the `options` field. Instead,
+ * `createOllamaFetch()` rewrites requests to the native `/api/chat`
+ * endpoint, which does support `options.num_ctx`.
  */
 export function buildProviderRequestOptions(provider: string): Record<string, unknown> {
   if (provider === "ollama") {
@@ -577,6 +582,139 @@ export function buildProviderRequestOptions(provider: string): Record<string, un
   }
   return {};
 }
+
+/**
+ * Ollama context window size for the native `/api/chat` endpoint.
+ * 32768 is 4× the default 8192, enough for Forge requests with full
+ * memory context, chat history, and persona directives.
+ */
+const OLLAMA_NUM_CTX = 32768;
+
+/**
+ * Create a custom `fetch` for the OpenAI client when the provider is Ollama.
+ *
+ * Ollama's OpenAI-compatible `/v1/chat/completions` endpoint ignores the
+ * `options` field, so `num_ctx` can't be set through it. This wrapper
+ * rewrites chat completion requests to Ollama's native `/api/chat`
+ * endpoint (which supports `options.num_ctx`), then converts the
+ * response back to OpenAI format so the rest of the code is unchanged.
+ */
+export function createOllamaFetch(): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : (input as Request).url);
+
+    // Only rewrite chat completion requests
+    if (url.pathname !== "/v1/chat/completions") {
+      return fetch(input, init);
+    }
+
+    // Parse the OpenAI-format request body
+    const openaiBody = init?.body ? JSON.parse(init.body as string) : {};
+
+    // Convert OpenAI messages to Ollama native format.
+    // OpenAI allows `content` as an array of parts (text + image_url) for
+    // multimodal input; Ollama native expects `content: string` plus an
+    // `images: string[]` array of base64-encoded image data (no data URL
+    // prefix). Text parts are concatenated; image parts are extracted.
+    const nativeMessages = (openaiBody.messages ?? []).map(
+      (msg: { role: string; content?: unknown }) => {
+        const content = msg.content;
+        if (typeof content === "string") {
+          return { role: msg.role, content };
+        }
+        if (!Array.isArray(content)) {
+          return { role: msg.role, content: "" };
+        }
+        let text = "";
+        const images: string[] = [];
+        for (const part of content as Array<Record<string, unknown>>) {
+          if (part.type === "text" && typeof part.text === "string") {
+            text += part.text;
+          } else if (part.type === "image_url" && part.image_url) {
+            const imageUrl =
+              typeof part.image_url === "string"
+                ? part.image_url
+                : (part.image_url as { url?: string }).url;
+            if (typeof imageUrl === "string") {
+              // Strip data URL prefix if present ("data:image/png;base64,...")
+              const commaIdx = imageUrl.indexOf(",");
+              images.push(commaIdx >= 0 ? imageUrl.slice(commaIdx + 1) : imageUrl);
+            }
+          }
+        }
+        const nativeMsg: Record<string, unknown> = { role: msg.role, content: text };
+        if (images.length > 0) nativeMsg.images = images;
+        return nativeMsg;
+      },
+    );
+
+    // Convert to Ollama native /api/chat format
+    const nativeBody: Record<string, unknown> = {
+      model: openaiBody.model,
+      messages: nativeMessages,
+      stream: false,
+      // keep_alive: 30m keeps the model loaded in memory between requests
+      // so the user doesn't pay the cold-load penalty (30s+ for a 9B model)
+      // on every Forge after a brief pause. Ollama's default is 5m.
+      keep_alive: "30m",
+      options: {
+        num_ctx: OLLAMA_NUM_CTX,
+        ...(openaiBody.temperature != null ? { temperature: openaiBody.temperature } : {}),
+        ...(openaiBody.max_tokens != null ? { num_predict: openaiBody.max_tokens } : {}),
+      },
+    };
+    if (openaiBody.response_format?.type === "json_object") {
+      nativeBody.format = "json";
+    }
+
+    const nativeUrl = url.origin + "/api/chat";
+    const nativeResponse = await fetch(nativeUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nativeBody),
+      signal: init?.signal,
+    });
+
+    // Pass through non-OK responses as-is (error handling happens upstream)
+    if (!nativeResponse.ok) {
+      const errorText = await nativeResponse.text();
+      return new Response(errorText, {
+        status: nativeResponse.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // Convert native response to OpenAI format
+    const nativeData = await nativeResponse.json();
+    const content = nativeData.message?.content ?? "";
+    const promptTokens = nativeData.prompt_eval_count ?? 0;
+    const completionTokens = nativeData.eval_count ?? 0;
+
+    const openaiResponse = {
+      id: `ollama-${Date.now()}`,
+      object: "chat.completion",
+      model: nativeData.model ?? openaiBody.model,
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
+    };
+
+    return new Response(JSON.stringify(openaiResponse), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+}
+
 
 // ─── Operation-Aware Token Budgets ───────────────────────────────────────────
 
@@ -634,28 +772,31 @@ export function getOperationTimeout(
 
   switch (operation) {
     case "forge":
-      return isOllama ? 60_000 : 45_000; // User is waiting — give it room.
+      // Ollama: 9B+ models with 32k context need room for cold model load
+      // (can take 30s+ on first request) + prompt processing + generation.
+      // 180s covers cold start + full Forge prompt + multi-variant generation.
+      return isOllama ? 180_000 : 45_000; // User is waiting — give it room.
     case "refine":
-      return isOllama ? 30_000 : 30_000;
+      return isOllama ? 60_000 : 30_000;
     case "vision":
       // Ollama: vision is interactive priority (preempts autonomous), but a
-      // critical manual Forge can still block the slot. 30s gives room for
+      // critical manual Forge can still block the slot. 60s gives room for
       // one forge cycle to complete before vision queue-times out.
-      return isOllama ? 30_000 : 30_000;
+      return isOllama ? 60_000 : 30_000;
     case "autoforge_decide":
       // Ollama: allow extra room for multi-bot queue depth. Even with
       // staggered intervals, a vision preemption + retry can briefly
-      // queue 2-3 bots. 45s gives ~3 × 10s execution slots of slack.
-      return isOllama ? 45_000 : 30_000;
+      // queue 2-3 bots. 90s gives ~3 × 30s execution slots of slack.
+      return isOllama ? 90_000 : 30_000;
     case "autoforge_briefing":
       // Ollama: the prompt carries the event log, so prompt processing +
       // 1024-token generation needs more than 30s on local models. Give it
       // the same budget as forge (user is waiting on it).
-      return isOllama ? 60_000 : 30_000;
+      return isOllama ? 120_000 : 30_000;
     case "memory_extraction":
-      return isOllama ? 25_000 : 30_000; // Background — shorter for Ollama so it yields faster.
+      return isOllama ? 45_000 : 30_000; // Background — shorter for Ollama so it yields faster.
     case "smart_reply":
-      return isOllama ? 15_000 : 20_000;
+      return isOllama ? 30_000 : 20_000;
     default:
       return 30_000;
   }

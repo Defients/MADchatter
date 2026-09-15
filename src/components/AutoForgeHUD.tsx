@@ -839,15 +839,15 @@ export function AutoForgeHUD() {
                 <input
                   type="range"
                   min="500"
-                  max="8000"
-                  step="500"
+                  max="8192"
+                  step="1"
                   value={config.autoForgeContextTokens ?? 4000}
                   onChange={(e) => updateConfig({ autoForgeContextTokens: parseInt(e.target.value, 10) })}
                   className="w-full h-1 accent-yellow-400 cursor-pointer"
                 />
                 <div className="flex justify-between text-[8px] text-gray-600 font-mono">
                   <span>500</span>
-                  <span>8K</span>
+                  <span>8192</span>
                 </div>
               </div>
             </div>

@@ -70,6 +70,7 @@ export function TheForge() {
   const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const streamCaptureActive = useAppStore((s) => s.streamCaptureActive);
   const authTick = useAppStore((s) => s.authTick);
+  const interfaceMode = useAppStore((s) => s.interfaceMode);
   // Multi-bot: active authenticated bots for per-bot send squares on variant cards.
   const multiBotActive = useAppStore(selectMultiBotActive);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
@@ -87,10 +88,17 @@ export function TheForge() {
     const channelSet = !!(streamMetadata?.channelName && streamMetadata.channelName.trim().length > 0);
     const hasApiKey = hasAnyApiKey();
     const capturing = streamCaptureActive;
-    return { loggedIn, loginUsername, channelSet, hasApiKey, capturing, complete: loggedIn && channelSet && hasApiKey && capturing };
-  }, [platform, streamMetadata?.channelName, streamCaptureActive, authTick]);
+    // In Core Mode, stream capture is optional (utility dock, not required).
+    // Login is also not required for TheForge to show its UI — the CoreLaunchpadHero
+    // handles login guidance, and the CoreReadinessStrip shows login status.
+    // TheForge should show its actual Forge UI once channel + API key are set.
+    const complete = interfaceMode === "core"
+      ? channelSet && hasApiKey
+      : loggedIn && channelSet && hasApiKey && capturing;
+    return { loggedIn, loginUsername, channelSet, hasApiKey, capturing, complete };
+  }, [platform, streamMetadata?.channelName, streamCaptureActive, authTick, interfaceMode]);
 
-  const handleForge = async () => {
+  const handleForge = async (forceCount?: number) => {
     if (isForging) return;
     setIsForging(true);
     playSfx('forge_start');
@@ -151,6 +159,9 @@ export function TheForge() {
         botIdentityMode: useAppStore.getState().botIdentityMode,
         botIdentityStory: useAppStore.getState().botIdentityStory,
         firstMessageMode,
+        // First-ever forge (Core setup Step 4): exactly 2 cards — a quick
+        // taste, not a full batch. Later forges use the default count.
+        count: forceCount ?? (useAppStore.getState().hasForgedOnce ? undefined : 2),
       });
 
       if (data.tokenUsage) {
@@ -222,6 +233,10 @@ export function TheForge() {
   const handleSendRef = useRef(handleSend);
   handleSendRef.current = handleSend;
 
+  // Keep a ref to handleForge so the forge-trigger listener always calls the latest.
+  const handleForgeRef = useRef(handleForge);
+  handleForgeRef.current = handleForge;
+
   useEffect(() => {
     const onAutoSend = (e: Event) => {
       const customEvent = e as CustomEvent;
@@ -232,6 +247,19 @@ export function TheForge() {
     window.addEventListener("autoforge-send-message", onAutoSend);
     return () => window.removeEventListener("autoforge-send-message", onAutoSend);
   }, []);
+
+  // Core Mode: TuningDeck (which normally listens for forge-trigger) is not mounted.
+  // TheForge handles the event directly in Core mode to avoid double-forge in Studio.
+  useEffect(() => {
+    const onForgeTrigger = (e: Event) => {
+      if (interfaceMode === "core") {
+        const count = (e as CustomEvent).detail?.count;
+        handleForgeRef.current(typeof count === "number" ? count : undefined);
+      }
+    };
+    window.addEventListener("forge-trigger", onForgeTrigger);
+    return () => window.removeEventListener("forge-trigger", onForgeTrigger);
+  }, [interfaceMode]);
 
   const handleRefine = async (id: number, type: string, customInstruction?: string) => {
     const variant = variants.find((v) => v.variant_id === id);
@@ -483,7 +511,7 @@ export function TheForge() {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 auto-rows-max w-full">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 auto-rows-max w-full">
               {variants.map((v) => (
                 <VariantCard
                   key={v.variant_id}
@@ -708,8 +736,12 @@ export function TheForge() {
               </span>
             </div>
           </div>
+        ) : interfaceMode === "core" ? (
+          /* Core Mode: the CoreLaunchpadHero handles the "Ready to Forge" state.
+             TheForge shows nothing here until the first batch is forged. */
+          null
         ) : (
-          /* Ready to Forge — shown when setup is complete but no variants yet */
+          /* Studio Mode: Ready to Forge — shown when setup is complete but no variants yet */
           <div className="flex flex-col items-center justify-center text-center max-w-lg mx-auto py-10">
             <div className="-mt-20 overflow-visible">
               <FidgetSpinner size={300} showSpinCount={true} />
@@ -736,7 +768,7 @@ export function TheForge() {
 
             {!hasForgedOnce && (
               <button
-                onClick={handleForge}
+                onClick={() => handleForge()}
                 disabled={isForging}
                 className={cn(
                   "group relative px-6 py-2.5 rounded-xl bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-500/30 hover:border-orange-400/50 text-orange-300 hover:text-orange-200 font-bold text-sm transition-all shadow-lg hover:shadow-orange-500/10 disabled:cursor-not-allowed overflow-hidden",

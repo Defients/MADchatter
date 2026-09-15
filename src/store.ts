@@ -9,7 +9,7 @@ import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "
 import { removeBotRateLimiter } from "./lib/actionRateLimiter";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 20;
+const SETTINGS_VERSION = 24;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -348,6 +348,13 @@ interface AppState {
   audioTranscript: string;
   setAudioTranscript: (transcript: string) => void;
   appendAudioTranscript: (line: string) => void;
+  // Audio setup onboarding — runtime-only, not persisted
+  audioSetupActive: boolean;
+  setAudioSetupActive: (active: boolean) => void;
+  whisperDownloadProgress: number | null;
+  setWhisperDownloadProgress: (progress: number | null) => void;
+  voiceCapturing: boolean;
+  setVoiceCapturing: (capturing: boolean) => void;
   // C4: Audio energy awareness
   audioEnergy: { rms: number; peak: number; label: "silent" | "quiet" | "normal" | "loud" | "spike"; updatedAt: number } | null;
   setAudioEnergy: (energy: { rms: number; peak: number; label: "silent" | "quiet" | "normal" | "loud" | "spike"; updatedAt: number } | null) => void;
@@ -674,6 +681,35 @@ interface AppState {
   hypeLevel: number;
   setHypeLevel: (level: number) => void;
 
+  // ─── Interface Mode (Core vs Studio) ─────────────────────
+  // One authoritative mode drives presentation density. Core = minimal
+  // operational surface; Studio = the existing full-density experience.
+  // Mode changes presentation only, never engine behavior or config.
+  interfaceMode: "core" | "studio";
+  setInterfaceMode: (mode: "core" | "studio") => void;
+
+  // ─── Onboarding Milestones ───────────────────────────────
+  // Persisted milestones that cannot be reconstructed from current state.
+  // `hasForgedOnce` already exists above and is reused.
+  hasSentMessage: boolean;
+  setHasSentMessage: (v: boolean) => void;
+  hasEnabledAutoForgeOnce: boolean;
+  setHasEnabledAutoForgeOnce: (v: boolean) => void;
+  // True once the user has explicitly chosen a persona in the Core setup flow.
+  // The default config ships with primaryProfile set, but that shouldn't count
+  // as "chosen" — Step 3 should show until the user picks one.
+  personaChosen: boolean;
+  setPersonaChosen: (v: boolean) => void;
+  // True once the user has seen the initial Core/Studio mode picker overlay.
+  modeWelcomeSeen: boolean;
+  setModeWelcomeSeen: (v: boolean) => void;
+  activationCelebrated: boolean;
+  setActivationCelebrated: (v: boolean) => void;
+  // Micro-tour dismissal tracking. Keyed by tour id (e.g. "multibot", "memory").
+  // Dismissed tours don't re-fire. Stored as a plain object for Zustand persist.
+  microToursSeen: Record<string, boolean>;
+  setMicroTourSeen: (tourId: string, seen: boolean) => void;
+
   // ─── Tutorial Walkthrough ────────────────────────────────
   tutorialActive: boolean;
   setTutorialActive: (active: boolean) => void;
@@ -759,6 +795,84 @@ interface AppState {
   importSettings: (json: string) => boolean;
 }
 
+/**
+ * Partialize function for the persist middleware — selects which fields
+ * from the full AppState are written to localStorage. Exported so the
+ * persistence contract is directly testable without depending on the
+ * storage layer (which is unavailable in the Node test environment).
+ */
+export const partializeAppState = (state: AppState) => ({
+  streamMetadata: { channelName: state.streamMetadata.channelName, title: state.streamMetadata.title, category: state.streamMetadata.category, viewerCount: state.streamMetadata.viewerCount },
+  platform: state.platform,
+  config: state.config,
+  longTermMemory: state.longTermMemory,
+  pinnedMemories: state.pinnedMemories,
+  goldenMemoryId: state.goldenMemoryId,
+  r34lEnabled: state.r34lEnabled,
+  autoForgeEventLog: state.autoForgeEventLog,
+  cosmotechTheme: state.cosmotechTheme,
+  theme: state.theme,
+  messageSoundEnabled: state.messageSoundEnabled,
+  audioOutputDeviceId: state.audioOutputDeviceId,
+  customSoundUrl: state.customSoundUrl,
+  soundVolume: state.soundVolume,
+  sfxEnabled: state.sfxEnabled,
+  sfxVolume: state.sfxVolume,
+  cursorTrailEnabled: state.cursorTrailEnabled,
+  emoteProviders: state.emoteProviders,
+  emoteAwarenessEnabled: state.emoteAwarenessEnabled,
+  ttsEnabled: state.ttsEnabled,
+  ttsProvider: state.ttsProvider,
+  ttsVoice: state.ttsVoice,
+  ttsRate: state.ttsRate,
+  ttsVolume: state.ttsVolume,
+  elevenlabsApiKey: state.elevenlabsApiKey,
+  ttsAudioOutputDeviceId: state.ttsAudioOutputDeviceId,
+  botIdentityMode: state.botIdentityMode,
+  botIdentityStory: state.botIdentityStory,
+  forgeTemplates: state.forgeTemplates,
+  moodLock: state.moodLock,
+  variantHistory: state.variantHistory,
+  reactionSequences: state.reactionSequences,
+  autoMemoryConfig: state.autoMemoryConfig,
+  rateLimitConfig: state.rateLimitConfig,
+  desktopNotificationsEnabled: state.desktopNotificationsEnabled,
+  smartRepliesEnabled: state.smartRepliesEnabled,
+  keywordTriggerRules: state.keywordTriggerRules,
+  sessionGoals: state.sessionGoals,
+  personaPresets: state.personaPresets,
+  activePersonaId: state.activePersonaId,
+  autoForgeDryRun: state.autoForgeDryRun,
+  autoForgeConfidenceThreshold: state.autoForgeConfidenceThreshold,
+  autoForgeSequences: state.autoForgeSequences,
+  autoForgeRules: state.autoForgeRules,
+  perActionRateLimits: state.perActionRateLimits,
+  // Director notes (user-created private directives). The v14 migration
+  // injects the default; partialize ensures they actually persist.
+  directorNotes: state.directorNotes,
+  // Multi-bot (additive): persisted so multi-bot state survives reload.
+  // Sessions live here too (same localStorage risk profile as the legacy
+  // twitch_session/kick_session keys); they are stripped from exportSettings.
+  multiBotEnabled: state.multiBotEnabled,
+  bots: state.bots,
+  activeBotId: state.activeBotId,
+  hasForgedOnce: state.hasForgedOnce,
+  // Interface mode + onboarding milestones
+  interfaceMode: state.interfaceMode,
+  hasSentMessage: state.hasSentMessage,
+  hasEnabledAutoForgeOnce: state.hasEnabledAutoForgeOnce,
+  personaChosen: state.personaChosen,
+  modeWelcomeSeen: state.modeWelcomeSeen,
+  activationCelebrated: state.activationCelebrated,
+  microToursSeen: state.microToursSeen,
+  // First Message Mode: only the user preference persists. The runtime
+  // cohort is ephemeral (never serialized) so it can never leak across
+  // reloads or stream/channel switches.
+  firstMessageModeEnabled: state.firstMessageModeEnabled,
+  // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
+  autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
+});
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
@@ -843,7 +957,14 @@ export const useAppStore = create<AppState>()(
         })),
 
       autoForgeEnabled: false,
-      setAutoForgeEnabled: (enabled) => set({ autoForgeEnabled: enabled }),
+      setAutoForgeEnabled: (enabled) =>
+        set((state) => {
+          const updates: Partial<AppState> = { autoForgeEnabled: enabled };
+          if (enabled && !state.hasEnabledAutoForgeOnce) {
+            updates.hasEnabledAutoForgeOnce = true;
+          }
+          return updates;
+        }),
       autoForgeAutoCheckEnabled: true,
       setAutoForgeAutoCheckEnabled: (enabled) => set({ autoForgeAutoCheckEnabled: enabled }),
 
@@ -890,6 +1011,12 @@ export const useAppStore = create<AppState>()(
 
       audioTranscript: "",
       setAudioTranscript: (transcript) => set({ audioTranscript: transcript }),
+      audioSetupActive: false,
+      setAudioSetupActive: (active) => set({ audioSetupActive: active }),
+      whisperDownloadProgress: null,
+      setWhisperDownloadProgress: (progress) => set({ whisperDownloadProgress: progress }),
+      voiceCapturing: false,
+      setVoiceCapturing: (capturing) => set({ voiceCapturing: capturing }),
       audioEnergy: null,
       setAudioEnergy: (energy) => set({ audioEnergy: energy }),
       streamEvents: [],
@@ -1120,15 +1247,19 @@ export const useAppStore = create<AppState>()(
           sentimentSummary: snapshot.sentimentSummary ?? null,
           actionAccuracy: snapshot.actionAccuracy ?? [],
           sentMessages: snapshot.sentMessages ?? [],
-          decisionLog: snapshot.decisionLog ?? [],
+          // Decision log starts fresh on every channel return — previous cycle
+          // decisions from the last session on this channel are not restored.
+          // The snapshot still archives them (for potential export/audit), but
+          // the live HUD and AI context should not see stale decisions.
+          decisionLog: [],
           sessionGoals: snapshot.sessionGoals ?? [],
           goalEvaluationResults: snapshot.goalEvaluationResults ?? [],
           streamHealth: snapshot.streamHealth ?? null,
           chatActivityBuckets: snapshot.chatActivityBuckets ?? [],
           chatterStats: snapshot.chatterStats ?? {},
           tokenUsageByFeature: snapshot.tokenUsageByFeature ?? createDefaultTokenUsage(),
-          lastAutoForgeDecision: snapshot.lastAutoForgeDecision ?? null,
-          autoForgeDecisionHistory: snapshot.autoForgeDecisionHistory ?? [],
+          lastAutoForgeDecision: null,
+          autoForgeDecisionHistory: [],
           bots: state.bots.map((b, i) => {
             // Preferred path: per-bot session archive (new snapshots). Only
             // applies in multi-bot mode — in single-bot mode the global fields
@@ -1144,15 +1275,17 @@ export const useAppStore = create<AppState>()(
                   ...b.runtime,
                   sentMessages: bs.sentMessages,
                   actionHistory: bs.actionHistory,
-                  decisionLog: bs.decisionLog,
+                  // Decision log starts fresh on every channel return (parity
+                  // with the global restore path above).
+                  decisionLog: [],
                   sessionStats: bs.sessionStats,
                   enhancedStats: bs.enhancedStats,
                   sentimentHistory: bs.sentimentHistory,
                   sentimentSummary: bs.sentimentSummary,
                   actionAccuracy: bs.actionAccuracy,
                   autoForgeEvents: bs.autoForgeEvents,
-                  lastAutoForgeDecision: bs.lastAutoForgeDecision,
-                  autoForgeDecisionHistory: bs.autoForgeDecisionHistory,
+                  lastAutoForgeDecision: null,
+                  autoForgeDecisionHistory: [],
                   longTermMemory: bs.longTermMemory,
                   pinnedMemories: bs.pinnedMemories,
                   goldenMemoryId: bs.goldenMemoryId,
@@ -1292,6 +1425,25 @@ export const useAppStore = create<AppState>()(
 
       hasForgedOnce: false,
       setHasForgedOnce: (v) => set({ hasForgedOnce: v }),
+
+      // ─── Interface Mode + Onboarding Milestones ───────────
+      // Default to "core" for new users. The v21 migration sets existing
+      // users to "studio" so veteran users don't suddenly land in onboarding.
+      interfaceMode: "core",
+      setInterfaceMode: (mode) => set({ interfaceMode: mode }),
+      hasSentMessage: false,
+      setHasSentMessage: (v) => set({ hasSentMessage: v }),
+      hasEnabledAutoForgeOnce: false,
+      setHasEnabledAutoForgeOnce: (v) => set({ hasEnabledAutoForgeOnce: v }),
+      personaChosen: false,
+      setPersonaChosen: (v) => set({ personaChosen: v }),
+      modeWelcomeSeen: false,
+      setModeWelcomeSeen: (v) => set({ modeWelcomeSeen: v }),
+      activationCelebrated: false,
+      setActivationCelebrated: (v) => set({ activationCelebrated: v }),
+      microToursSeen: {},
+      setMicroTourSeen: (tourId, seen) =>
+        set((state) => ({ microToursSeen: { ...state.microToursSeen, [tourId]: seen } })),
 
       tmiReadState: "disconnected",
       setTmiReadState: (state) => set({ tmiReadState: state }),
@@ -2532,69 +2684,7 @@ export const useAppStore = create<AppState>()(
       }),
     {
       name: "madchatter-storage",
-      partialize: (state) => ({
-        streamMetadata: { channelName: state.streamMetadata.channelName, title: state.streamMetadata.title, category: state.streamMetadata.category, viewerCount: state.streamMetadata.viewerCount },
-        platform: state.platform,
-        config: state.config,
-        longTermMemory: state.longTermMemory,
-        pinnedMemories: state.pinnedMemories,
-        goldenMemoryId: state.goldenMemoryId,
-        r34lEnabled: state.r34lEnabled,
-        autoForgeEventLog: state.autoForgeEventLog,
-        cosmotechTheme: state.cosmotechTheme,
-        theme: state.theme,
-        messageSoundEnabled: state.messageSoundEnabled,
-        audioOutputDeviceId: state.audioOutputDeviceId,
-        customSoundUrl: state.customSoundUrl,
-        soundVolume: state.soundVolume,
-        sfxEnabled: state.sfxEnabled,
-        sfxVolume: state.sfxVolume,
-        cursorTrailEnabled: state.cursorTrailEnabled,
-        emoteProviders: state.emoteProviders,
-        emoteAwarenessEnabled: state.emoteAwarenessEnabled,
-        ttsEnabled: state.ttsEnabled,
-        ttsProvider: state.ttsProvider,
-        ttsVoice: state.ttsVoice,
-        ttsRate: state.ttsRate,
-        ttsVolume: state.ttsVolume,
-        elevenlabsApiKey: state.elevenlabsApiKey,
-        ttsAudioOutputDeviceId: state.ttsAudioOutputDeviceId,
-        botIdentityMode: state.botIdentityMode,
-        botIdentityStory: state.botIdentityStory,
-        forgeTemplates: state.forgeTemplates,
-        moodLock: state.moodLock,
-        variantHistory: state.variantHistory,
-        reactionSequences: state.reactionSequences,
-        autoMemoryConfig: state.autoMemoryConfig,
-        rateLimitConfig: state.rateLimitConfig,
-        desktopNotificationsEnabled: state.desktopNotificationsEnabled,
-        smartRepliesEnabled: state.smartRepliesEnabled,
-        keywordTriggerRules: state.keywordTriggerRules,
-        sessionGoals: state.sessionGoals,
-        personaPresets: state.personaPresets,
-        activePersonaId: state.activePersonaId,
-        autoForgeDryRun: state.autoForgeDryRun,
-        autoForgeConfidenceThreshold: state.autoForgeConfidenceThreshold,
-        autoForgeSequences: state.autoForgeSequences,
-        autoForgeRules: state.autoForgeRules,
-        perActionRateLimits: state.perActionRateLimits,
-        // Director notes (user-created private directives). The v14 migration
-        // injects the default; partialize ensures they actually persist.
-        directorNotes: state.directorNotes,
-        // Multi-bot (additive): persisted so multi-bot state survives reload.
-        // Sessions live here too (same localStorage risk profile as the legacy
-        // twitch_session/kick_session keys); they are stripped from exportSettings.
-        multiBotEnabled: state.multiBotEnabled,
-        bots: state.bots,
-        activeBotId: state.activeBotId,
-        hasForgedOnce: state.hasForgedOnce,
-        // First Message Mode: only the user preference persists. The runtime
-        // cohort is ephemeral (never serialized) so it can never leak across
-        // reloads or stream/channel switches.
-        firstMessageModeEnabled: state.firstMessageModeEnabled,
-        // NEXT CHECK auto-scheduling toggle (HUD-local convenience).
-        autoForgeAutoCheckEnabled: state.autoForgeAutoCheckEnabled,
-      }),
+      partialize: partializeAppState,
       version: SETTINGS_VERSION,
       migrate: (persistedState: any, version: number) => {
         // v1 -> v2: chatLog changed from string[] to ChatMessage[]
@@ -2799,6 +2889,61 @@ export const useAppStore = create<AppState>()(
                 b.runtime.autoForgeDecisionHistory = [];
               }
             });
+          }
+        }
+        // v21: Interface Mode (Core vs Studio). All users land in Core Mode
+        // (the reimagined centered workspace). The store default is "core"
+        // and we don't override it here, so there's no hydration flash from
+        // a mismatched default. Users who prefer Studio can switch via the
+        // header toggle — their choice persists.
+        // Also seed onboarding milestones — all default false, matching the
+        // store defaults, but explicit here so malformed state fails safely.
+        if (version < 21 && persistedState) {
+          if (persistedState.interfaceMode === undefined) {
+            persistedState.interfaceMode = "core";
+          }
+          if (persistedState.hasSentMessage === undefined) {
+            persistedState.hasSentMessage = false;
+          }
+          if (persistedState.hasEnabledAutoForgeOnce === undefined) {
+            persistedState.hasEnabledAutoForgeOnce = false;
+          }
+          if (persistedState.activationCelebrated === undefined) {
+            persistedState.activationCelebrated = false;
+          }
+          if (persistedState.microToursSeen === undefined) {
+            persistedState.microToursSeen = {};
+          }
+        }
+        // v22: Force all users to Core Mode. The previous v21 migration set
+        // existing users to "studio", but Core Mode is now the primary
+        // experience (reimagined centered workspace). Everyone gets Core.
+        // Users who prefer Studio can switch via the header toggle — their
+        // choice persists from then on.
+        if (version < 22 && persistedState) {
+          persistedState.interfaceMode = "core";
+        }
+        // v23: Re-force Core Mode. Some dev sessions may have persisted
+        // version 22 with interfaceMode="studio" before the v22 migration
+        // was added. This catches that edge case.
+        if (version < 23 && persistedState) {
+          persistedState.interfaceMode = "core";
+        }
+        // v24: Persist the two remaining onboarding milestones that were
+        // declared and consumed but missing from `partialize` before this
+        // version. `personaChosen` drives `personalityReady` in
+        // useCoreReadiness (without it, the Launchpad reverts to the
+        // "setup" phase on every reload). `modeWelcomeSeen` gates the
+        // ModeWelcomeOverlay (without it, the full-screen mode picker
+        // re-appears on every reload). Both default false — existing
+        // users at v23 hydrate with false, which is correct since these
+        // fields were never persisted before v24.
+        if (version < 24 && persistedState) {
+          if (persistedState.personaChosen === undefined) {
+            persistedState.personaChosen = false;
+          }
+          if (persistedState.modeWelcomeSeen === undefined) {
+            persistedState.modeWelcomeSeen = false;
           }
         }
         return persistedState;

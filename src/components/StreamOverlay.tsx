@@ -3,6 +3,7 @@ import { Tv, Volume2, VolumeX, ExternalLink, Camera, MonitorUp, StopCircle, Mess
 import { useAppStore } from "../store";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { toast } from "sonner";
+import { cn } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import chanceImg from "../../assets/chance.jpg";
 import mustardVideo from "../../assets/mustardfite.mp4";
@@ -61,6 +62,8 @@ export function StreamOverlay({
   const [chatSending, setChatSending] = useState(false);
   const platform = useAppStore((s) => s.platform);
   const tutorialActive = useAppStore((s) => s.tutorialActive);
+  const audioSetupActive = useAppStore((s) => s.audioSetupActive);
+  const interfaceMode = useAppStore((s) => s.interfaceMode);
   const [tutorialVideoEnded, setTutorialVideoEnded] = useState(false);
   const [tutorialVideoPhase, setTutorialVideoPhase] = useState<"mustard" | "water" | "kiss">("mustard");
   const [tutorialMuted, setTutorialMuted] = useState(true);
@@ -275,6 +278,7 @@ export function StreamOverlay({
                         <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                         <span className="text-sm font-bold uppercase tracking-wider">Window Capturing</span>
                       </div>
+                      {interfaceMode !== 'core' && (
                       <button
                         type="button"
                         onClick={onManualSnapshot}
@@ -284,6 +288,7 @@ export function StreamOverlay({
                         <Camera className="w-5 h-5" />
                         {visualCooldown ? "Cooldown..." : "Take Snapshot"}
                       </button>
+                      )}
                       <div className="flex items-center gap-3">
                         <button
                           type="button"
@@ -322,7 +327,12 @@ export function StreamOverlay({
                           toast.info("Select your Joystick.tv browser window to capture. Remember to toggle on the audio tab!", { duration: 6000 });
                           onVisualCapture();
                         }}
-                        className="h-16 px-6 flex items-center gap-2 rounded-2xl text-sm font-bold uppercase tracking-wider transition-all text-orange-400 bg-orange-500/15 hover:bg-orange-500/25 border-2 border-orange-500/30 hover:border-orange-500/50 shadow-lg hover:shadow-orange-500/20"
+                        className={cn(
+                          "h-16 px-6 flex items-center gap-2 rounded-2xl text-sm font-bold uppercase tracking-wider transition-all border-2 shadow-lg",
+                          audioSetupActive
+                            ? "capture-button-glow text-purple-200 bg-purple-500/25 border-purple-400/60 hover:bg-purple-500/40 shadow-purple-500/40"
+                            : "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25 border-orange-500/30 hover:border-orange-500/50 hover:shadow-orange-500/20"
+                        )}
                       >
                         <MonitorUp className="w-6 h-6" />
                         Capture Window
@@ -498,11 +508,14 @@ export function StreamOverlay({
                 }
                 onVisualCapture();
               }}
-              className={`h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${
+              className={cn(
+                "h-6 px-2 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all border",
                 isVisualCapturing
-                  ? "text-red-400 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30"
-                  : "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/20"
-              }`}
+                  ? "text-red-400 bg-red-500/20 hover:bg-red-500/30 border-red-500/30"
+                  : audioSetupActive
+                    ? "capture-button-glow text-purple-200 bg-purple-500/25 hover:bg-purple-500/40 border-purple-400/60"
+                    : "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25 border-orange-500/20"
+              )}
             >
               {isVisualCapturing ? <StopCircle className="w-3 h-3" /> : <MonitorUp className="w-3 h-3" />}
               {isVisualCapturing ? "Stop" : "Capture"}
@@ -514,8 +527,8 @@ export function StreamOverlay({
         </Tooltip>
         )}
 
-        {/* Manual Snapshot Button — only visible when capturing (hidden for Joystick) */}
-        {isVisualCapturing && platform !== 'joystick' && (
+        {/* Manual Snapshot Button — only visible when capturing (hidden for Joystick, hidden in Core mode — SNAP lives in the Visual panel there) */}
+        {isVisualCapturing && platform !== 'joystick' && interfaceMode !== 'core' && (
           <Tooltip>
             <TooltipTrigger render={(props) => (
               <button

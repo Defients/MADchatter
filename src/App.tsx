@@ -17,6 +17,8 @@ import { StatusBar } from './components/StatusBar';
 import { ShortcutHelp } from './components/ShortcutHelp';
 import { useBotToggleShortcuts } from './hooks/useBotToggleShortcuts';
 import { WelcomeOverlay } from './components/WelcomeOverlay';
+import { ModeWelcomeOverlay } from './components/ModeWelcomeOverlay';
+import { CoreActivationCelebration } from './components/CoreMode';
 import { RageCursor } from './components/RageCursor';
 import { EasterEggs } from './components/EasterEggs';
 import { MobileAdvisory } from './components/MobileAdvisory';
@@ -867,6 +869,12 @@ export default function App() {
                   </CommandItem>
                 </CommandGroup>
                 <CommandGroup heading="Help" className="text-gray-400 border-t border-white/[0.04] pt-2">
+                  <CommandItem onSelect={() => { useAppStore.getState().setInterfaceMode('core'); setOpenCommand(false); playSfx('palette_select'); toast.success('Switched to Core Mode'); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
+                    Switch to Core Mode
+                  </CommandItem>
+                  <CommandItem onSelect={() => { useAppStore.getState().setInterfaceMode('studio'); setOpenCommand(false); playSfx('palette_select'); toast.success('Switched to Studio Mode'); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
+                    Switch to Studio Mode
+                  </CommandItem>
                   <CommandItem onSelect={() => { setOpenCommand(false); playSfx('palette_select'); window.dispatchEvent(new CustomEvent('welcome-open')); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
                     Reopen Welcome Screen
                   </CommandItem>
@@ -936,7 +944,12 @@ export default function App() {
       <Suspense fallback={null}><VisualHistoryOverlay /></Suspense>
       <StatusBar />
       <ShortcutHelp />
+      {/* CoreGreeting removed — the reimagined CoreWorkspace hero IS the
+          first-run welcome now (brand, tagline, channel input front and
+          center). No separate "Start" overlay needed. */}
       <WelcomeOverlay />
+      <ModeWelcomeOverlay />
+      <CoreActivationCelebration />
       {!isMobile && <Suspense fallback={null}><TutorialWalkthrough /></Suspense>}
       {!isMobile && cursorTrailEnabled && <RageCursor />}
       <EasterEggs />

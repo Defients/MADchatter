@@ -2445,7 +2445,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
           in multi-bot mode: templates and mood locks are global, not per-bot,
           so they remain useful when multi-bot is active.
           Collapsible — default collapsed, header persists with a chevron. */}
-      <Card className={cn("bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0 transition-[padding] duration-200", !creativeToolsOpen && "py-0.5")}>
+      <Card className={cn("bg-[#0F0F12] border-white/5 shadow-none rounded-xl shrink-0 transition-[padding] duration-200", !creativeToolsOpen && "py-1")}>
         <CardHeader className={cn("flex flex-col space-y-0 gap-0", creativeToolsOpen ? "px-1.5 py-1 pb-1" : "px-1.5 py-1")}>
           <button
             type="button"

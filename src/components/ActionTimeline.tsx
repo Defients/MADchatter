@@ -174,6 +174,10 @@ export function ActionTimeline() {
 
     const merged = [...fromEvents, ...fromActions]
       .filter((item) => enabledCategories.has(item.category))
+      // Dedupe by id — the global log and bots[0].runtime.* can contain the
+      // same event when multi-bot was enabled (legacy state is copied into
+      // bots[0] on enable). Without this, React warns about duplicate keys.
+      .filter((item, idx, arr) => arr.findIndex((x) => x.id === item.id) === idx)
       .sort((a, b) => a.timestamp - b.timestamp)
       .slice(-MAX_ITEMS);
 

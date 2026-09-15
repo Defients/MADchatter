@@ -2,6 +2,27 @@ let pipelinePromise: Promise<any> | null = null;
 let pipelineError: string | null = null;
 let pipelineModel: string | null = null;
 
+// Progress reporting — module-level callback so the UI can subscribe to
+// download progress without threading a callback through every call site.
+type ProgressInfo = { file: string; progress: number };
+let progressCallback: ((info: ProgressInfo) => void) | null = null;
+
+export function setWhisperProgressCallback(cb: ((info: ProgressInfo) => void) | null) {
+  progressCallback = cb;
+}
+
+function makeProgressCallback(modelLabel: string) {
+  return (info: any) => {
+    if (info.status === 'progress' && info.loaded != null && info.total != null && info.total > 0) {
+      const pct = Math.round((info.loaded / info.total) * 100);
+      console.log(`Whisper (${modelLabel}) download: ${info.file} — ${pct}%`);
+      progressCallback?.({ file: info.file || '', progress: pct });
+    } else if (info.status === 'done' || info.status === 'ready') {
+      progressCallback?.({ file: info.file || '', progress: 100 });
+    }
+  };
+}
+
 const MODEL_WEBGPU = 'onnx-community/whisper-base.en';
 const MODEL_WASM = 'onnx-community/whisper-tiny.en';
 
@@ -23,11 +44,7 @@ async function getPipeline() {
           decoder_model_merged: 'q4',
         },
         device: 'webgpu',
-        progress_callback: (info: any) => {
-          if (info.status === 'progress') {
-            console.log(`Whisper (base.en/WebGPU) download: ${info.file} — ${Math.round((info.loaded / info.total) * 100)}%`);
-          }
-        },
+        progress_callback: makeProgressCallback('base.en/WebGPU'),
       });
       await pipelinePromise;
       pipelineModel = MODEL_WEBGPU;
@@ -42,11 +59,7 @@ async function getPipeline() {
             encoder_model: 'fp32',
             decoder_model_merged: 'q4',
           },
-          progress_callback: (info: any) => {
-            if (info.status === 'progress') {
-              console.log(`Whisper (tiny.en/WASM) download: ${info.file} — ${Math.round((info.loaded / info.total) * 100)}%`);
-            }
-          },
+          progress_callback: makeProgressCallback('tiny.en/WASM'),
         });
         await pipelinePromise;
         pipelineModel = MODEL_WASM;

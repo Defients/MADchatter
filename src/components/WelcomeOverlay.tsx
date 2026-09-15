@@ -121,20 +121,12 @@ export function WelcomeOverlay() {
   const activeLoggedIn = platform === 'kick' ? isKickLoggedIn : platform === 'joystick' ? isJoystickLoggedIn : isTwitchLoggedIn;
 
   useEffect(() => {
+    // Don't auto-show on first run — CoreGreeting handles that now.
+    // This overlay is retained for manual "Reopen Welcome Screen" access.
     if (localStorage.getItem(STORAGE_KEY)) return;
-    setVisible(true);
-
-    const start = Date.now();
-    const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      const remaining = Math.max(0, 10 - elapsed);
-      setCountdown(remaining);
-      const tourRemaining = Math.max(0, 3 - elapsed);
-      setTourCountdown(tourRemaining);
-      if (remaining === 0) clearInterval(interval);
-    }, 100);
-
-    return () => clearInterval(interval);
+    // Mark as seen so it never auto-shows for new users.
+    localStorage.setItem(STORAGE_KEY, "1");
+    return;
   }, []);
 
   // Reopen via Command Palette ("Reopen Welcome Screen"). Countdowns start

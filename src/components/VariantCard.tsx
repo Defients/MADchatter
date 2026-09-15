@@ -166,7 +166,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       {/* Card Header — draggable */}
       <div
         onMouseDown={startCardDrag}
-        className="flex items-center justify-between p-2.5 border-b border-white/5 bg-[#0F0F12] cursor-grab active:cursor-grabbing select-none hover:bg-white/[0.03] transition-colors"
+        className="flex items-center justify-between p-2 border-b border-white/5 bg-[#0F0F12] cursor-grab active:cursor-grabbing select-none hover:bg-white/[0.03] transition-colors"
       >
         <div className="flex items-center gap-2 pointer-events-none">
           <GripVertical className="w-3 h-3 text-gray-600 shrink-0" />
@@ -225,9 +225,9 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       </div>
 
       {/* Card Body */}
-      <div className="flex-1 p-3 flex flex-col justify-center">
+      <div className="flex-1 p-2 flex flex-col justify-center">
         <ThemedTooltip content="Double-click to copy" zIndex={25001}>
-          <div className="bg-[#18181B] border border-white/5 rounded-xl p-3 relative shadow-inner" onDoubleClick={handleDoubleClick}>
+          <div className="bg-[#18181B] border border-white/5 rounded-lg p-2.5 relative shadow-inner" onDoubleClick={handleDoubleClick}>
             <MessageSquare className="absolute -left-2 -top-2 w-4 h-4 text-gray-600 fill-current opacity-10" />
             <p className="text-sm text-gray-200 leading-relaxed font-semibold">
               {variant.message}
@@ -235,7 +235,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           </div>
         </ThemedTooltip>
         {variant.why_it_fits && (
-          <div className="mt-2 p-2 bg-[#0F0F12]/50 rounded-lg border border-white/5 flex gap-1.5 items-start">
+          <div className="mt-1.5 p-1.5 bg-[#0F0F12]/50 rounded-lg border border-white/5 flex gap-1.5 items-start">
             <span className="text-[10px] uppercase font-bold text-orange-400 font-mono leading-none pt-0.5">FIT:</span>
             <p className="text-[10px] text-gray-400 leading-snug font-medium flex-1">
               {variant.why_it_fits}
@@ -245,13 +245,13 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       </div>
 
       {/* Card Actions */}
-      <div className="p-2.5 bg-[#0F0F12] border-t border-white/5 flex gap-2 shrink-0">
+      <div className="p-2 bg-[#0F0F12] border-t border-white/5 flex gap-1.5 shrink-0">
         {/* Copy Button */}
         <ThemedTooltip content="Copy message to clipboard" zIndex={25001}>
           <Button
             variant="outline"
             size="icon"
-            className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
+            className="h-8 w-8 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
             onClick={handleCopy}
           >
             <Copy className="w-4 h-4" />
@@ -266,7 +266,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-9 w-9 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
+                  className="h-8 w-8 shrink-0 bg-white/5 border-white/10 hover:bg-white/10 text-gray-300 rounded-lg"
                 />
               }
             >
@@ -355,7 +355,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
                       onClick={() => handleSendAsBot(bot.id)}
                       disabled={isSending}
                       className={cn(
-                        "flex-1 h-9 min-w-0 rounded-lg font-black text-xs flex items-center justify-center transition-all border",
+                        "flex-1 h-8 min-w-0 rounded-lg font-black text-xs flex items-center justify-center transition-all border",
                         isSending
                           ? "bg-green-600/30 text-green-300 border-green-500/30"
                           : "bg-green-500/15 border-green-500/30 text-green-300 hover:bg-green-500 hover:text-black hover:border-green-400",
@@ -383,7 +383,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           </div>
         ) : (
           <Button
-            className={`flex-1 h-9 font-black tracking-widest text-xs shadow-[0_0_15px_rgba(34,197,94,0.2)] rounded-lg ${isSending ? "bg-green-600 text-white" : "bg-green-500 hover:bg-green-400 text-black"}`}
+            className={`flex-1 h-8 font-black tracking-widest text-xs shadow-[0_0_15px_rgba(34,197,94,0.2)] rounded-lg ${isSending ? "bg-green-600 text-white" : "bg-green-500 hover:bg-green-400 text-black"}`}
             onClick={handleSend}
             disabled={isSending}
           >

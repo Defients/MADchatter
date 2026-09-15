@@ -9,6 +9,8 @@ import {
 import { TheForge } from "./TheForge";
 import { VersionBadge } from "./VersionBadge";
 import { TuningDeck } from "./TuningDeck";
+import { CoreTuningControls, CoreLaunchpad, InterfaceModeToggle } from "./CoreMode";
+import { CoreWorkspace } from "./CoreWorkspace";
 import { FidgetSpinner } from "./FidgetSpinner";
 import { useAppStore } from "../store";
 import { buttonVariants } from "./ui/button";
@@ -54,7 +56,8 @@ import {
   Sparkles,
   Search,
   Clock,
-  Lock,
+  MonitorUp,
+  StopCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
@@ -62,8 +65,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { SENTIMENT_DOT_COLORS } from "../lib/sentiment";
 import type { SentimentLabel } from "../types";
 import { visionRequest } from "../lib/ai";
-import { isQueueTimeout } from "../lib/aiScheduler";
-import { messageQueue } from "../lib/messageQueue";
+import { isQueueTimeout, isSchedulerCancellation } from "../lib/aiScheduler";
+import { switchChannel } from "../lib/channelSwitch";
 import { getActiveProvider } from "../lib/keys";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
@@ -74,8 +77,6 @@ import { createMarker } from "../lib/chatUtils";
 import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
 import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
-import { clearTwitchMessageIdCache } from "../lib/twitchReplyCache";
-import { setThreadChannel } from "../lib/conversationThread";
 import { captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
@@ -220,7 +221,6 @@ export function ForgeLayout() {
     updateConfig,
     isForging,
     variants,
-    setVariants,
     audioTranscript,
     setAudioTranscript,
     appendAudioTranscript,
@@ -232,9 +232,7 @@ export function ForgeLayout() {
     clearPinnedMemories,
     goldenMemoryId,
     setGoldenMemory,
-    clearAllContext,
     saveCurrentChannelSnapshot,
-    restoreChannelSnapshot,
     theme,
     setStreamCaptureActive,
     sentMessages,
@@ -267,6 +265,8 @@ export function ForgeLayout() {
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+  const interfaceMode = useAppStore((s) => s.interfaceMode);
+  const whisperDownloadProgress = useAppStore((s) => s.whisperDownloadProgress);
 
   // Active auth based on platform
   const activeAuth = platform === 'kick' ? kickAuth : platform === 'joystick' ? joystickAuth : { user, loading: authLoading, loginError, loginInProgress, login, logout, loginWithDevToken, clearLoginError };
@@ -319,6 +319,21 @@ export function ForgeLayout() {
   const expandedChatRef = useRef<HTMLDivElement>(null);
   const flyoutChatRef = useRef<HTMLDivElement>(null);
 
+  // Smart anchor (Core mode only, no UI) — keeps chat at bottom,
+  // yields after 2 consecutive user resistances, re-enables when
+  // user scrolls back to bottom. Paused while search is active.
+  const [coreSmartAnchor, setCoreSmartAnchor] = useState(true);
+  const coreResistanceCountRef = useRef(0);
+  const coreProgrammaticScrollRef = useRef(false);
+
+  // Smart anchor for Core audio panel (same behavior as chat, no UI).
+  // Keeps the audio transcript scrolled to bottom, yields after 2
+  // consecutive user resistances, re-enables when user scrolls back
+  // to bottom. No search-pause concept for audio.
+  const [coreAudioSmartAnchor, setCoreAudioSmartAnchor] = useState(true);
+  const coreAudioResistanceCountRef = useRef(0);
+  const coreAudioProgrammaticScrollRef = useRef(false);
+
   // Audio anchor (auto-scroll to bottom) — default on
   const [audioAnchored, setAudioAnchored] = useState(() => {
     return localStorage.getItem("forge-audio-anchored") !== "false";
@@ -354,8 +369,8 @@ export function ForgeLayout() {
   });
   const [visualCaptureInterval, setVisualCaptureInterval] = useState(() => {
     const saved = localStorage.getItem("forge-visual-interval");
-    const parsed = saved ? parseFloat(saved) : 10;
-    return isNaN(parsed) || parsed < 2 || parsed > 120 ? 10 : parsed;
+    const parsed = saved ? parseFloat(saved) : 60;
+    return isNaN(parsed) || parsed < 2 || parsed > 120 ? 60 : parsed;
   });
   const [visualCooldown, setVisualCooldown] = useState(false);
   const visualCooldownRef = useRef<number | null>(null);
@@ -380,23 +395,28 @@ export function ForgeLayout() {
   // so viewport-relative coordinates need an offset to map correctly.
   const captureSurfaceTypeRef = useRef<string>("window");
   // Smart capture — AI dynamically adjusts interval based on scene change rate
-  // Levels: 0=Off, 1=Light, 2=Balanced, 3=Aggressive
+  // Levels: 0=Fixed (60s), 1=Lite (smart)
   const SMART_LEVELS = [
-    { name: 'Off', color: 'gray', highDelta: 0, midDelta: 0, lowDelta: 0, fastMult: 1, midMult: 1, slowMult: 1, minInt: 10, maxInt: 120, desc: 'Smart capture is disabled. Auto-capture uses the fixed interval you set.' },
-    { name: 'Light', color: 'cyan', highDelta: 0.20, midDelta: 0.08, lowDelta: 0.01, fastMult: 0.7, midMult: 0.85, slowMult: 1.3, minInt: 5, maxInt: 90, desc: 'Gentle adjustments. Captures slightly faster during action, slightly slower when idle. Best for steady streams with occasional peaks.' },
-    { name: 'Balanced', color: 'blue', highDelta: 0.15, midDelta: 0.05, lowDelta: 0.01, fastMult: 0.5, midMult: 0.75, slowMult: 1.5, minInt: 3, maxInt: 60, desc: 'Moderate responsiveness. Halves interval during high activity, 1.5× slower when static. Good default for most streams.' },
-    { name: 'Aggressive', color: 'violet', highDelta: 0.08, midDelta: 0.03, lowDelta: 0.005, fastMult: 0.35, midMult: 0.6, slowMult: 2.0, minInt: 2, maxInt: 45, desc: 'Maximum reactivity. Captures every 2s during action, slows to 45s when nothing moves. Best for fast-paced games with frequent scene changes.' },
+    { name: 'Fixed', color: 'gray', highDelta: 0, midDelta: 0, lowDelta: 0, fastMult: 1, midMult: 1, slowMult: 1, minInt: 60, maxInt: 60, desc: 'Snapshots are captured every 60 seconds. Simple and predictable.' },
+    { name: 'Lite', color: 'cyan', highDelta: 0.20, midDelta: 0.08, lowDelta: 0.01, fastMult: 0.7, midMult: 0.85, slowMult: 1.3, minInt: 5, maxInt: 90, desc: 'Smart timing. Captures slightly faster during action, slower when idle. The Forge decides when the scene is worth a snapshot.' },
   ] as const;
   const [smartLevel, setSmartLevel] = useState(() => {
     const saved = localStorage.getItem("forge-visual-smart");
     const parsed = saved ? parseInt(saved) : 0;
-    return isNaN(parsed) || parsed < 0 || parsed > 3 ? 0 : parsed;
+    return isNaN(parsed) || parsed < 0 || parsed > 1 ? 0 : parsed;
   });
   const smartCapture = smartLevel > 0;
   useEffect(() => {
     localStorage.setItem("forge-visual-smart", smartLevel.toString());
   }, [smartLevel]);
-  const cycleSmartLevel = () => setSmartLevel((prev) => (prev + 1) % 4);
+  const cycleSmartLevel = () => setSmartLevel((prev) => (prev + 1) % 2);
+
+  // When switching to Fixed mode, reset interval to 60s
+  useEffect(() => {
+    if (!smartCapture && visualCaptureInterval !== 60) {
+      setVisualCaptureInterval(60);
+    }
+  }, [smartCapture]);
 
   // When Smart mode is activated, auto-enable auto-capture
   useEffect(() => {
@@ -492,6 +512,109 @@ export function ForgeLayout() {
     }
   }, [chatLog, chatAnchored, leftCollapsed]);
 
+  // ─── Core Mode: Smart Anchor ────────────────────────────────────────
+  // Keeps Core chat scrolled to bottom. Pauses during search. Yields
+  // after 2 consecutive user resistances (scrolling up). Re-enables when
+  // the user scrolls back to bottom. No GUI.
+  useEffect(() => {
+    if (interfaceMode !== "core") return;
+    if (!coreSmartAnchor) return;
+    if (chatSearchQuery) return; // paused during search
+    const el = document.querySelector('[data-core-chat-scroll]') as HTMLElement | null;
+    if (!el) return;
+    coreProgrammaticScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => { coreProgrammaticScrollRef.current = false; });
+  }, [chatLog, coreSmartAnchor, chatSearchQuery, interfaceMode]);
+
+  useEffect(() => {
+    if (interfaceMode !== "core") return;
+    const el = document.querySelector('[data-core-chat-scroll]') as HTMLElement | null;
+    if (!el) return;
+
+    const BOTTOM_THRESHOLD = 40; // px from bottom counts as "at bottom"
+
+    const onScroll = () => {
+      if (coreProgrammaticScrollRef.current) return; // ignore our own scrolls
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - BOTTOM_THRESHOLD;
+
+      if (atBottom) {
+        // User returned to bottom — re-enable smart anchor, reset resistance
+        coreResistanceCountRef.current = 0;
+        if (!coreSmartAnchor) setCoreSmartAnchor(true);
+        return;
+      }
+
+      // User scrolled up
+      if (chatSearchQuery) return; // search active — don't resist
+      if (!coreSmartAnchor) return; // already yielded — let them browse
+
+      coreResistanceCountRef.current += 1;
+      if (coreResistanceCountRef.current >= 2) {
+        // Two resistances — yield
+        setCoreSmartAnchor(false);
+      } else {
+        // Pull back to bottom (first resistance)
+        coreProgrammaticScrollRef.current = true;
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => { coreProgrammaticScrollRef.current = false; });
+      }
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [interfaceMode, coreSmartAnchor, chatSearchQuery]);
+
+  // ─── Core Mode: Audio Smart Anchor ───────────────────────────────────
+  // Mirrors the chat smart anchor for the Audio transcript panel.
+  // Keeps audio scrolled to bottom, yields after 2 consecutive user
+  // resistances, re-enables when user scrolls back to bottom. No GUI.
+  useEffect(() => {
+    if (interfaceMode !== "core") return;
+    if (!coreAudioSmartAnchor) return;
+    const el = document.querySelector('[data-core-audio-scroll]') as HTMLElement | null;
+    if (!el) return;
+    coreAudioProgrammaticScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => { coreAudioProgrammaticScrollRef.current = false; });
+  }, [audioTranscript, coreAudioSmartAnchor, interfaceMode]);
+
+  useEffect(() => {
+    if (interfaceMode !== "core") return;
+    const el = document.querySelector('[data-core-audio-scroll]') as HTMLElement | null;
+    if (!el) return;
+
+    const BOTTOM_THRESHOLD = 40; // px from bottom counts as "at bottom"
+
+    const onScroll = () => {
+      if (coreAudioProgrammaticScrollRef.current) return; // ignore our own scrolls
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - BOTTOM_THRESHOLD;
+
+      if (atBottom) {
+        // User returned to bottom — re-enable smart anchor, reset resistance
+        coreAudioResistanceCountRef.current = 0;
+        if (!coreAudioSmartAnchor) setCoreAudioSmartAnchor(true);
+        return;
+      }
+
+      // User scrolled up
+      if (!coreAudioSmartAnchor) return; // already yielded — let them browse
+
+      coreAudioResistanceCountRef.current += 1;
+      if (coreAudioResistanceCountRef.current >= 2) {
+        // Two resistances — yield
+        setCoreAudioSmartAnchor(false);
+      } else {
+        // Pull back to bottom (first resistance)
+        coreAudioProgrammaticScrollRef.current = true;
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => { coreAudioProgrammaticScrollRef.current = false; });
+      }
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [interfaceMode, coreAudioSmartAnchor]);
 
   const panelDragActiveRef = useRef(false);
   const lastLeftResizeRef = useRef<number | null>(null);
@@ -509,6 +632,14 @@ export function ForgeLayout() {
   useEffect(() => {
     setStreamCaptureActive(windowSelected);
   }, [windowSelected, setStreamCaptureActive]);
+
+  // ─── Core Mode: chat visibility ─────────────────────────────────────
+  // In Core Mode (desktop), Chat Pulse is rendered inline by CoreWorkspace's
+  // CoreChatPulse component — it does NOT use the floating widget system.
+  // The auto-open-chat effect that previously added "chat" to openWidgets in
+  // Core Mode is removed because it caused a duplicate chat window (inline +
+  // floating). If the user explicitly opens chat as a floating widget from the
+  // dock, that still works — but by default chat is inline-only in Core.
 
   useEffect(() => {
     const streamOpen = openWidgets.has("stream");
@@ -816,13 +947,7 @@ export function ForgeLayout() {
       setEditingChannel(false);
       return;
     }
-    const currentName = streamMetadata?.channelName || "";
-    if (trimmed.toLowerCase() === currentName.toLowerCase()) {
-      // Same channel (case-insensitive) — nothing to do
-      setEditingChannel(false);
-      return;
-    }
-    // Non-destructive channel switch:
+    // Non-destructive channel switch (shared with Core mode via switchChannel):
     // 1) Save current channel's session (LTM, memory, AutoForge report,
     //    analytics, per-bot runtime) to channelStore
     // 2) Wipe all session-scoped state so nothing residual leaks into the
@@ -832,23 +957,14 @@ export function ForgeLayout() {
     // No warning popup — switching is no longer destructive.
     isSwitchingRef.current = true;
     try {
-      if (currentName) {
-        await saveCurrentChannelSnapshot();
+      const switched = await switchChannel(trimmed);
+      if (switched) {
+        toast.success(`Switched to @${trimmed}`);
       }
-      clearAllContext();
-      clearTwitchMessageIdCache();
-      setThreadChannel(trimmed.toLowerCase());
-      setVariants([]);
-      // Queued retries carry the old channel name — sending one would
-      // reconnect the client back to the previous streamer.
-      messageQueue.clear();
-      updateStreamMetadata({ channelName: trimmed });
-      await restoreChannelSnapshot(trimmed.toLowerCase());
     } finally {
       isSwitchingRef.current = false;
     }
     setEditingChannel(false);
-    toast.success(`Switched to @${trimmed}`);
   };
 
   // Collapsed panel width tracking for icon scaling
@@ -945,6 +1061,42 @@ export function ForgeLayout() {
           }));
         }
       }
+      return next;
+    });
+  };
+
+  // Open a widget from the Core Mode utility dock. Positions the floating
+  // widget above the dock icon (or center of screen if no anchor).
+  const openWidgetFromDock = (w: WidgetType, anchorEl?: HTMLElement | null) => {
+    setOpenWidgets((prev) => {
+      const next = new Set(prev);
+      if (next.has(w)) return next; // already open
+      next.add(w);
+      if (w === "chat") setChatUnreadCount(0);
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const def = widgetDefaultSizes[w];
+      const isStream = w === "stream";
+      const streamChatBoost = isStream && streamChatActive ? (platform === 'kick' || platform === 'joystick' ? 44 : 138) : 0;
+      const streamW = streamOverlaySize.w;
+      const streamH = streamOverlaySize.h + 40 + streamChatBoost;
+      const clampW = isStream ? streamW : def.w;
+      const clampH = isStream ? streamH : def.h;
+      let baseLeft: number, baseTop: number;
+      if (anchorEl) {
+        const rect = anchorEl.getBoundingClientRect();
+        baseLeft = rect.left + rect.width / 2 - clampW / 2;
+        baseTop = rect.top - clampH - 8;
+      } else {
+        baseLeft = (vw - clampW) / 2;
+        baseTop = (vh - clampH) / 2;
+      }
+      const clampedLeft = Math.min(baseLeft, vw - clampW - 16);
+      const clampedTop = Math.min(baseTop, vh - clampH - 16);
+      setWidgetPositions((p) => ({
+        ...p,
+        [w]: { top: Math.max(8, clampedTop), left: Math.max(8, clampedLeft) },
+      }));
       return next;
     });
   };
@@ -1386,6 +1538,8 @@ export function ForgeLayout() {
         }
       } else if (audioTracks.length > 0 && isMicCapturing) {
         toast.success("Capture started — video added (mic transcription already active)...");
+      } else if (surfaceType === "window") {
+        toast.warning("Capture started — no audio detected. If you used Window capture, toggle on \"Share system audio\" and re-capture to enable audio transcription.", { duration: 8000 });
       } else {
         toast.success("Capture started — video only (no audio track shared)...");
       }
@@ -1712,10 +1866,11 @@ export function ForgeLayout() {
         }
       } catch (visionErr: any) {
         const vErrMsg = visionErr?.message || String(visionErr);
-        // Queue timeout = Ollama slot was busy (e.g. a manual Forge was running).
-        // Not a real failure — don't toast, just log and mark the snapshot.
-        if (isQueueTimeout(visionErr)) {
-          console.log("[Visual] Vision queued out (Ollama slot busy) — skipping analysis");
+        // Queue timeout or scheduler preemption = the Ollama slot was needed
+        // by higher-priority work (e.g. a manual Forge). Not a real failure —
+        // don't toast, just log and mark the snapshot.
+        if (isQueueTimeout(visionErr) || isSchedulerCancellation(visionErr)) {
+          console.log("[Visual] Vision skipped (Ollama slot busy/preempted) — no toast");
           setVisualSnapshot(dataUrl, ["Captured — vision skipped (slot busy)"], isManual ? "manual" : "auto", delta);
         } else if (!vErrMsg.includes('No API key configured')) {
           console.error("[Visual] Vision API error:", visionErr);
@@ -1772,11 +1927,24 @@ export function ForgeLayout() {
             </div>
           )}
           {!isMobile && whisperDownloading && (
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
-              <AudioLines className="w-4 h-4 text-purple-400 shrink-0 animate-pulse" />
-              <span className="text-[11px] text-purple-200">
-                Downloading Whisper model<span className="whisper-dots"><span>.</span><span>.</span><span>.</span></span>
-              </span>
+            <div className="flex flex-col gap-2 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+              <div className="flex items-center gap-2">
+                <AudioLines className="w-4 h-4 text-purple-400 shrink-0 animate-pulse" />
+                <span className="text-[11px] text-purple-200">
+                  Downloading Whisper model<span className="whisper-dots"><span>.</span><span>.</span><span>.</span></span>
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-white/5 border border-purple-500/20 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-purple-500 to-purple-400 transition-all duration-300"
+                  style={{ width: `${whisperDownloadProgress ?? 0}%` }}
+                />
+              </div>
+              {whisperDownloadProgress !== null && (
+                <span className="text-[10px] text-purple-300/70 font-mono text-right">
+                  {whisperDownloadProgress}% · ~150MB (cached after first use)
+                </span>
+              )}
             </div>
           )}
           {!isMobile && audioTranscript ? (
@@ -1893,7 +2061,10 @@ export function ForgeLayout() {
               )}
             </div>
           )}
-          <div className="text-xs text-gray-300 space-y-1 font-mono flex-1 overflow-y-auto overflow-x-hidden forge-scroll">
+          <div
+            className="text-xs text-gray-300 space-y-1 font-mono flex-1 overflow-y-auto overflow-x-hidden forge-scroll"
+            {...interfaceMode === "core" ? { "data-core-chat-scroll": true } : {}}
+          >
           {/* B5: Bot Typing Indicator */}
           <AnimatePresence>
             {isAutoForgeThinking && (
@@ -1996,11 +2167,18 @@ export function ForgeLayout() {
             })}
             </>
           ) : (
-            <div className="flex flex-col items-center justify-center py-10 gap-2">
-              <MessageSquare className="w-8 h-8 text-teal-500/30" />
-              <span className="text-[11px] text-gray-600 italic text-center">
-                {chatSearchQuery ? "No messages match your search." : <>Waiting for stream chat...<br />Connect via {platform === 'kick' ? 'Kick' : platform === 'joystick' ? 'Joystick' : 'Twitch'} to see messages.</>}
-              </span>
+            <div className="flex flex-col items-center justify-center py-10 gap-3 px-4">
+              <MessageSquare className="w-10 h-10 text-teal-500/30" />
+              <div className="text-center space-y-1">
+                <span className="text-xs text-gray-400 font-medium block">
+                  {chatSearchQuery ? "No messages match your search." : "Messages from your selected channel will appear here."}
+                </span>
+                {!chatSearchQuery && (
+                  <span className="text-[11px] text-gray-600 italic block">
+                    Connect via {platform === 'kick' ? 'Kick' : platform === 'joystick' ? 'Joystick' : 'Twitch'} and pick a channel to start watching.
+                  </span>
+                )}
+              </div>
             </div>
           )}
           </div>
@@ -2176,7 +2354,28 @@ export function ForgeLayout() {
 
   return (
     <TooltipProvider>
-      {isMobile ? (
+      {interfaceMode === "core" && !isMobile ? (
+        /* ═══ Core Mode — centered, panel-free workspace ═══ */
+        <CoreWorkspace
+          renderWidgetContent={renderWidgetContent}
+          openWidgetFromDock={openWidgetFromDock}
+          toggleWidget={toggleWidget}
+          openWidgets={openWidgets}
+          activeUser={activeUser}
+          activeAuthLoading={activeAuthLoading}
+          activeLoginError={activeLoginError}
+          activeLoginInProgress={activeLoginInProgress}
+          activeLogin={activeLogin}
+          activeLogout={activeLogout}
+          activeClearLoginError={activeClearLoginError}
+          onVisualCapture={handleVoiceCapture}
+          onManualSnapshot={handleManualCapture}
+          isVisualCapturing={windowSelected}
+          visualCooldown={visualCooldown}
+          smartLevel={smartLevel}
+          onCycleSmartLevel={cycleSmartLevel}
+        />
+      ) : isMobile ? (
         /* ═══ Mobile Layout — tabbed, bottom bar, single panel at a time ═══ */
         <div className="flex flex-col h-full w-full bg-transparent relative z-10 overflow-hidden">
           {/* Compact Header — logo + login only */}
@@ -2224,7 +2423,7 @@ export function ForgeLayout() {
             )}
             {mobileTab === "tuning" && (
               <div className="mobile-panel">
-                <TuningDeck rightSize={22} />
+                {interfaceMode === "core" ? <CoreTuningControls /> : <TuningDeck rightSize={22} />}
               </div>
             )}
             {mobileTab === "context" && (
@@ -2611,14 +2810,12 @@ export function ForgeLayout() {
                                       onClick={cycleSmartLevel}
                                       className={cn(
                                         "h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:outline-none",
-                                        smartLevel === 0 && "text-gray-600 hover:text-gray-400 hover:bg-white/5",
-                                        smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25 focus-visible:ring-cyan-500/40",
-                                        smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25 focus-visible:ring-blue-500/40",
-                                        smartLevel === 3 && "text-violet-400 bg-violet-500/15 hover:bg-violet-500/25 focus-visible:ring-violet-500/40"
+                                        smartLevel === 0 && "text-gray-400 bg-white/5 hover:bg-white/10",
+                                        smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25 focus-visible:ring-cyan-500/40"
                                       )}
                                     >
                                       <Sparkles className="w-3 h-3" />
-                                      {smartLevel > 0 && SMART_LEVELS[smartLevel].name.toUpperCase()}
+                                      {smartLevel === 0 ? "60s" : "LITE"}
                                     </button>
                                   } />
                                   <TooltipContent
@@ -2629,16 +2826,16 @@ export function ForgeLayout() {
                                   >
                                     <div className="p-3 space-y-2">
                                       <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
-                                        <Sparkles className={cn("w-3 h-3", smartLevel === 1 && "text-cyan-400", smartLevel === 2 && "text-blue-400", smartLevel === 3 && "text-violet-400", smartLevel === 0 && "text-gray-500")} />
-                                        <span className={cn("text-[11px] font-bold uppercase font-mono tracking-wider", smartLevel === 1 && "text-cyan-300", smartLevel === 2 && "text-blue-300", smartLevel === 3 && "text-violet-300", smartLevel === 0 && "text-gray-400")}>
-                                          Smart Capture — {SMART_LEVELS[smartLevel].name}
+                                        <Sparkles className={cn("w-3 h-3", smartLevel === 1 ? "text-cyan-400" : "text-gray-500")} />
+                                        <span className={cn("text-[11px] font-bold uppercase font-mono tracking-wider", smartLevel === 1 ? "text-cyan-300" : "text-gray-400")}>
+                                          {smartLevel === 1 ? "Lite — Smart Capture" : "Fixed — 60s"}
                                         </span>
                                       </div>
                                       <p className="text-[11px] leading-relaxed text-gray-300">{SMART_LEVELS[smartLevel].desc}</p>
                                       <div className="flex items-center justify-between text-[10px] text-gray-500">
-                                        <span>Click to cycle: Off → Light → Balanced → Aggressive</span>
+                                        <span>Click to switch: Fixed ↔ Lite</span>
                                       </div>
-                                      {smartLevel > 0 && (
+                                      {smartLevel === 1 && (
                                         <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
                                           <span className="font-mono">
                                             Range: {SMART_LEVELS[smartLevel].minInt}s–{SMART_LEVELS[smartLevel].maxInt}s
@@ -2657,14 +2854,11 @@ export function ForgeLayout() {
                                     <button
                                       type="button"
                                       onClick={() => setVisualAutoCapture(!visualAutoCapture)}
-                                      disabled={smartCapture}
                                       className={cn(
                                         "h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:ring-orange-500/40 focus-visible:outline-none",
-                                        smartCapture
-                                          ? "text-gray-700 bg-white/5 cursor-not-allowed opacity-50"
-                                          : visualAutoCapture
-                                            ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
-                                            : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
+                                        visualAutoCapture
+                                          ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
+                                          : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
                                       )}
                                       aria-label={visualAutoCapture ? "Disable auto-capture" : "Enable auto-capture"}
                                     >
@@ -2680,60 +2874,36 @@ export function ForgeLayout() {
                                   >
                                     <div className="p-3 space-y-2">
                                       <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
-                                        {smartCapture ? (
-                                          <Lock className="w-3 h-3 text-gray-500" />
-                                        ) : visualAutoCapture ? (
+                                        {visualAutoCapture ? (
                                           <Zap className="w-3 h-3 text-orange-400" />
                                         ) : (
                                           <CirclePause className="w-3 h-3 text-gray-500" />
                                         )}
                                         <span className={cn(
                                           "text-[11px] font-bold uppercase font-mono tracking-wider",
-                                          smartCapture ? "text-gray-400" : visualAutoCapture ? "text-orange-300" : "text-gray-400"
+                                          visualAutoCapture ? "text-orange-300" : "text-gray-400"
                                         )}>
-                                          {smartCapture ? "Auto-Capture — Locked" : visualAutoCapture ? "Auto-Capture — Active" : "Auto-Capture — Off"}
+                                          {visualAutoCapture ? "Auto-Capture — Active" : "Auto-Capture — Off"}
                                         </span>
                                       </div>
-                                      {smartCapture ? (
-                                        <p className="text-[11px] leading-relaxed text-gray-400">
-                                          Smart mode is managing capture timing. Disable Smart mode to manually control auto-capture.
-                                        </p>
-                                      ) : visualAutoCapture ? (
+                                      {visualAutoCapture ? (
                                         <p className="text-[11px] leading-relaxed text-gray-300">
-                                          Snapshots are captured automatically every <span className="font-mono text-orange-300">{visualCaptureInterval}s</span>. The Forge uses these to understand what's happening on screen.
+                                          {smartCapture
+                                            ? <>Lite mode is managing capture timing — snapshots are taken when the scene changes meaningfully.</>
+                                            : <>Snapshots are captured automatically every <span className="font-mono text-orange-300">60s</span>. The Forge uses these to understand what's happening on screen.</>
+                                          }
                                         </p>
                                       ) : (
                                         <p className="text-[11px] leading-relaxed text-gray-300">
-                                          Click to start capturing visual snapshots automatically at a fixed interval. You can adjust the interval (2–120s) in the field next to this button.
+                                          Click to start capturing visual snapshots automatically. Use the mode button to switch between Fixed (60s) and Lite (smart timing).
                                         </p>
                                       )}
-                                      {!smartCapture && (
-                                        <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
-                                          <span>Click to {visualAutoCapture ? "disable" : "enable"}</span>
-                                          <span className="text-gray-600">·</span>
-                                          <span className="font-mono">Interval: {visualAutoCapture ? `${visualCaptureInterval}s` : "—"}</span>
-                                        </div>
-                                      )}
+                                      <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
+                                        <span>Click to {visualAutoCapture ? "disable" : "enable"}</span>
+                                      </div>
                                     </div>
                                   </TooltipContent>
                                 </Tooltip>
-                                <div className="flex items-center gap-1">
-                                  <ThemedTooltip content={smartCapture ? "Interval managed by Smart mode" : "Auto-capture interval (2-120 seconds)"}>
-                                    <input
-                                      type="number"
-                                      min={2}
-                                      max={120}
-                                      value={visualCaptureInterval}
-                                      disabled={!visualAutoCapture || smartCapture}
-                                      onChange={(e) => {
-                                        const v = parseInt(e.target.value);
-                                        if (!isNaN(v)) setVisualCaptureInterval(Math.max(2, Math.min(120, v)));
-                                      }}
-                                      className={`w-12 h-6 bg-black/40 border border-white/10 rounded-md text-[10px] font-bold text-center outline-none transition-colors ${visualAutoCapture && !smartCapture ? "text-gray-400 focus:border-orange-500/50" : "text-gray-600 cursor-not-allowed opacity-50"}`}
-                                    />
-                                  </ThemedTooltip>
-                                  <span className="text-[9px] text-gray-500 font-bold">s</span>
-                                </div>
                               </div>
                             )}
                             {widget === "memory" && (
@@ -3035,6 +3205,9 @@ export function ForgeLayout() {
                     </ThemedTooltip>
                   </div>
 
+                  {/* Interface Mode toggle (Core/Studio) */}
+                  <InterfaceModeToggle />
+
                   {/* Multi-Bot launcher + panel */}
                   <div className="relative shrink-0" data-tutorial="multibot-button">
                     <MultiBotButton active={multiBotPanelOpen} onClick={() => setMultiBotPanelOpen((v) => !v)} />
@@ -3331,17 +3504,34 @@ export function ForgeLayout() {
               className="bg-[#121217] border-l border-white/5 z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]"
             >
               <div className="flex flex-col h-full">
-                {/* TuningDeck fills the panel */}
-                <div className="flex-1 overflow-hidden">
-                  <TuningDeck rightSize={rightSize} />
-                </div>
+                {/* Core Mode shows a compact launchpad + minimal controls.
+                    Studio Mode shows the full TuningDeck. */}
+                {interfaceMode === "core" ? (
+                  <div className="flex flex-col h-full">
+                    <CoreLaunchpad />
+                    <div className="flex-1 overflow-hidden">
+                      <CoreTuningControls />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 overflow-hidden">
+                    <TuningDeck rightSize={rightSize} />
+                  </div>
+                )}
               </div>
             </ResizablePanel>
         </ResizablePanelGroup>
       </div>
+      </>
+      )}
 
-      {/* Draggable Mini-Widgets — each rendered via portal so they float over everything */}
-      {leftCollapsed && Array.from(new Set([...openWidgets, ...closingWidgets])).map((widget: WidgetType) => {
+      {/* Draggable Mini-Widgets — each rendered via portal so they float over everything.
+          In Core Mode, the floating widget system is always active (no left rail).
+          In Studio Mode, it's active only when the left rail is collapsed.
+          Rendered outside the isMobile/Core conditional so they work in both modes.
+          In Core Mode (desktop), chat is rendered inline by CoreChatPulse, so
+          we skip rendering it as a floating widget to avoid duplicates. */}
+      {!isMobile && (leftCollapsed || interfaceMode === "core") && Array.from(new Set([...openWidgets, ...closingWidgets])).filter((widget: WidgetType) => !(interfaceMode === "core" && widget === "chat")).map((widget: WidgetType) => {
         const pos = widgetPositions[widget] || { top: 100, left: 100 };
         const isDragging = draggingWidget === widget;
         const isClosing = closingWidgets.has(widget);
@@ -3417,55 +3607,64 @@ export function ForgeLayout() {
                 )}
                 {widget === "visual" && (
                   <>
-                    <ThemedTooltip content={`Smart: ${SMART_LEVELS[smartLevel].name} — click to cycle`}>
+                    <ThemedTooltip content={windowSelected ? "Stop screen capture" : "Start screen capture — share a window or tab"}>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleVoiceCapture(); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        className={cn(
+                          "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
+                          windowSelected
+                            ? "text-red-400 bg-red-500/15 hover:bg-red-500/25"
+                            : "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25",
+                        )}
+                        aria-label={windowSelected ? "Stop visual capture" : "Start visual capture"}
+                      >
+                        {windowSelected ? <StopCircle className="w-2.5 h-2.5" /> : <MonitorUp className="w-2.5 h-2.5" />}
+                      </button>
+                    </ThemedTooltip>
+                    {windowSelected && (
+                      <ThemedTooltip content={visualCooldown ? "Cooldown active…" : "Snapshot now"}>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleManualCapture(); }}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          disabled={visualCooldown}
+                          className="h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all disabled:opacity-50 text-blue-400 bg-blue-500/15 hover:bg-blue-500/25"
+                          aria-label="Take snapshot now"
+                        >
+                          <Camera className="w-2.5 h-2.5" />
+                        </button>
+                      </ThemedTooltip>
+                    )}
+                    <ThemedTooltip content={`${SMART_LEVELS[smartLevel].name} mode — click to switch`}>
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); cycleSmartLevel(); }}
                         onMouseDown={(e) => e.stopPropagation()}
                         className={cn(
                           "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
-                          smartLevel === 0 && "text-gray-600 hover:text-gray-400 hover:bg-white/5",
-                          smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25",
-                          smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25",
-                          smartLevel === 3 && "text-violet-400 bg-violet-500/15 hover:bg-violet-500/25"
+                          smartLevel === 0 && "text-gray-400 bg-white/5 hover:bg-white/10",
+                          smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25"
                         )}
                       >
                         <Sparkles className="w-2.5 h-2.5" />
                       </button>
                     </ThemedTooltip>
-                    <ThemedTooltip content={smartCapture ? "Managed by Smart mode" : visualAutoCapture ? "Auto-capture ON (click to disable)" : "Auto-capture OFF (click to enable)"}>
+                    <ThemedTooltip content={visualAutoCapture ? "Auto-capture ON (click to disable)" : "Auto-capture OFF (click to enable)"}>
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setVisualAutoCapture(!visualAutoCapture); }}
                         onMouseDown={(e) => e.stopPropagation()}
-                        disabled={smartCapture}
                         className={cn(
                           "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
-                          smartCapture
-                            ? "text-gray-700 bg-white/5 cursor-not-allowed opacity-50"
-                            : visualAutoCapture
-                              ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
-                              : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
+                          visualAutoCapture
+                            ? "text-orange-400 bg-orange-500/15 hover:bg-orange-500/25"
+                            : "text-gray-600 hover:text-gray-400 hover:bg-white/5"
                         )}
                       >
                         {visualAutoCapture ? <Zap className="w-2.5 h-2.5" /> : <CirclePause className="w-2.5 h-2.5" />}
                       </button>
-                    </ThemedTooltip>
-                    <ThemedTooltip content={smartCapture ? "Interval managed by Smart mode" : "Auto-capture interval (2-120s)"}>
-                      <input
-                        type="number"
-                        min={2}
-                        max={120}
-                        value={visualCaptureInterval}
-                        disabled={!visualAutoCapture || smartCapture}
-                        onClick={(e) => e.stopPropagation()}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onChange={(e) => {
-                          const v = parseInt(e.target.value);
-                          if (!isNaN(v)) setVisualCaptureInterval(Math.max(2, Math.min(120, v)));
-                        }}
-                        className={`w-10 h-5 bg-black/40 border border-white/10 rounded text-[9px] font-bold text-center outline-none transition-colors ${visualAutoCapture && !smartCapture ? "text-gray-400 focus:border-orange-500/50" : "text-gray-600 cursor-not-allowed opacity-50"}`}
-                      />
                     </ThemedTooltip>
                   </>
                 )}
@@ -3568,8 +3767,6 @@ export function ForgeLayout() {
           document.body
         );
       })}
-      </>
-      )}
       {/* First Message Mode: confetti-on-completion + stream-change reset.
           Non-visual (returns null); mounted here so it lives inside the app. */}
       <FirstMessageWatcher />

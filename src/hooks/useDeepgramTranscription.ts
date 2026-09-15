@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { transcribeChunk, tryLoadWhisper, preloadWhisper, looksLikeLyrics } from '../lib/whisper';
+import { transcribeChunk, tryLoadWhisper, preloadWhisper, looksLikeLyrics, setWhisperProgressCallback } from '../lib/whisper';
+import { useAppStore } from '../store';
 
 export function useDeepgramTranscription() {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -8,6 +9,9 @@ export function useDeepgramTranscription() {
   const [voiceMode, setVoiceMode] = useState<'deepgram' | 'whisper' | null>(null);
   const [whisperPrompt, setWhisperPrompt] = useState(false);
   const [whisperDownloading, setWhisperDownloading] = useState(false);
+
+  const setVoiceCapturing = useAppStore((s) => s.setVoiceCapturing);
+  const setWhisperDownloadProgress = useAppStore((s) => s.setWhisperDownloadProgress);
 
   const audioStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -51,7 +55,9 @@ export function useDeepgramTranscription() {
     setVoiceMode(null);
     setWhisperPrompt(false);
     setWhisperDownloading(false);
-  }, []);
+    setVoiceCapturing(false);
+    setWhisperDownloadProgress(null);
+  }, [setVoiceCapturing, setWhisperDownloadProgress]);
 
   const startDeepgram = useCallback(async (apiKey: string, source: 'system' | 'microphone', onTranscriptUpdate: (segment: string) => void) => {
     setIsConnecting(true);
@@ -115,6 +121,7 @@ export function useDeepgramTranscription() {
       startTimeRef.current = Date.now();
       voiceEnabledRef.current = true;
       setVoiceEnabled(true);
+      setVoiceCapturing(true);
       setIsConnecting(false);
       
       try {
@@ -271,6 +278,7 @@ export function useDeepgramTranscription() {
       startTimeRef.current = Date.now();
       voiceEnabledRef.current = true;
       setVoiceEnabled(true);
+      setVoiceCapturing(true);
       setVoiceMode('whisper');
       setIsConnecting(false);
       setWhisperDownloading(false);
@@ -289,7 +297,7 @@ export function useDeepgramTranscription() {
       }
       stopDeepgram();
     }
-  }, [stopDeepgram, startWhisperCycle]);
+  }, [stopDeepgram, startWhisperCycle, setVoiceCapturing]);
 
   const startWhisper = useCallback(async (source: 'system' | 'microphone', onTranscriptUpdate: (segment: string) => void) => {
     setIsConnecting(true);
@@ -317,6 +325,7 @@ export function useDeepgramTranscription() {
     startTimeRef.current = Date.now();
     voiceEnabledRef.current = true;
     setVoiceEnabled(true);
+    setVoiceCapturing(true);
     setVoiceMode('whisper');
     setIsConnecting(false);
     setWhisperDownloading(false);
@@ -327,7 +336,7 @@ export function useDeepgramTranscription() {
         mediaRecorderRef.current.stop();
       }
     }, 6000);
-  }, [startWhisperCycle]);
+  }, [startWhisperCycle, setVoiceCapturing]);
 
   const confirmWhisperDownload = useCallback(async () => {
     const pending = whisperPendingRef.current;
@@ -336,18 +345,28 @@ export function useDeepgramTranscription() {
     setWhisperPrompt(false);
     setWhisperDownloading(true);
     setIsConnecting(true);
+    setWhisperDownloadProgress(0);
+    // Wire the Whisper download progress callback to the store so the
+    // onboarding step UI can show a progress bar.
+    setWhisperProgressCallback((info) => {
+      setWhisperDownloadProgress(info.progress);
+    });
     try {
       await preloadWhisper();
+      setWhisperDownloadProgress(null);
+      setWhisperProgressCallback(null);
       if (embedPending) {
         await beginEmbedWhisperRecording(embedPending.stream);
       } else if (pending) {
         await beginWhisperRecording(pending.source);
       }
     } catch (err: any) {
+      setWhisperDownloadProgress(null);
+      setWhisperProgressCallback(null);
       setError(err.message || 'Failed to download Whisper model');
       stopDeepgram();
     }
-  }, [stopDeepgram, beginWhisperRecording, beginEmbedWhisperRecording]);
+  }, [stopDeepgram, beginWhisperRecording, beginEmbedWhisperRecording, setWhisperDownloadProgress]);
 
   const cancelWhisperDownload = useCallback(() => {
     whisperPendingRef.current = null;
@@ -357,7 +376,9 @@ export function useDeepgramTranscription() {
     setIsConnecting(false);
     setVoiceEnabled(false);
     setVoiceMode(null);
-  }, []);
+    setWhisperDownloadProgress(null);
+    setWhisperProgressCallback(null);
+  }, [setWhisperDownloadProgress]);
 
   const startEmbedWhisper = useCallback(async (stream: MediaStream, onTranscriptUpdate: (segment: string) => void): Promise<boolean> => {
     setIsConnecting(true);

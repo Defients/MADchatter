@@ -332,16 +332,15 @@ export function TutorialWalkthrough() {
   }, [setTutorialActive, setTutorialStep, cleanupTutorialData]);
 
   useEffect(() => {
+    // The monolithic 22-step tutorial no longer auto-starts for new users.
+    // Core Mode's Interactive Launchpad replaces it as the onboarding surface.
+    // The tutorial is retained for manual "Start Tutorial Walkthrough" access
+    // via the command palette — it remains a useful feature reference.
     if (localStorage.getItem(TUTORIAL_STORAGE_KEY)) return;
-    if (localStorage.getItem("madchatter-welcome-seen")) {
-      const timer = setTimeout(() => {
-        if (!useAppStore.getState().tutorialActive) {
-          startTutorial();
-        }
-      }, 1200);
-      return () => clearTimeout(timer);
-    }
-  }, [startTutorial]);
+    // Mark as seen so it never auto-starts for new users.
+    localStorage.setItem(TUTORIAL_STORAGE_KEY, "1");
+    return;
+  }, []);
 
   useEffect(() => {
     const onStart = () => startTutorial();

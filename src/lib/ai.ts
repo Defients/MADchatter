@@ -29,6 +29,7 @@ import {
 import {
   aiScheduler,
   buildProviderRequestOptions,
+  createOllamaFetch,
   getOperationTokenBudget,
   getOperationTimeout,
   isSchedulerCancellation,
@@ -443,7 +444,12 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     }
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
-    const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
+    const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
     const content: any[] = [{ type: "text", text: userMessageContent }];
     if (params.screenshot) {
       content.push({ type: "image_url", image_url: { url: params.screenshot } });
@@ -704,7 +710,12 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
     return { text: response.text || "", tokenUsage: usage };
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
-    const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
+    const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
       (signal) => ai.chat.completions.create({
@@ -832,7 +843,12 @@ Custom Instruction: ${params.customInstruction || "None"}
     }
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
-    const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
+    const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
       (signal) => ai.chat.completions.create({
@@ -1026,7 +1042,12 @@ Write it like a friend catching you up — casual but informative. Don't just li
     return { text: response.text || "Unable to generate briefing.", tokenUsage: usage };
   } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
-    const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
+    const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
       (signal) => ai.chat.completions.create({
@@ -1186,7 +1207,12 @@ DECIDE NOW.`;
         }
       } else if (provider === "openai" || provider === "openrouter" || provider === "ollama") {
         const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
-        const ai = new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
+        const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
         const ollamaOpts = buildProviderRequestOptions(provider);
         const response = await aiScheduler.execute(
           (signal) => ai.chat.completions.create({

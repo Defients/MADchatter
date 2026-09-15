@@ -2,6 +2,53 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
+## [Unreleased] — 2026-09-13
+
+### Fixed — Core readiness reflects the current session
+- The selected AI provider must have its own required configuration and be outside cooldown. A previous successful Forge or a key stored for another provider no longer marks it ready.
+- Chat readiness requires a connected chat transport and a nonempty channel. Reconnecting/disconnected sessions no longer count as operational.
+- Returning users retain their workspace and completed milestones during provider or connection problems; presentation phase is separate from live readiness.
+- Optional AutoForge readiness now also requires chat and AI availability, while manual-only users can still complete essential setup.
+- Provider readiness responds to same-tab key edits, cross-tab storage changes, cooldown entry, and cooldown expiry. The shared polling subscription cleans up when unused and reads a fresh snapshot on mount.
+- Core's provider summary is recomputed when the provider changes, including switches between two equally configured providers.
+- Chat Pulse now displays Connected, Connecting, Connection error, or Not connected from real connection state. Its previous channel-name-based Live label could contradict the disconnected status strip. Updates are announced through an accessible status region.
+
+### Fixed — Ollama health evidence belongs to one configuration
+- Cache and concurrent-request reuse are scoped to normalized endpoint plus model. Different configurations cannot borrow a successful health result.
+- Cache invalidation aborts pending checks and prevents late completions from restoring stale evidence or clearing newer pending requests.
+- Cached evidence expires after 30 seconds even on direct reads; cache storage is capped at 20 configurations.
+- The five-second request deadline now covers response-body parsing and always clears its timer on completion or failure.
+- Model-list parsing tolerates malformed entries. Untagged model names match their latest tag, not an arbitrary installed variant.
+- Both Core Ollama discovery surfaces request configuration-specific cached evidence. The model editor rejects results for changed settings and uses the shared health result for model matching.
+
+### Added — Production-policy regression coverage and review notes
+- Extracted the readiness policy into a pure module used by both the React hook and tests.
+- Added 18 readiness scenarios and 14 mocked Ollama health scenarios, including different models/endpoints, out-of-order invalidation, forced refresh, cache expiry, malformed responses, and a stalled response body.
+- Added `docs/READINESS_REVIEW.md` with the inspected project state, scope, complete patch notes, verification, and prioritized follow-up work.
+- Local Chromium verification covers 11 browser scenarios/layout checks, with synthetic settings and external traffic blocked.
+- No persistence schema change or release version bump; these fixes continue the existing uncommitted v1.0.7 work.
+
+## [1.0.7] — 2026-09-13
+
+### Added — Core Mode + Interactive Launchpad
+- **Core Mode** — A minimal, fully-supported operating mode that presents everything required to connect, configure AI, choose personality, Forge, send, and activate AutoForge — without the full-density Studio interface. Core is not a tutorial skin or crippled "beginner mode"; it's a legitimate long-term workspace for users who prefer focus. Experienced users may use Core forever.
+- **Interactive Launchpad** — A readiness sequence inside Core Mode that derives from real application state (not tutorial-page completion). Stages: Platform → AI → Personality → Forge → Send → AutoForge → Operational. Each stage derives from source-of-truth state: platform from channel + chat connection, AI from provider config + first successful Forge, personality from the `personaChosen` milestone (set when the user picks a persona in the Core setup flow), Forge/Send from persisted milestones (`hasForgedOnce`, `hasSentMessage`), AutoForge from `hasEnabledAutoForgeOnce`. AutoForge is optional — a user who never enables it is not permanently labeled incomplete.
+- **InterfaceModeToggle** — `[ CORE ] [ STUDIO ]` toggle in the header. Also accessible via command palette ("Switch to Core Mode" / "Switch to Studio Mode"). One authoritative `interfaceMode: 'core' | 'studio'` value drives presentation density.
+- **CoreGreeting** — Minimal first-run greeting ("MADchatter — AI stream co-pilot. Let's get it talking. [ Start ]") that drops new users into Core Mode. Replaces the feature-encyclopedia Welcome overlay for first-time users. The original Welcome overlay is retained for manual "Reopen Welcome Screen" access via the command palette.
+- **Onboarding milestones** — `hasSentMessage` (set on actual send success, not button click — dry-run sends don't count), `hasEnabledAutoForgeOnce`, `activationCelebrated` (fires once when the user first reaches operational state), `personaChosen` (set when the user picks a persona in the Core setup flow; drives `personalityReady` in `useCoreReadiness`), `modeWelcomeSeen` (gates the first-run `ModeWelcomeOverlay`). `microToursSeen` tracks micro-tour dismissals.
+- **Activation celebration** — A one-shot "MADchatter is live" moment when the user first reaches operational state (Platform + AI + Personality + Forge + Send). Respects `prefers-reduced-motion`. Fires once per user (persisted via `activationCelebrated`).
+- **Schema migrations** — v21 seeds onboarding milestones as false and `microToursSeen` as empty. v22/v23 force all users (including existing) to Core Mode (Core is the primary experience; users who prefer Studio switch via the header toggle and their choice persists). v24 persists `personaChosen` and `modeWelcomeSeen` (previously declared and consumed but missing from `partialize`, causing them to reset to false on every reload).
+
+### Changed — Tutorial Auto-Start Removed
+- The monolithic 22-step tutorial no longer auto-starts for new users. Core Mode's Interactive Launchpad replaces it as the onboarding surface. The tutorial is retained for manual "Start Tutorial Walkthrough" access via the command palette — it remains a useful feature reference.
+
+### Changed — Welcome Overlay Auto-Show Removed
+- The feature-encyclopedia Welcome overlay no longer auto-shows on first run. `CoreGreeting` handles first-run onboarding with a single "Start" action. The Welcome overlay is retained for manual access via the command palette.
+
+### Fixed — Onboarding Milestones Not Persisting (v24)
+- **Problem:** `personaChosen` and `modeWelcomeSeen` were declared in the store interface, had setters and defaults, and were consumed by components (`useCoreReadiness` derives `personalityReady = personaChosen`; `ModeWelcomeOverlay` gates visibility on `!modeWelcomeSeen`), but were missing from the `partialize` function. Both reset to `false` on every reload — permanently reverting the Launchpad to the "setup" phase (Step 3 re-showed even though the user already picked a persona) and re-displaying the full-screen mode-picker overlay each session.
+- **Fix:** Added both fields to `partialize` (schema v24). Extracted the `partialize` function as a named export (`partializeAppState`) so the persistence contract is directly testable. Added regression tests verifying both fields appear in the `partialize` output.
+
 ## [1.0.6] — 2026-09-12
 
 ### Fixed — Per-Bot full_forge Never Sent (Autonomous Mode)

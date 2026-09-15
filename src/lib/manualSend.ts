@@ -64,6 +64,12 @@ export async function sendManualMessage({
       state.incrementStat(source === "autoforge" ? "autoForgeActions" : "manualActions");
       state.addAutoForgeEvent(event);
     }
+    // Onboarding milestone: first successful send (not dry-run). Derived from
+    // actual send success, not button click — if the platform rejects, auth
+    // is expired, or the request fails, the throw above prevents this.
+    if (!state.autoForgeDryRun && !state.hasSentMessage) {
+      state.setHasSentMessage(true);
+    }
   } finally {
     pendingSends.delete(pendingKey);
   }

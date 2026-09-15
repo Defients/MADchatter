@@ -10,7 +10,9 @@ import { MotionConfig } from 'motion/react';
 
 function AppToaster() {
   const light = useAppStore((s) => s.lightThemeActive);
-  return <Toaster theme={light ? 'light' : 'dark'} position="bottom-center" />;
+  // bottom-center keeps toasts out of the way of centered Core content;
+  // the offset lifts them above the fixed StatusBar/footer so they never clip it.
+  return <Toaster theme={light ? 'light' : 'dark'} position="bottom-center" offset="56px" />;
 }
 
 createRoot(document.getElementById('root')!).render(
