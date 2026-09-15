@@ -32,9 +32,6 @@ import {
   LogOut,
   ChevronDown,
   ChevronUp,
-  Volume2,
-  VolumeX,
-  ExternalLink,
   MonitorUp,
   StopCircle,
   Camera,
@@ -65,6 +62,7 @@ import { playSfx } from "../lib/sfx";
 import { switchChannel } from "../lib/channelSwitch";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { refineSuggestion, visionRequest } from "../lib/ai";
+import { perception, classifyVisionError } from "../lib/perceptionLiveness";
 import { fetchStreamThumbnailDataUrl } from "../lib/streamThumbnail";
 import { cn } from "../lib/utils";
 import { toast } from "sonner";
@@ -76,6 +74,7 @@ import { PersonaPortrait } from "./PersonaPortrait";
 import { AutoCheckControls } from "./AutoCheckControls";
 import { UserAvatar, userDisplayName } from "./UserAvatar";
 import { TheForge } from "./TheForge";
+import { RoomReadCard } from "./RoomReadCard";
 import logoUrl from "../../madchatter-logo1.png";
 
 // Color maps for sentiment
@@ -103,6 +102,8 @@ export interface CoreMobileWorkspaceProps {
   visualCooldown: boolean;
   smartLevel: number;
   onCycleSmartLevel: () => void;
+  visualCaptureInterval: number;
+  setVisualCaptureInterval: (v: number) => void;
 }
 
 export function CoreMobileWorkspace(props: {
@@ -119,6 +120,8 @@ export function CoreMobileWorkspace(props: {
   visualCooldown: boolean;
   smartLevel: number;
   onCycleSmartLevel: () => void;
+  visualCaptureInterval: number;
+  setVisualCaptureInterval: (v: number) => void;
 }) {
   const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
   const [chatDraft, setChatDraft] = useState("");
@@ -331,15 +334,22 @@ export function CoreMobileWorkspace(props: {
           role="tabpanel"
           aria-label="Context workspace"
         >
-          <MobileContextTab
-            activeUser={props.activeUser}
-            draft={chatDraft}
-            setDraft={setChatDraft}
-            onVisualCapture={props.onVisualCapture}
-            onManualSnapshot={props.onManualSnapshot}
-            isVisualCapturing={props.isVisualCapturing}
-            visualCooldown={props.visualCooldown}
-          />
+        {/* Room Read — shared Room Model surface, compact on mobile (once a
+            channel is live). Pure consumer of the store mirror. */}
+        {readiness.phase !== "setup" && !!streamMetadata?.channelName && (
+          <div className="shrink-0 px-3 pt-2">
+            <RoomReadCard compact />
+          </div>
+        )}
+        <MobileContextTab
+          activeUser={props.activeUser}
+          draft={chatDraft}
+          setDraft={setChatDraft}
+          onVisualCapture={props.onVisualCapture}
+          onManualSnapshot={props.onManualSnapshot}
+          isVisualCapturing={props.isVisualCapturing}
+          visualCooldown={props.visualCooldown}
+        />
         </div>
 
         {/* Forge Workspace */}
@@ -544,8 +554,34 @@ export function CoreMobileWorkspace(props: {
                     {lastAutoForgeDecision.reason}
                   </div>
                   {lastAutoForgeDecision.action_payload && (
-                    <div className="text-[10px] text-emerald-300 font-sans italic bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20">
-                      "{lastAutoForgeDecision.action_payload}"
+                    <div className="text-[10px] text-emerald-300 font-sans italic bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20 flex items-center justify-between gap-2">
+                      <span className="line-clamp-2">"{lastAutoForgeDecision.action_payload}"</span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const text = lastAutoForgeDecision.action_payload;
+                          const ch = streamMetadata.channelName;
+                          if (!text || !ch) return;
+                          try {
+                            await sendManualMessage({
+                              message: text,
+                              channel: ch,
+                              source: "manual",
+                              botId: lastDecisionBot?.id,
+                            });
+                            toast.success("Decision sent to chat!");
+                            playSfx("send_message");
+                          } catch (e: any) {
+                            toast.error(e.message || "Failed to send");
+                          }
+                        }}
+                        title="Send this decision's message to chat (bypasses Dry Run)"
+                        aria-label="Send decision message to chat"
+                        className="shrink-0 px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors flex items-center gap-1 text-[10px] font-bold not-italic"
+                      >
+                        <Send className="w-3 h-3" />
+                        <span>Send</span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -652,11 +688,21 @@ function MobileContextTab(props: {
   visualCooldown: boolean;
 }) {
   const [streamMinimized, setStreamMinimized] = useState(false);
-  const [streamMuted, setStreamMuted] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState("");
   const [autoScrollLocked, setAutoScrollLocked] = useState(true);
   const [newMessagesWhileScrolled, setNewMessagesWhileScrolled] = useState(0);
+
+  // Audio Transcription notice dismissal — session-scoped (sessionStorage),
+  // so it stays hidden for the duration of the user's visit but returns on a
+  // fresh session. Matches the telemetry strip collapse pattern.
+  const [audioNoticeDismissed, setAudioNoticeDismissed] = useState(() => {
+    try { return sessionStorage.getItem("core-audio-notice-dismissed") === "1"; } catch { return false; }
+  });
+  const dismissAudioNotice = () => {
+    setAudioNoticeDismissed(true);
+    try { sessionStorage.setItem("core-audio-notice-dismissed", "1"); } catch { /* private mode */ }
+  };
 
   // Thumbnail Snap — fetches the platform's live preview thumbnail (Twitch
   // CDN / Kick API) and feeds it through the same vision pipeline as desktop
@@ -721,6 +767,10 @@ function MobileContextTab(props: {
 
   useEffect(() => {
     if (platform === "kick" || platform === "joystick" || !channel || !twitchScriptLoaded || !window.Twitch) return;
+    // The player div is always mounted while a channel is set — when the
+    // video is hidden it shrinks to an invisible 2px box so stream audio
+    // keeps playing. The player is therefore created once per channel and
+    // never needs recreation on hide/show.
     const el = document.getElementById(twitchPlayerId);
     if (!el) return;
     if (twitchPlayerRef.current) {
@@ -730,7 +780,7 @@ function MobileContextTab(props: {
     twitchPlayerRef.current = new window.Twitch.Player(twitchPlayerId, {
       channel,
       parent,
-      muted: streamMuted,
+      muted: false,
       autoplay: true,
       width: "100%",
       height: "100%",
@@ -807,6 +857,10 @@ function MobileContextTab(props: {
       toast.loading("Analyzing stream frame…", { id: toastId });
       const provider = getActiveProvider();
       const data = await visionRequest(dataUrl, provider, null);
+      // Perception Liveness: manual thumbnail snap round-trip succeeded — the
+      // mobile vision lane reports LIVE even though screen capture is
+      // unsupported (the engine evaluates evidence, not capability defaults).
+      perception.noteVisionSemantic({ ok: true });
       if (data.tokenUsage) {
         recordTokenUsage("vision", data.tokenUsage);
       }
@@ -822,6 +876,9 @@ function MobileContextTab(props: {
       setThumbSnapCooldown(true);
       setTimeout(() => setThumbSnapCooldown(false), 5000);
     } catch (e: any) {
+      // Perception Liveness: semantic-stage failure with a stable reason code
+      // (stream offline fetch failure vs provider failure).
+      perception.noteVisionSemantic({ ok: false, code: classifyVisionError(e) });
       toast.error(e.message || "Failed to analyze stream frame", { id: toastId });
       playSfx("error");
     } finally {
@@ -848,13 +905,13 @@ function MobileContextTab(props: {
             hidden or no channel is set. */}
         <div
           className={cn(
-            "flex items-center justify-between px-3 py-1.5",
+            "flex items-center justify-between px-3 py-1.5 gap-2",
             videoVisible
               ? "absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/80 via-black/40 to-transparent"
               : "bg-[#121218] border-b border-white/5",
           )}
         >
-          <div className="flex items-center gap-2 text-xs font-bold text-gray-300">
+          <div className="flex items-center gap-2 text-xs font-bold text-gray-300 shrink-0">
             <Tv className="w-3.5 h-3.5 text-purple-400" />
             <span>{channel ? `@${channel}` : "No stream selected"}</span>
             {channel && (
@@ -863,19 +920,162 @@ function MobileContextTab(props: {
               </span>
             )}
           </div>
+
+          {/* Snap / Visual controls — moved to the header so they don't cover
+              the embed's bottom volume slider. Same compact sizing as before.
+              Fades out when the video is hidden (streamMinimized) since they
+              only make sense while the stream is visible. */}
+          <AnimatePresence>
+            {!streamMinimized && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="flex items-center gap-1 shrink-0"
+              >
+                {/* Screen Capture + Snap — only when getDisplayMedia is supported.
+                    On mobile browsers these are dead (getDisplayMedia is undefined),
+                    so we hide them and show a notice instead of broken buttons. */}
+                {visualCaptureSupported && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={props.onVisualCapture}
+                      className={cn(
+                        "h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1 transition-colors",
+                        props.isVisualCapturing
+                          ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                          : "bg-orange-500/15 text-orange-400 border border-orange-500/25"
+                      )}
+                    >
+                      {props.isVisualCapturing ? <StopCircle className="w-3 h-3 shrink-0" /> : <MonitorUp className="w-3 h-3 shrink-0" />}
+                      <span>{props.isVisualCapturing ? "Stop" : "Capture"}</span>
+                    </button>
+
+                    {/* SNAP — MANUAL ONLY on mobile. No capture timer runs on a phone
+                        (battery, bandwidth, browser limits), so every snapshot is an
+                        explicit user action: tap once to arm capture, tap SNAP to
+                        analyze the current frame through the normal visual pipeline. */}
+                    <button
+                      type="button"
+                      onClick={props.isVisualCapturing ? props.onManualSnapshot : props.onVisualCapture}
+                      disabled={props.isVisualCapturing && props.visualCooldown}
+                      title={props.isVisualCapturing
+                        ? "Analyze the current stream frame"
+                        : "Start capture, then tap SNAP again"}
+                      aria-label="Capture a stream snapshot (manual)"
+                      className={cn(
+                        "h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
+                        props.isVisualCapturing
+                          ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
+                          : "bg-white/5 text-gray-400 border-white/10 hover:text-gray-200"
+                      )}
+                    >
+                      <Camera className="w-3 h-3 shrink-0" />
+                      <span>Snap</span>
+                      {props.isVisualCapturing && !props.visualCooldown && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
+                      )}
+                    </button>
+                  </>
+                )}
+
+                {/* Thumbnail Snap — the mobile alternative to getDisplayMedia.
+                    Fetches the platform's live preview thumbnail (Twitch CDN /
+                    Kick API) and runs it through the same vision pipeline. Works
+                    on phones where screen capture is unavailable. Twitch + Kick
+                    only (Joystick has no public thumbnail). */}
+                {!visualCaptureSupported && platform !== "joystick" && channel && (
+                  <button
+                    type="button"
+                    onClick={handleThumbnailSnap}
+                    disabled={thumbSnapLoading || thumbSnapCooldown}
+                    title="Analyze the current stream frame from the live preview thumbnail"
+                    aria-label="Snap stream frame from thumbnail"
+                    className={cn(
+                      "h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
+                      thumbSnapLoading
+                        ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
+                        : thumbSnapCooldown
+                        ? "bg-white/5 text-gray-500 border-white/10"
+                        : "bg-blue-500/15 text-blue-400 border-blue-500/25"
+                    )}
+                  >
+                    {thumbSnapLoading ? (
+                      <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                    ) : (
+                      <Camera className="w-3 h-3 shrink-0" />
+                    )}
+                    <span>{thumbSnapLoading ? "Analyzing…" : thumbSnapCooldown ? "Cooldown" : "Snap"}</span>
+                    {!thumbSnapLoading && !thumbSnapCooldown && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
+                    )}
+                  </button>
+                )}
+
+                {/* Visual history — opens the canonical snapshot history (pinned /
+                    delete / inspect) as a compact sheet on phones. Always available
+                    as a view over previously-captured frames (e.g. from desktop). */}
+                <button
+                  type="button"
+                  onClick={() => { setVisualHistoryOpen(true); playSfx("hud_open"); }}
+                  aria-label="Open visual snapshot history"
+                  className="h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase bg-teal-500/15 text-teal-300 border border-teal-500/25 flex items-center justify-center gap-1 touch-target"
+                >
+                  <Clock className="w-3 h-3 shrink-0" />
+                  <span>Visual</span>
+                  {visualSnapshotHistory.length > 0 && (
+                    <span className="font-mono text-[9px] opacity-80 shrink-0">{visualSnapshotHistory.length}</span>
+                  )}
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <button
             type="button"
             onClick={() => setStreamMinimized((v) => !v)}
-            className="text-[10px] font-bold text-gray-400 hover:text-white px-2 py-1 rounded bg-white/10 transition-colors touch-action-manipulation"
+            className={cn(
+              "font-bold rounded transition-colors touch-action-manipulation shrink-0",
+              streamMinimized
+                ? "text-xs text-purple-200 px-3 py-1.5 bg-purple-500/25 border border-purple-500/40 hover:bg-purple-500/35 flex items-center gap-1.5"
+                : "text-[10px] text-gray-400 hover:text-white px-2 py-1 bg-white/10",
+            )}
           >
-            {streamMinimized ? "Show Video" : "Hide Video"}
+            {streamMinimized ? (
+              <>
+                {channel && platform !== "joystick" && (
+                  <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" aria-label="Audio playing" />
+                )}
+                <Tv className="w-3.5 h-3.5" />
+                <span>Show Video</span>
+              </>
+            ) : (
+              "Hide Video"
+            )}
           </button>
         </div>
 
-        {/* Video Player */}
-        {!streamMinimized && channel && (
-          <div className="w-full relative bg-black flex items-center justify-center overflow-hidden">
-            <div className="w-full relative aspect-video max-h-[220px]">
+        {/* Video Player — always mounted when a channel is set so stream
+            audio keeps playing when the video is hidden. When minimized the
+            wrapper collapses to 0px and the player shrinks to an invisible
+            2px box (opacity-0 keeps it in the render tree — display:none
+            would let the browser pause the media). */}
+        {channel && (
+          <div
+            className={cn(
+              "w-full relative bg-black overflow-hidden",
+              streamMinimized ? "h-0" : "flex items-center justify-center"
+            )}
+          >
+            <div
+              className={cn(
+                streamMinimized
+                  ? "absolute top-0 left-0 w-[2px] h-[2px] opacity-0 pointer-events-none overflow-hidden"
+                  : "w-full relative aspect-video max-h-[220px]"
+              )}
+            >
               {platform === "kick" ? (
                 <iframe
                   src={`https://player.kick.com/${channel}?autoplay=true&muted=true&parent=${parent}`}
@@ -900,149 +1100,6 @@ function MobileContextTab(props: {
                 <div id={twitchPlayerId} className="w-full h-full" />
               )}
             </div>
-          </div>
-        )}
-
-        {/* Stream Controls Bar — overlays the bottom of the video behind a
-            translucent scrim so the row doesn't consume vertical space the
-            chat could use. */}
-        {videoVisible && (
-          <div className="absolute inset-x-0 bottom-0 z-20 flex items-center flex-nowrap gap-1 px-2 py-1.5 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
-            {/* Mute — icon-only (label is conveyed via aria-label + icon state) */}
-            {platform !== "kick" && platform !== "joystick" && (
-              <button
-                type="button"
-                onClick={() => {
-                  const nm = !streamMuted;
-                  setStreamMuted(nm);
-                  twitchPlayerRef.current?.setMuted(nm);
-                }}
-                className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center bg-white/5 text-gray-300 hover:text-white transition-colors"
-                aria-label={streamMuted ? "Unmute stream" : "Mute stream"}
-                title={streamMuted ? "Unmute" : "Mute"}
-              >
-                {streamMuted ? <VolumeX className="w-3.5 h-3.5 text-orange-400" /> : <Volume2 className="w-3.5 h-3.5" />}
-              </button>
-            )}
-
-            {/* Screen Capture + Snap — only when getDisplayMedia is supported.
-                On mobile browsers these are dead (getDisplayMedia is undefined),
-                so we hide them and show a notice instead of broken buttons. */}
-            {visualCaptureSupported && (
-              <>
-                <button
-                  type="button"
-                  onClick={props.onVisualCapture}
-                  className={cn(
-                    "h-8 flex-1 min-w-0 px-1 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1 transition-colors",
-                    props.isVisualCapturing
-                      ? "bg-red-500/20 text-red-400 border border-red-500/30"
-                      : "bg-orange-500/15 text-orange-400 border border-orange-500/25"
-                  )}
-                >
-                  {props.isVisualCapturing ? <StopCircle className="w-3 h-3 shrink-0" /> : <MonitorUp className="w-3 h-3 shrink-0" />}
-                  <span>{props.isVisualCapturing ? "Stop" : "Capture"}</span>
-                </button>
-
-                {/* SNAP — MANUAL ONLY on mobile. No capture timer runs on a phone
-                    (battery, bandwidth, browser limits), so every snapshot is an
-                    explicit user action: tap once to arm capture, tap SNAP to
-                    analyze the current frame through the normal visual pipeline. */}
-                <button
-                  type="button"
-                  onClick={props.isVisualCapturing ? props.onManualSnapshot : props.onVisualCapture}
-                  disabled={props.isVisualCapturing && props.visualCooldown}
-                  title={props.isVisualCapturing
-                    ? "Analyze the current stream frame"
-                    : "Start capture, then tap SNAP again"}
-                  aria-label="Capture a stream snapshot (manual)"
-                  className={cn(
-                    "h-8 flex-1 min-w-0 px-1 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
-                    props.isVisualCapturing
-                      ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
-                      : "bg-white/5 text-gray-400 border-white/10 hover:text-gray-200"
-                  )}
-                >
-                  <Camera className="w-3 h-3 shrink-0" />
-                  <span>Snap</span>
-                  {props.isVisualCapturing && !props.visualCooldown && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
-                  )}
-                </button>
-              </>
-            )}
-
-            {/* Thumbnail Snap — the mobile alternative to getDisplayMedia.
-                Fetches the platform's live preview thumbnail (Twitch CDN /
-                Kick API) and runs it through the same vision pipeline. Works
-                on phones where screen capture is unavailable. Twitch + Kick
-                only (Joystick has no public thumbnail). */}
-            {!visualCaptureSupported && platform !== "joystick" && channel && (
-              <button
-                type="button"
-                onClick={handleThumbnailSnap}
-                disabled={thumbSnapLoading || thumbSnapCooldown}
-                title="Analyze the current stream frame from the live preview thumbnail"
-                aria-label="Snap stream frame from thumbnail"
-                className={cn(
-                  "h-8 flex-1 min-w-0 px-1 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
-                  thumbSnapLoading
-                    ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
-                    : thumbSnapCooldown
-                    ? "bg-white/5 text-gray-500 border-white/10"
-                    : "bg-blue-500/15 text-blue-400 border-blue-500/25"
-                )}
-              >
-                {thumbSnapLoading ? (
-                  <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
-                ) : (
-                  <Camera className="w-3 h-3 shrink-0" />
-                )}
-                <span>{thumbSnapLoading ? "Analyzing…" : thumbSnapCooldown ? "Cooldown" : "Snap"}</span>
-                {!thumbSnapLoading && !thumbSnapCooldown && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
-                )}
-              </button>
-            )}
-
-            {/* Visual history — opens the canonical snapshot history (pinned /
-                delete / inspect) as a compact sheet on phones. Always available
-                as a view over previously-captured frames (e.g. from desktop). */}
-            <button
-              type="button"
-              onClick={() => { setVisualHistoryOpen(true); playSfx("hud_open"); }}
-              aria-label="Open visual snapshot history"
-              className={cn(
-                "h-8 px-1 rounded-lg text-[10px] font-bold uppercase bg-teal-500/15 text-teal-300 border border-teal-500/25 flex items-center justify-center gap-1 touch-target",
-                visualCaptureSupported ? "flex-1 min-w-0" : "w-auto shrink-0",
-              )}
-            >
-              <Clock className="w-3 h-3 shrink-0" />
-              <span>Visual</span>
-              {visualSnapshotHistory.length > 0 && (
-                <span className="font-mono text-[9px] opacity-80 shrink-0">{visualSnapshotHistory.length}</span>
-              )}
-            </button>
-
-            {/* External channel link — icon-only on mobile (the platform label is
-                redundant; opens the channel in the platform's own app/site). */}
-            <button
-              type="button"
-              onClick={() => {
-                const url =
-                  platform === "kick"
-                    ? `https://kick.com/${channel}`
-                    : platform === "joystick"
-                    ? `https://joystick.tv/u/${channel}`
-                    : `https://twitch.tv/${channel}`;
-                window.open(url, "_blank");
-              }}
-              aria-label={`Open ${channel} on ${platform}`}
-              title={`Open @${channel} on ${platform}`}
-              className="h-8 w-8 shrink-0 rounded-lg flex items-center justify-center bg-[#9146FF]/15 text-[#9146FF] border border-[#9146FF]/30"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-            </button>
           </div>
         )}
       </div>
@@ -1285,31 +1342,49 @@ function MobileContextTab(props: {
             <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" />
           </summary>
           <div className="pt-2 pb-1 space-y-2 text-xs">
-            {/* Audio Transcript status */}
-            <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-300 text-[11px]">
-              <span className="font-bold block mb-0.5">Audio Transcription</span>
-              System audio capture requires a desktop Chromium browser (Chrome/Edge) with WebGPU. Not available on mobile browsers.
-            </div>
+            {/* Audio Transcript status — dismissible for the session */}
+            {!audioNoticeDismissed && (
+              <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-300 text-[11px] relative pr-8">
+                <span className="font-bold block mb-0.5">Audio Transcription</span>
+                System audio capture requires a desktop Chromium browser (Chrome/Edge) with WebGPU. Not available on mobile browsers.
+                <button
+                  type="button"
+                  onClick={dismissAudioNotice}
+                  className="absolute top-1.5 right-1.5 p-1 text-purple-400 hover:text-purple-200 transition-colors"
+                  aria-label="Dismiss audio transcription notice"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
-            {/* Pinned memory items */}
+            {/* Pinned memory items — horizontal scroll strip so all pinned
+                moments are reachable by swiping instead of a vertical list
+                that gets cut off. */}
             {pinnedMemories.length > 0 ? (
               <div className="space-y-1">
                 <span className="text-[10px] font-bold text-gray-400 uppercase">
                   Pinned Moments ({pinnedMemories.length})
                 </span>
-                {pinnedMemories.slice(-3).map((mem) => (
-                  <div key={mem.id} className="flex items-center justify-between p-1.5 rounded bg-black/40 border border-white/5 text-[11px]">
-                    <span className="truncate text-gray-300 mr-2">{mem.label}</span>
-                    <button
-                      type="button"
-                      onClick={() => removePinnedMemory(mem.id)}
-                      className="text-gray-500 hover:text-red-400"
-                      aria-label="Remove memory"
+                <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-thin snap-x snap-mandatory">
+                  {pinnedMemories.slice().reverse().map((mem) => (
+                    <div
+                      key={mem.id}
+                      className="flex items-center gap-1.5 shrink-0 snap-start w-[200px] p-1.5 rounded bg-black/40 border border-white/5 text-[11px]"
                     >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
+                      <Pin className="w-3 h-3 text-orange-400 shrink-0" />
+                      <span className="truncate text-gray-300 flex-1 min-w-0">{mem.label}</span>
+                      <button
+                        type="button"
+                        onClick={() => removePinnedMemory(mem.id)}
+                        className="text-gray-500 hover:text-red-400 shrink-0"
+                        aria-label="Remove memory"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : (
               <span className="text-[10px] text-gray-600 italic block">

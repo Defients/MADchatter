@@ -46,12 +46,15 @@ export const VariantCard: React.FC<VariantCardProps> = ({
   // A card locks once its message text has actually been sent — matched against
   // the sent-message records so the state survives re-renders and works for
   // multi-bot sends. Refining changes the text, which naturally unlocks the card.
+  // Dry-run sends also lock the card so the user can't press the button twice.
   const sentMessages = useAppStore((s) => s.sentMessages);
   const bots = useAppStore((s) => s.bots);
   const trimmedMsg = variant.message.trim();
-  const hasSent =
-    sentMessages.some((m) => !m.dryRun && m.message.trim() === trimmedMsg) ||
-    bots.some((b) => b.runtime.sentMessages.some((m) => !m.dryRun && m.message.trim() === trimmedMsg));
+  const matchedSent =
+    sentMessages.find((m) => m.message.trim() === trimmedMsg) ||
+    bots.flatMap((b) => b.runtime.sentMessages).find((m) => m.message.trim() === trimmedMsg);
+  const hasSent = !!matchedSent;
+  const sentDryRun = hasSent && matchedSent?.dryRun;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [customRefineInput, setCustomRefineInput] = useState("");
   const [isDragging, setIsDragging] = useState(false);
@@ -174,31 +177,49 @@ export const VariantCard: React.FC<VariantCardProps> = ({
       )}
       style={isDragging ? { cursor: "grabbing" } : undefined}
     >
-      {/* Card Header — draggable */}
+      {/* Card Header — draggable. Two rows on narrow widths: identity tags on
+          top, meta stats on a subtle second line so nothing wraps awkwardly. */}
       <div
         onMouseDown={startCardDrag}
-        className="flex items-center justify-between p-2 border-b border-white/5 bg-[#0F0F12] cursor-grab active:cursor-grabbing select-none hover:bg-white/[0.03] transition-colors"
+        className="p-2 border-b border-white/5 bg-[#0F0F12] cursor-grab active:cursor-grabbing select-none hover:bg-white/[0.03] transition-colors"
       >
-        <div className="flex items-center gap-2 pointer-events-none">
-          <GripVertical className="w-3 h-3 text-gray-600 shrink-0" />
-          <Badge
-            variant="outline"
-            className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${getProfileColor(variant.profile)}`}
-          >
-            {variant.profile}
-          </Badge>
-          {variant.best && (
-            <ThemedTooltip content="Highest-ranked variant by local scoring" zIndex={25001}>
-              <Badge
-                variant="outline"
-                className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-cyan-500/15 border-cyan-400/40 text-cyan-300 pointer-events-none"
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 pointer-events-none min-w-0">
+            <GripVertical className="w-3 h-3 text-gray-600 shrink-0" />
+            <Badge
+              variant="outline"
+              className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${getProfileColor(variant.profile)}`}
+            >
+              {variant.profile}
+            </Badge>
+            {variant.best && (
+              <ThemedTooltip content="Highest-ranked variant by local scoring" zIndex={25001}>
+                <Badge
+                  variant="outline"
+                  className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border bg-cyan-500/15 border-cyan-400/40 text-cyan-300 pointer-events-none"
+                >
+                  ★ Best
+                </Badge>
+              </ThemedTooltip>
+            )}
+          </div>
+          {onClose && (
+            <ThemedTooltip content="Close card" zIndex={25001}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(variant.variant_id);
+                }}
+                className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors shrink-0"
               >
-                ★ Best
-              </Badge>
+                <X className="w-3.5 h-3.5" />
+              </button>
             </ThemedTooltip>
           )}
         </div>
-        <div className="flex items-center gap-1.5 flex-wrap">
+        {/* Meta stats strip — chars / tokens / confidence on their own line so
+            the header never wraps badly on narrow screens. */}
+        <div className="flex items-center gap-1.5 mt-1.5 pl-5 flex-wrap">
           <Badge
             variant="outline"
             className="text-[9px] bg-white/5 border-white/10 text-gray-500 font-mono pointer-events-none"
@@ -219,19 +240,6 @@ export const VariantCard: React.FC<VariantCardProps> = ({
           >
             CONF: {Math.round(variant.confidence * 100)}%
           </Badge>
-          {onClose && (
-            <ThemedTooltip content="Close card" zIndex={25001}>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onClose(variant.variant_id);
-                }}
-                className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </ThemedTooltip>
-          )}
         </div>
       </div>
 
@@ -408,7 +416,7 @@ export const VariantCard: React.FC<VariantCardProps> = ({
             >
               {hasSent ? (
                 <span className="flex items-center gap-1.5 justify-center">
-                  <Check className="w-3.5 h-3.5 shrink-0" /> SENT
+                  <Check className="w-3.5 h-3.5 shrink-0" /> {sentDryRun ? "DRY RUN" : "SENT"}
                 </span>
               ) : isSending ? (
                 "SENT!"

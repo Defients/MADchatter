@@ -1,3 +1,4 @@
+import { getSpokenMentionLines } from "../lib/spokenCallout";
 import { SendCancelledError } from "../lib/sendCancellation";
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../store";
@@ -8,6 +9,9 @@ import { botCoordinator, type BotCandidate } from "../lib/botCoordinator";
 import { playSfx } from "../lib/sfx";
 import { speakMessage } from "../lib/tts";
 import { getActiveProvider, getApiKey } from "../lib/keys";
+import { getTwitchSession } from "../lib/twitch";
+import { getKickSession } from "../lib/kick";
+import { getJoystickSession } from "../lib/joystick";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
@@ -46,6 +50,32 @@ import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { formatThreadContext } from "../lib/conversationThread";
 import { createAutoForgeExecutionGuard, captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
+import { roomModel, formatRoomStateContext } from "../lib/roomModel";
+import { formatPerceptionContext } from "../lib/perceptionLiveness";
+import { buildAutoForgeEpisodicContext } from "../lib/episodicMemory";
+import {
+  participation,
+  formatParticipationContext,
+  PARTICIPATION_REASON_LABELS,
+  type ParticipationEvaluation,
+} from "../lib/participationAwareness";
+import {
+  deriveCoordinationProfile,
+  previewSemanticFit,
+  semanticCoordination,
+} from "../lib/semanticCoordination";
+import {
+  SILENCE_ACTION,
+  SILENCE_SAMPLE_WEIGHT,
+  buildSelfPerformanceContext,
+  buildSessionGoalsContext,
+  collectBotUsernames,
+  computeNormalizedOutcome,
+  computeSilenceOutcome,
+  emptyLearningProfile,
+  learningProfileKey,
+  shouldRecordSilenceObservation,
+} from "../lib/channelLearning";
 
 // D4: Post-send engagement correlation — delay before evaluating chat response.
 // Mirrors the legacy useAutoForge constant so multi-bot engagement metrics
@@ -82,6 +112,11 @@ export function useAutoForgeBot(botId: string) {
   const lastCheckTimeRef = useRef(Date.now());
   const lastMessagesReceivedRef = useRef(0);
   const consecutiveSilenceRef = useRef(0);
+  // Most recent participation-awareness evaluation (pre-AI gate). Carries the
+  // effective threshold modifier into the post-decision confidence check.
+  // Channel-level like the engine itself — ensemble restraint applies to
+  // every bot, including ones that haven't spoken recently.
+  const participationEvalRef = useRef<ParticipationEvaluation | null>(null);
   // Context fingerprint of this bot's LAST evaluation — Smart mode uses it to
   // avoid spending a model call when nothing meaningful changed. Per-bot so
   // each bot's cadence is judged against the context it last saw.
@@ -105,7 +140,7 @@ export function useAutoForgeBot(botId: string) {
         return;
       }
     }
-    if (!store.multiBotEnabled) return;
+    if (!store.multiBotEnabled || store.botsGlobalStop) return;
     const bot = store.bots.find((b) => b.id === botId);
     if (!bot || !bot.active || !bot.session) {
       if (force) toast.info("Bot must be active and signed in to force a check.");
@@ -209,15 +244,7 @@ export function useAutoForgeBot(botId: string) {
       // Also check audio transcript for name mentions (the legacy loop does
       // this but self-disables in multi-bot mode, so the per-bot loop must
       // handle it here).
-      const audioMentionLines: string[] = [];
-      if (botUsername && store.audioTranscript) {
-        const audioLines = store.audioTranscript.split("\n").slice(-15);
-        for (const line of audioLines) {
-          if (isNameMentioned(line, botUsername)) {
-            audioMentionLines.push(`[AUDIO] ${line}`);
-          }
-        }
-      }
+      const audioMentionLines = getSpokenMentionLines(botId);
       const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
 
       // ── Mirror mention/spike detection into global stats ────────────────
@@ -295,12 +322,37 @@ export function useAutoForgeBot(botId: string) {
         return;
       }
 
-      // ── Persona fit (0–1): how well this bot's persona matches the moment ─
-      // High-chaos personas fit high activity; calm personas fit low activity.
-      const normActivity = activityLevel / 4;
-      const normChaos = (bot.persona.config.chaosLevel || 50) / 100;
-      let personaFit = 1 - Math.abs(normActivity - normChaos);
-      if (isMentioned) personaFit = Math.min(1, personaFit + 0.3); // mentioned bot strongly fits
+      // ── Semantic persona fit preview (0–1) ─────────────────────────────────
+      // Coordination projection of this bot's persona (profiles → response-
+      // function affinities, directives → topic hints). The REAL ensemble fit
+      // is computed by the semantic coordinator at floor resolution against the
+      // shared opportunity; this preview (same affinity tables) is stamped
+      // into the decision record for HUD/report display only. Replaces the
+      // legacy |roomActivity − chaosSlider| similarity heuristic.
+      const coordinationProfile = deriveCoordinationProfile(bot.persona.config);
+      // Semantic coordination hints — cheap deterministic signals the
+      // coordinator merges into the shared opportunity at floor resolution.
+      const recentHumanTexts = store.chatLog.slice(-6).filter((m) => !m.marker).map((m) => m.text);
+      const questionPending = recentHumanTexts.some(
+        (t) => /\?\s*$/.test(t.trim()) || /^(can|does|do|is|are|what|why|how|when|where|which|should|could|would|will)\b/i.test(t.trim()),
+      );
+      const socialOpening = recentHumanTexts.some(
+        (t) => /(first time|new here|first stream|first chat|hi everyone|hello everyone|hey everyone|just found this)/i.test(t),
+      );
+      const hypeMoment = activitySpike || chatVelocity >= 20;
+      const personaFit = previewSemanticFit(coordinationProfile, { isMentioned, questionPending, socialOpening, hypeMoment });
+      // Who this bot is responding to — the mention author (chat) or the
+      // streamer (audio callout). Used for thread continuity + dogpile logic.
+      const mentionTargetUsername = isMentioned
+        ? mentionedLines.length > 0
+          ? mentionedLines[0].split(":")[0]
+          : store.streamMetadata.channelName
+        : undefined;
+      const mentionSource: "chat" | "audio" | "both" | undefined = isMentioned
+        ? audioMentionLines.length > 0
+          ? mentionedLines.length > 0 ? "both" : "audio"
+          : "chat"
+        : undefined;
 
       // ── Memory context (per-bot) ─────────────────────────────────────────
       let memoryContext = "";
@@ -442,6 +494,69 @@ export function useAutoForgeBot(botId: string) {
         }
       }
 
+      // ── Participation awareness: pre-AI restraint gate ──────────────────
+      // "Even if something is happening, should the ensemble participate?"
+      // Channel-level (ensemble) restraint — a bot that hasn't spoken
+      // recently cannot bypass saturation caused by the other bots. Only
+      // OPTIONAL opportunities are suppressed pre-model; direct mentions and
+      // spikes proceed and are judged post-AI. Supercharge bypasses; manual
+      // quiet / direct-only apply even with the inferred layer disabled.
+      {
+        const liveGate = useAppStore.getState();
+        const participationActive =
+          (!supercharged && liveGate.participationAwarenessEnabled ||
+            liveGate.participationManualMode !== "auto" ||
+            participation.getSnapshot().explicitQuietUntil !== null) && !force;
+        if (participationActive) {
+          const evaluation = participation.evaluate({
+            channel: store.streamMetadata.channelName,
+            botId,
+            isMentioned,
+            activitySpike,
+            manualMode: liveGate.participationManualMode,
+          });
+          participationEvalRef.current = evaluation;
+          liveGate.setParticipationSnapshot(participation.getSnapshot());
+          if (evaluation.disposition === "silence" && evaluation.obligation === "optional") {
+            const reasonText = evaluation.reasonCodes
+              .map((c) => PARTICIPATION_REASON_LABELS[c])
+              .slice(0, 3)
+              .join(", ");
+            console.log(`[AutoForgeBot:${botId}] Participation gate: deliberate silence (${reasonText})`);
+            store.addBotAutoForgeEvent(botId, {
+              timestamp: Date.now(),
+              type: "silence",
+              severity: "low",
+              summary: `[${bot.session.username}] Deliberate silence: ${reasonText}`,
+              details: {
+                reasonCodes: evaluation.reasonCodes,
+                state: evaluation.state,
+                risk: evaluation.risk.overall,
+                obligation: evaluation.obligation,
+                receipt: evaluation.receipt,
+              },
+            });
+            const prevDecision = useAppStore.getState().bots.find((b) => b.id === botId)?.runtime?.lastAutoForgeDecision;
+            if (!prevDecision || prevDecision.gateSkipped) {
+              store.setBotLastAutoForgeDecision(botId, {
+                decision: "deliberate_silence",
+                confidence: 1,
+                reason: `Participation awareness: ${reasonText}`,
+                estimated_next_action_minutes: 0.5,
+                timestamp: now,
+                activityLevel,
+                isMentioned,
+                gateSkipped: true,
+              }, false);
+            }
+            store.setBotAutoForgeNextActionMs(botId, Date.now() + 30_000);
+            return;
+          }
+        } else {
+          participationEvalRef.current = null;
+        }
+      }
+
       // ── Auto-Check cadence gate ──────────────────────────────────────────
       // The user chooses how often CORE may spend a model evaluation per bot.
       // Interval mode enforces that cadence; Smart mode requires a real
@@ -533,6 +648,28 @@ export function useAutoForgeBot(botId: string) {
         botIdentityStory: bot.persona.botIdentityStory,
         audioEnergyLabel: store.audioEnergy?.label,
         streamEvents: store.streamEvents.slice(-5),
+        // Shared Room State — every bot observes the same room (it is shared
+        // world state, never shared personality). Advisory to raw evidence.
+        // Perception Liveness is shared too — one canonical sensor-truth for
+        // every bot (§28), with stale/error lanes labeled (§62).
+        roomStateContext: formatRoomStateContext(roomModel.getState(), roomModel.getMoments()) +
+          formatPerceptionContext(store.perceptionSummary),
+        participationContext: participationEvalRef.current
+          ? formatParticipationContext(participationEvalRef.current)
+          : undefined,
+        // Episodic Memory: bounded shared channel history — episodes are
+        // channel-level experience (never bot-specific), like the Room State.
+        // Advisory, sparse, and channel-guarded (empty when nothing is
+        // relevant — a valid outcome). Gated on the persisted toggle.
+        episodicContext: buildAutoForgeEpisodicContext({
+          enabled: store.episodicMemoryEnabled,
+          channelName: store.streamMetadata.channelName,
+          chatLog: store.chatLog,
+          audioTranscript: store.audioTranscript,
+          activeMomentTopicHints: roomModel.getMoments().find(
+            (mom) => mom.id === roomModel.getState()?.activeMomentId,
+          )?.topicHints,
+        }),
         firstMessageMode: isFirstMessage,
         superchargeMode: supercharged,
         fellowBotUsernames: supercharged
@@ -542,6 +679,15 @@ export function useAutoForgeBot(botId: string) {
               .filter(Boolean)
           : undefined,
         threadContext: formatThreadContext(botUsername),
+        // Channel learning (shared channel profile — the room's tolerance is
+        // not bot-specific; per-bot splits would fragment the evidence).
+        // Cold start (no actionable evidence) omits the block entirely.
+        selfPerformanceContext: useAppStore.getState().adaptiveLearningEnabled
+          ? buildSelfPerformanceContext(
+              useAppStore.getState().learningProfiles[learningProfileKey(store.streamMetadata.channelName)] ?? emptyLearningProfile(),
+            )
+          : undefined,
+        goalPressureContext: buildSessionGoalsContext(useAppStore.getState().goalEvaluationResults),
       });
 
       // First Message lock release helper. Safe to call on any exit path: it
@@ -607,9 +753,15 @@ export function useAutoForgeBot(botId: string) {
         responseTimeMs,
       });
 
-      // Confidence threshold (unless forced)
+      // Confidence threshold (unless forced). The participation state modulates
+      // the EFFECTIVE threshold (measured/quiet/cooldown raise the bar) — the
+      // user's stored setting is never mutated.
       const conf = normalizeConfidence(decision.confidence);
-      const threshold = store.autoForgeConfidenceThreshold ?? 0.5;
+      const threshold = Math.min(
+        0.95,
+        (store.autoForgeConfidenceThreshold ?? 0.5) +
+          (participationEvalRef.current?.effectiveThresholdModifier ?? 0),
+      );
       if (!force && conf < threshold && decision.decision !== "deliberate_silence") {
         store.addBotAutoForgeEvent(botId, {
           timestamp: Date.now(),
@@ -625,6 +777,48 @@ export function useAutoForgeBot(botId: string) {
       if (force && decision.decision === "deliberate_silence") {
         decision.decision = "full_forge";
         decision.reason = "Force override.";
+      }
+
+      // ── Participation awareness: post-AI restraint gate ─────────────────
+      // Late-stage guard: the room may have accelerated during generation,
+      // another bot may have covered the topic, or the ensemble was already
+      // in a restrained state. A valid proposal can still resolve to
+      // deliberate silence with a receipt. Direct obligations and forced
+      // checks always pass.
+      if (participationEvalRef.current && !force) {
+        const post = participation.evaluate({
+          channel: store.streamMetadata.channelName,
+          botId,
+          isMentioned,
+          activitySpike,
+          manualMode: useAppStore.getState().participationManualMode,
+          wouldHaveActed: decision.decision !== "deliberate_silence",
+        });
+        useAppStore.getState().setParticipationSnapshot(participation.getSnapshot());
+        if (post.disposition === "silence" && decision.decision !== "deliberate_silence") {
+          const reasonText = post.reasonCodes
+            .map((c) => PARTICIPATION_REASON_LABELS[c])
+            .slice(0, 3)
+            .join(", ");
+          console.log(`[AutoForgeBot:${botId}] Participation post-gate: suppressing ${decision.decision} (${reasonText})`);
+          store.addBotAutoForgeEvent(botId, {
+            timestamp: Date.now(),
+            type: "silence",
+            severity: "low",
+            summary: `[${bot.session.username}] Deliberate silence (would have sent): ${reasonText}`,
+            details: {
+              reasonCodes: post.reasonCodes,
+              state: post.state,
+              risk: post.risk.overall,
+              obligation: post.obligation,
+              suppressedDecision: decision.decision,
+              suppressedPayload: decision.action_payload,
+              receipt: post.receipt,
+            },
+          });
+          decision.decision = "deliberate_silence";
+          decision.reason = `Participation awareness: ${reasonText}`;
+        }
       }
 
       // Dry run
@@ -643,13 +837,45 @@ export function useAutoForgeBot(botId: string) {
       }
 
       // ── Act ──────────────────────────────────────────────────────────────
+      // Helper: build a semantic coordinator candidate. Carries the persona
+      // coordination profile + cheap deterministic hints (mention target,
+      // question/social/hype detection) so the coordinator can classify the
+      // shared opportunity and score semantic fit at floor resolution.
+      const buildCandidate = (decisionType: string, payload: string | undefined): BotCandidate => ({
+        decision: decisionType,
+        confidence: conf,
+        payload,
+        personaFit,
+        isMentioned,
+        personaProfile: coordinationProfile,
+        mentionSource,
+        targetUsername: mentionTargetUsername,
+        questionPending,
+        socialOpening,
+        firstMessagePending: isFirstMessage || undefined,
+      });
+      // Cross-bot semantic dedup: another bot's recent send (Jaccard ≥ 0.6 on
+      // the shared ledger) stands this one down. Per-bot exact dedup already
+      // ran above; this closes the cross-bot paraphrase gap.
+      const isCrossBotDup = (payload: string): boolean =>
+        !force && semanticCoordination.isCrossBotDuplicate(botId, payload);
+      // Human-readable reason from the last coordination receipt, for the
+      // lost-floor events below.
+      const lostFloorReason = (): string => {
+        const d = semanticCoordination.getBotDisposition(botId);
+        return d ? ` (${d.reason})` : "";
+      };
       // Helper: schedule a post-send engagement check (D4 parity with legacy).
       // After ENGAGEMENT_CHECK_DELAY_MS, counts chat lines, mentions, and
       // reactions that arrived after the send, then labels the engagement
       // level and updates the per-bot action history entry + accuracy metric.
-      const scheduleEngagementCheck = (actionType: string, message: string, sentAt: number) => {
+      const scheduleEngagementCheck = (actionType: string, message: string, sentAt: number, wasMentionResponse: boolean) => {
+        const engScope = captureSessionScope();
         const engTimer = setTimeout(() => {
           engagementTimersRef.current.delete(engTimer);
+          // Channel-switch guard: a pending observation from the previous
+          // channel must not train the new channel's learning profile.
+          if (!isSessionScopeCurrent(engScope)) return;
           const currentState = useAppStore.getState();
           const currentBot = currentState.bots.find((b) => b.id === botId);
           if (!currentBot) return;
@@ -669,6 +895,27 @@ export function useAutoForgeBot(botId: string) {
           });
           // A9: Record accuracy metric (shared global — no per-bot twin exists)
           useAppStore.getState().recordActionEngagement(actionType, label);
+          // Participation awareness: outcome evidence. Only OPTIONAL sends
+          // (not mention responses) inform the ignored-trend restraint dim.
+          participation.noteOutcome({
+            channel: currentState.streamMetadata.channelName,
+            label,
+            wasOptional: !wasMentionResponse,
+          });
+          // Channel learning: normalized outcome — every MADchatter bot's
+          // lines are excluded (bots cannot reward bots), and continuation is
+          // measured against the pre-send room baseline (busy chat cannot
+          // masquerade as success).
+          const session = currentState.platform === "kick" ? getKickSession() : currentState.platform === "joystick" ? getJoystickSession() : getTwitchSession();
+          const botUsernames = collectBotUsernames(currentState.bots, session?.username);
+          const outcome = computeNormalizedOutcome({
+            chatLog: currentChat,
+            sentAt,
+            botUsernames,
+            subjectUsername: botName,
+            wasMentionResponse,
+          });
+          useAppStore.getState().recordLearningOutcome(actionType, outcome.score);
         }, ENGAGEMENT_CHECK_DELAY_MS);
         engagementTimersRef.current.add(engTimer);
       };
@@ -757,7 +1004,7 @@ export function useAutoForgeBot(botId: string) {
             if (!force) {
               const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
               const payloadLower = messageToSend.toLowerCase().trim();
-              if (recentSent.includes(payloadLower)) {
+              if (recentSent.includes(payloadLower) || isCrossBotDup(messageToSend)) {
                 isFullForgeDup = true;
                 decision.decision = "deliberate_silence";
                 decision.reason = "Duplicate of recently sent message (full_forge variant).";
@@ -773,21 +1020,15 @@ export function useAutoForgeBot(botId: string) {
 
             if (!isFullForgeDup) {
               // Request the speaker floor
-              const candidate: BotCandidate = {
-                decision: "full_forge",
-                confidence: conf,
-                payload: messageToSend,
-                personaFit,
-                isMentioned,
-              };
+              const candidate = buildCandidate("full_forge", messageToSend);
               const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
               if (!granted) {
-                store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: "Lost speaker floor — another bot won the bid.", timestamp: now, activityLevel, personaFit, isMentioned });
+                store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: `Lost speaker floor — another bot won the bid.${lostFloorReason()}`, timestamp: now, activityLevel, personaFit, isMentioned });
                 store.addBotAutoForgeEvent(botId, {
                   timestamp: Date.now(),
                   type: "silence",
                   severity: "low",
-                  summary: `[${bot.session.username}] Lost speaker floor — deferring full_forge "${messageToSend.slice(0, 40)}"`,
+                  summary: `[${bot.session.username}] Lost speaker floor — deferring full_forge "${messageToSend.slice(0, 40)}"${lostFloorReason()}`,
                   details: { decision: "full_forge", confidence: conf },
                 });
                 store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
@@ -850,7 +1091,7 @@ export function useAutoForgeBot(botId: string) {
                 success: true,
               });
               // D4: Schedule post-send engagement correlation
-              scheduleEngagementCheck("full_forge", messageToSend, Date.now());
+              scheduleEngagementCheck("full_forge", messageToSend, Date.now(), isMentioned);
               store.setBotAutoForgeLastActionMs(botId, Date.now());
               store.addBotAutoForgeEvent(botId, {
                 timestamp: Date.now(),
@@ -920,7 +1161,7 @@ export function useAutoForgeBot(botId: string) {
         if (!force) {
           const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
           const payloadLower = decision.action_payload.toLowerCase().trim();
-          if (recentSent.includes(payloadLower)) {
+          if (recentSent.includes(payloadLower) || isCrossBotDup(decision.action_payload)) {
             isFollowupDup = true;
             decision.decision = "deliberate_silence";
             decision.reason = "Duplicate of recently sent message.";
@@ -930,21 +1171,15 @@ export function useAutoForgeBot(botId: string) {
           // Request the speaker floor at scheduling time so the coordinator's
           // 15s floor gap protects the delayed send from overlapping with
           // other bots.
-          const candidate: BotCandidate = {
-            decision: "quick_followup",
-            confidence: conf,
-            payload: decision.action_payload,
-            personaFit,
-            isMentioned,
-          };
+          const candidate = buildCandidate("quick_followup", decision.action_payload);
           const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
           if (!granted) {
-            store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: "Lost speaker floor — another bot won the bid.", timestamp: now, activityLevel, personaFit, isMentioned });
+            store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: `Lost speaker floor — another bot won the bid.${lostFloorReason()}`, timestamp: now, activityLevel, personaFit, isMentioned });
             store.addBotAutoForgeEvent(botId, {
               timestamp: Date.now(),
               type: "silence",
               severity: "low",
-              summary: `[${bot.session.username}] Lost speaker floor — deferring quick_followup "${decision.action_payload.slice(0, 40)}"`,
+              summary: `[${bot.session.username}] Lost speaker floor — deferring quick_followup "${decision.action_payload.slice(0, 40)}"${lostFloorReason()}`,
               details: { decision: "quick_followup", confidence: conf },
             });
             store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
@@ -1011,7 +1246,7 @@ export function useAutoForgeBot(botId: string) {
                 success: true,
               });
               // D4: Schedule post-send engagement correlation
-              scheduleEngagementCheck("quick_followup", followupPayload, Date.now());
+              scheduleEngagementCheck("quick_followup", followupPayload, Date.now(), isMentioned);
               store.addBotAutoForgeEvent(botId, {
                 timestamp: Date.now(),
                 type: "action_sent",
@@ -1095,7 +1330,7 @@ export function useAutoForgeBot(botId: string) {
         if (!force) {
           const recentSent = runtime.sentMessages.slice(-15).map((m) => m.message.toLowerCase().trim());
           const payloadLower = decision.action_payload.toLowerCase().trim();
-          if (recentSent.includes(payloadLower)) {
+          if (recentSent.includes(payloadLower) || isCrossBotDup(decision.action_payload)) {
             isDup = true;
             decision.decision = "deliberate_silence";
             decision.reason = "Duplicate of recently sent message.";
@@ -1103,22 +1338,16 @@ export function useAutoForgeBot(botId: string) {
         }
         if (!isDup) {
           // Request the speaker floor from the coordinator (unless forced).
-          const candidate: BotCandidate = {
-            decision: effectiveDecision,
-            confidence: conf,
-            payload: decision.action_payload,
-            personaFit,
-            isMentioned,
-          };
+          const candidate = buildCandidate(effectiveDecision, decision.action_payload);
           const granted = force ? true : await botCoordinator.requestFloor(botId, candidate);
           if (!granted) {
             // Lost the floor — stand down this cycle, retry soon.
-            store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: "Lost speaker floor — another bot won the bid.", timestamp: now, activityLevel, personaFit, isMentioned });
+            store.setBotLastAutoForgeDecision(botId, { ...decision, decision: "deliberate_silence", reason: `Lost speaker floor — another bot won the bid.${lostFloorReason()}`, timestamp: now, activityLevel, personaFit, isMentioned });
             store.addBotAutoForgeEvent(botId, {
               timestamp: Date.now(),
               type: "silence",
               severity: "low",
-              summary: `Lost speaker floor — deferring "${decision.action_payload.slice(0, 40)}"`,
+              summary: `Lost speaker floor — deferring "${decision.action_payload.slice(0, 40)}"${lostFloorReason()}`,
               details: { decision: effectiveDecision, confidence: conf },
             });
             store.setBotAutoForgeNextActionMs(botId, Date.now() + 20_000);
@@ -1179,7 +1408,7 @@ export function useAutoForgeBot(botId: string) {
             success: true,
           });
           // D4: Schedule post-send engagement correlation
-          scheduleEngagementCheck(effectiveDecision, decision.action_payload, Date.now());
+          scheduleEngagementCheck(effectiveDecision, decision.action_payload, Date.now(), isMentioned);
           store.setBotAutoForgeLastActionMs(botId, Date.now());
           store.addBotAutoForgeEvent(botId, {
             timestamp: Date.now(),
@@ -1217,6 +1446,29 @@ export function useAutoForgeBot(botId: string) {
           summary: `[${bot.session.username}] Silence: ${decision.reason}`,
           details: { decision: decision.decision, confidence: conf, reason: decision.reason },
         });
+        // Channel learning: restraint evidence (shared channel profile —
+        // sparse cadence, capped score, positive-only). See the matching
+        // block in useAutoForge for the full rationale.
+        {
+          const silenceLive = useAppStore.getState();
+          const silenceProfile = silenceLive.learningProfiles[learningProfileKey(store.streamMetadata.channelName)] ?? emptyLearningProfile();
+          if (shouldRecordSilenceObservation(silenceProfile, Date.now())) {
+            const silenceScope = captureSessionScope();
+            const decidedAt = Date.now();
+            const silenceTimer = setTimeout(() => {
+              engagementTimersRef.current.delete(silenceTimer);
+              if (!isSessionScopeCurrent(silenceScope)) return;
+              const evalLive = useAppStore.getState();
+              const session = evalLive.platform === "kick" ? getKickSession() : evalLive.platform === "joystick" ? getJoystickSession() : getTwitchSession();
+              const botUsernames = collectBotUsernames(evalLive.bots, session?.username);
+              const outcome = computeSilenceOutcome({ chatLog: evalLive.chatLog, decidedAt, botUsernames });
+              if (outcome.eligible) {
+                evalLive.recordLearningOutcome(SILENCE_ACTION, outcome.score, SILENCE_SAMPLE_WEIGHT);
+              }
+            }, ENGAGEMENT_CHECK_DELAY_MS);
+            engagementTimersRef.current.add(silenceTimer);
+          }
+        }
       } else {
         // Any non-silence action resets the consecutive silence counter.
         consecutiveSilenceRef.current = 0;
@@ -1332,15 +1584,7 @@ export function useAutoForgeBot(botId: string) {
         mentionedLines.push(`${msg.user}: ${msg.text}`);
       }
     }
-    const audioMentionLines: string[] = [];
-    if (store.audioTranscript) {
-      const audioLines = store.audioTranscript.split("\n").slice(-15);
-      for (const line of audioLines) {
-        if (isNameMentioned(line, botUsername)) {
-          audioMentionLines.push(`[AUDIO] ${line}`);
-        }
-      }
-    }
+    const audioMentionLines = getSpokenMentionLines(botId);
     const allMentionLines = [...mentionedLines, ...audioMentionLines];
     if (allMentionLines.length === 0) return;
 

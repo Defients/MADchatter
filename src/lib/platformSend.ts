@@ -6,6 +6,7 @@ import { sendJoystickMessage, getJoystickSession } from "./joystick";
 import { useAppStore } from "../store";
 import { captureSessionScope, isSessionScopeCurrent } from "./sessionScope";
 import { throwIfSendCancelled } from "./sendCancellation";
+import { SendCancelledError } from "./sendCancellation";
 
 export type PlatformSendFn = (channel: string, message: string, signal?: AbortSignal) => Promise<void>;
 
@@ -18,9 +19,22 @@ export type PlatformSendFn = (channel: string, message: string, signal?: AbortSi
  * When `botId` is provided (multi-bot mode), the returned function sends as
  * that specific bot identity via its own per-bot send manager + rate limiter.
  * Joystick ignores `botId` (single-bot for v1).
+ *
+ * Global stop: unless `opts.bypassGlobalStop` is set (the operator's manual
+ * chat input — explicit human intent), every automated send path (AutoForge
+ * loops, rule engine, queues, overlays) is blocked at this single chokepoint
+ * while `botsGlobalStop` is active. Blocked sends throw SendCancelledError —
+ * intentional withdrawal, never retried, never logged as provider failure.
  */
-export function getPlatformSendFn(platform: Platform, botId?: string): PlatformSendFn {
+export function getPlatformSendFn(
+  platform: Platform,
+  botId?: string,
+  opts?: { bypassGlobalStop?: boolean },
+): PlatformSendFn {
   return async (channel, message, signal) => {
+    if (!opts?.bypassGlobalStop && useAppStore.getState().botsGlobalStop) {
+      throw new SendCancelledError();
+    }
     const scope = captureSessionScope();
     const initial = useAppStore.getState();
     const controller = new AbortController();
@@ -40,6 +54,7 @@ export function getPlatformSendFn(platform: Platform, botId?: string): PlatformS
     const check = () => {
       const current = identity();
       if (!isSessionScopeCurrent(scope) || platform !== scope.platform ||
+        (!opts?.bypassGlobalStop && useAppStore.getState().botsGlobalStop) ||
         useAppStore.getState().multiBotEnabled !== initial.multiBotEnabled ||
         current?.username !== originalIdentity?.username || current?.userId !== originalIdentity?.userId) controller.abort();
     };

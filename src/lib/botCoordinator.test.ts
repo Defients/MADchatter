@@ -80,15 +80,32 @@ await runTest("mention bonus can override slight confidence gap", async () => {
   assert(won1 === false, "non-mentioned bot should lose");
 });
 
-await runTest("large confidence gap overrides mention bonus", async () => {
+await runTest("direct mention is not stolen by a higher-confidence bot", async () => {
   botCoordinator.reset();
-  // bot1 has much higher confidence (0.9), bot2 is mentioned (0.5 + 0.15 = 0.65)
+  // Semantic coordination contract (v1.1): a direct @mention is a
+  // conversational obligation. The mentioned bot owns the opportunity as long
+  // as its own bid clears the speak threshold; a higher-confidence
+  // non-mentioned bot defers instead of stealing the reply. (The legacy
+  // 0.15 mention bonus let a 0.9-confidence bot steal a 0.5-confidence
+  // mention — replaced by obligation priority.)
   const r1 = botCoordinator.requestFloor("bot1", makeCandidate({ confidence: 0.9, isMentioned: false }));
   const r2 = botCoordinator.requestFloor("bot2", makeCandidate({ confidence: 0.5, isMentioned: true }));
   await new Promise((r) => setTimeout(r, 100));
   const [won1, won2] = await Promise.all([r1, r2]);
-  assert(won1 === true, "high confidence should win despite mention bonus");
-  assert(won2 === false, "mentioned bot should lose to high confidence");
+  assert(won2 === true, "mentioned bot should win the floor (obligation priority)");
+  assert(won1 === false, "non-mentioned bot should defer despite higher confidence");
+});
+
+await runTest("mention falls back when the target cannot clear the bar", async () => {
+  botCoordinator.reset();
+  // The mentioned bot's bid is too weak (confidence 0.05) to clear the
+  // direct-mention speak threshold — the floor opens to fair competition.
+  const r1 = botCoordinator.requestFloor("bot1", makeCandidate({ confidence: 0.9, isMentioned: false }));
+  const r2 = botCoordinator.requestFloor("bot2", makeCandidate({ confidence: 0.05, isMentioned: true }));
+  await new Promise((r) => setTimeout(r, 100));
+  const [won1, won2] = await Promise.all([r1, r2]);
+  assert(won1 === true, "strong non-mentioned bot should win when the target is under the bar");
+  assert(won2 === false, "weak mentioned bid should not hold the floor hostage");
 });
 
 await runTest("persona fit breaks confidence ties", async () => {

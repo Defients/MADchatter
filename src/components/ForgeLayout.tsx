@@ -59,6 +59,9 @@ import {
   Clock,
   MonitorUp,
   StopCircle,
+  Timer,
+  Minus,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
@@ -79,10 +82,12 @@ import { loadChannelEmotes, clearEmoteCache } from "../lib/emotes";
 import { isNameMentioned } from "../lib/nameMatch";
 import { getTwitchSession } from "../lib/twitch";
 import { captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
+import { perception, classifyVisionError } from "../lib/perceptionLiveness";
 import { getVisionConfigRevision } from "../lib/visionProvider";
 import { EmoteText } from "./EmoteText";
 import { StreamOverlay } from "./StreamOverlay";
 import { ActionTimeline } from "./ActionTimeline";
+import { RoomReadCard } from "./RoomReadCard";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
@@ -410,31 +415,34 @@ export function ForgeLayout() {
   // window itself (self-capture). Used to crop frames to the Stream Embed
   // only and to show the warning toast once per capture session.
   const selfWindowCaptureRef = useRef(false);
-  // Smart capture — AI dynamically adjusts interval based on scene change rate
-  // Levels: 0=Fixed (60s), 1=Lite (smart)
+  // Visual capture mode selector — 4 mutually exclusive modes:
+  //   0 = AUTO  (fixed interval, adjustable 2–120s, default 60s)
+  //   1 = LITE  (conservative smart timing)
+  //   2 = BALANCED (moderate smart timing)
+  //   3 = HEAVY  (aggressive smart timing)
+  // AUTO and the three smart modes are mutually exclusive — only one is
+  // active at a time. AUTO uses a set timer; smart modes let the AI adjust
+  // the interval dynamically based on scene change rate.
   const SMART_LEVELS = [
-    { name: 'Fixed', color: 'gray', highDelta: 0, midDelta: 0, lowDelta: 0, fastMult: 1, midMult: 1, slowMult: 1, minInt: 60, maxInt: 60, desc: 'Snapshots are captured every 60 seconds. Simple and predictable.' },
-    { name: 'Lite', color: 'cyan', highDelta: 0.20, midDelta: 0.08, lowDelta: 0.01, fastMult: 0.7, midMult: 0.85, slowMult: 1.3, minInt: 5, maxInt: 90, desc: 'Smart timing. Captures slightly faster during action, slower when idle. The Forge decides when the scene is worth a snapshot.' },
+    { name: 'Auto', color: 'gray', highDelta: 0, midDelta: 0, lowDelta: 0, fastMult: 1, midMult: 1, slowMult: 1, minInt: 2, maxInt: 120, desc: 'Fixed-interval capture. Set a timer from 2s to 120s — snapshots are taken at that exact cadence. Simple and predictable.' },
+    { name: 'Lite', color: 'cyan', highDelta: 0.20, midDelta: 0.08, lowDelta: 0.01, fastMult: 0.7, midMult: 0.85, slowMult: 1.3, minInt: 5, maxInt: 90, desc: 'Conservative smart timing. Captures slightly faster during action, slower when idle. The Forge decides when the scene is worth a snapshot.' },
+    { name: 'Balanced', color: 'blue', highDelta: 0.15, midDelta: 0.05, lowDelta: 0.02, fastMult: 0.5, midMult: 0.75, slowMult: 1.5, minInt: 3, maxInt: 60, desc: 'Moderate smart timing. More responsive to scene changes — captures quicker during action, backs off more when idle. Good balance of coverage and efficiency.' },
+    { name: 'Heavy', color: 'purple', highDelta: 0.10, midDelta: 0.03, lowDelta: 0.03, fastMult: 0.3, midMult: 0.6, slowMult: 1.8, minInt: 2, maxInt: 30, desc: 'Aggressive smart timing. Captures rapidly during any scene activity. Highest coverage but most API calls. Best for fast-paced streams.' },
   ] as const;
   const [smartLevel, setSmartLevel] = useState(() => {
     const saved = localStorage.getItem("forge-visual-smart");
     const parsed = saved ? parseInt(saved) : 0;
-    return isNaN(parsed) || parsed < 0 || parsed > 1 ? 0 : parsed;
+    return isNaN(parsed) || parsed < 0 || parsed > 3 ? 0 : parsed;
   });
   const smartCapture = smartLevel > 0;
   useEffect(() => {
     localStorage.setItem("forge-visual-smart", smartLevel.toString());
   }, [smartLevel]);
-  const cycleSmartLevel = () => setSmartLevel((prev) => (prev + 1) % 2);
+  const cycleSmartLevel = () => setSmartLevel((prev) => (prev + 1) % 4);
 
-  // When switching to Fixed mode, reset interval to 60s
-  useEffect(() => {
-    if (!smartCapture && visualCaptureInterval !== 60) {
-      setVisualCaptureInterval(60);
-    }
-  }, [smartCapture]);
-
-  // When Smart mode is activated, auto-enable auto-capture
+  // When a smart mode is activated, auto-enable auto-capture (the master
+  // switch). AUTO mode does NOT force-enable — the user may want to set the
+  // timer first, then toggle auto-capture on.
   useEffect(() => {
     if (smartCapture && !visualAutoCapture) {
       setVisualAutoCapture(true);
@@ -447,10 +455,14 @@ export function ForgeLayout() {
 
   useEffect(() => {
     localStorage.setItem("forge-visual-auto", visualAutoCapture.toString());
+    // Perception Liveness: expected capture/analysis cadence (smart capture
+    // adjusts the interval — stale detection must respect the live cadence).
+    perception.noteVisionAutoCapture(visualAutoCapture);
   }, [visualAutoCapture]);
 
   useEffect(() => {
     localStorage.setItem("forge-visual-interval", visualCaptureInterval.toString());
+    perception.noteVisionCadence(visualCaptureInterval * 1000);
   }, [visualCaptureInterval]);
 
   useEffect(() => {
@@ -1540,6 +1552,8 @@ export function ForgeLayout() {
       if (!isMicCapturing) {
         stopDeepgram();
       }
+      // Perception Liveness: intentional capture stop — OFF, not an error.
+      perception.noteVisionCapture(false, Date.now(), { intentional: true });
       setWindowSelected(false);
       setTabCaptureMode(false);
       tabCaptureModeRef.current = false;
@@ -1566,6 +1580,14 @@ export function ForgeLayout() {
       const captureStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
       cachedStreamRef.current = captureStream;
       setWindowSelected(true);
+      // Perception Liveness: capture stage active. The track-ended listener
+      // below fires the moment the user stops sharing (browser UI) — vision
+      // must not stay LIVE until a timeout discovers the obvious (§19).
+      perception.noteVisionCapture(true);
+      const endedVideoTrack = captureStream.getVideoTracks()[0];
+      endedVideoTrack?.addEventListener("ended", () => {
+        perception.noteVisionCapture(false, Date.now(), { code: "capture_ended" });
+      });
 
       // Detect capture type from the actual track settings (not the requested constraint)
       const videoTrack = captureStream.getVideoTracks()[0];
@@ -1604,6 +1626,9 @@ export function ForgeLayout() {
       handleCaptureWindow();
     } catch (e: any) {
       if (e.name === 'NotAllowedError') {
+        // Perception Liveness: the user attempted capture and the browser
+        // refused — ERROR with a recovery hint (decays to OFF if never retried).
+        perception.noteVisionCapture(false, Date.now(), { code: "permission_denied" });
         toast.error("Permission denied to capture screen.");
       } else {
         toast.error("Failed to start capture");
@@ -1689,6 +1714,9 @@ export function ForgeLayout() {
       if (videoWidth === 0 || videoHeight === 0) {
         console.warn("[Visual] Video dimensions are 0x0 — stream may have ended");
         toast.error("Capture stream lost", { description: "The screen share may have been stopped. Re-capture the window." });
+        // Perception Liveness: capture ended without a track 'ended' event —
+        // transition immediately, never wait for a stale timeout.
+        perception.noteVisionCapture(false, Date.now(), { code: "capture_ended" });
         setWindowSelected(false);
         return;
       }
@@ -1968,6 +1996,12 @@ export function ForgeLayout() {
         if (data.tokenUsage) {
           useAppStore.getState().recordTokenUsage("vision", data.tokenUsage);
         }
+        // Perception Liveness: report only AFTER the session-scope + vision
+        // config revision guards above — a stale async result from channel A
+        // (or superseded provider settings) must never mark current vision
+        // LIVE. "No analysis" still counts as a successful pipeline round
+        // trip (transport worked; the model returned no observation).
+        perception.noteVisionSemantic({ ok: true });
         if (data.visualContext) {
           prevVisualContextRef.current = data.visualContext;
           setVisualSnapshot(dataUrl, [data.visualContext], isManual ? "manual" : "auto", delta);
@@ -1984,9 +2018,14 @@ export function ForgeLayout() {
           setVisualSnapshot(dataUrl, ["Captured — vision skipped (slot busy)"], isManual ? "manual" : "auto", delta);
         } else if (!vErrMsg.includes('No API key configured')) {
           console.error("[Visual] Vision API error:", visionErr);
+          // Perception Liveness: explicit semantic-stage failure. Capture
+          // survives → the lane reports DEGRADED (capture LIVE, provider ERROR),
+          // not a blanket "vision error".
+          perception.noteVisionSemantic({ ok: false, code: classifyVisionError(visionErr) });
           toast.error("Vision API failed", { description: vErrMsg });
           setVisualSnapshot(dataUrl, ["Captured — vision failed"], isManual ? "manual" : "auto", delta);
         } else {
+          perception.noteVisionSemantic({ ok: false, code: classifyVisionError(visionErr) });
           setVisualSnapshot(dataUrl, ["Captured — vision failed"], isManual ? "manual" : "auto", delta);
         }
       }
@@ -2457,6 +2496,7 @@ export function ForgeLayout() {
                         onClick={() => {
                           setGoldenMemory(isGolden ? null : mem.id);
                           toast.success(isGolden ? "Golden star removed" : "Golden star set — this memory will have extra impact on forged comments");
+                          playSfx(isGolden ? 'memory_remove' : 'memory_add');
                         }}
                         className={`p-0.5 rounded transition-all ${isGolden ? "text-yellow-400 hover:text-yellow-300" : "opacity-0 group-hover:opacity-100 text-gray-500 hover:text-yellow-400 hover:bg-yellow-500/15"}`}
                       >
@@ -2535,6 +2575,8 @@ export function ForgeLayout() {
             visualCooldown={visualCooldown}
             smartLevel={smartLevel}
             onCycleSmartLevel={cycleSmartLevel}
+            visualCaptureInterval={visualCaptureInterval}
+            setVisualCaptureInterval={setVisualCaptureInterval}
           />
         ) : (
           /* ═══ Core Mode — centered, panel-free desktop workspace ═══ */
@@ -2556,6 +2598,8 @@ export function ForgeLayout() {
             visualCooldown={visualCooldown}
             smartLevel={smartLevel}
             onCycleSmartLevel={cycleSmartLevel}
+            visualCaptureInterval={visualCaptureInterval}
+            setVisualCaptureInterval={setVisualCaptureInterval}
             onVisualInlineHiddenChange={(hidden) => { visualInlineHiddenRef.current = hidden; }}
           />
         )
@@ -2998,11 +3042,13 @@ export function ForgeLayout() {
                                       className={cn(
                                         "h-6 px-2 flex items-center gap-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all focus-visible:ring-2 focus-visible:outline-none",
                                         smartLevel === 0 && "text-gray-400 bg-white/5 hover:bg-white/10",
-                                        smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25 focus-visible:ring-cyan-500/40"
+                                        smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25 focus-visible:ring-cyan-500/40",
+                                        smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25 focus-visible:ring-blue-500/40",
+                                        smartLevel === 3 && "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25 focus-visible:ring-purple-500/40"
                                       )}
                                     >
-                                      <Sparkles className="w-3 h-3" />
-                                      {smartLevel === 0 ? "60s" : "LITE"}
+                                      {smartCapture ? <Sparkles className="w-3 h-3" /> : <Timer className="w-3 h-3" />}
+                                      {smartLevel === 0 ? `AUTO ${visualCaptureInterval}s` : SMART_LEVELS[smartLevel].name.toUpperCase()}
                                     </button>
                                   } />
                                   <TooltipContent
@@ -3013,16 +3059,44 @@ export function ForgeLayout() {
                                   >
                                     <div className="p-3 space-y-2">
                                       <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
-                                        <Sparkles className={cn("w-3 h-3", smartLevel === 1 ? "text-cyan-400" : "text-gray-500")} />
-                                        <span className={cn("text-[11px] font-bold uppercase font-mono tracking-wider", smartLevel === 1 ? "text-cyan-300" : "text-gray-400")}>
-                                          {smartLevel === 1 ? "Lite — Smart Capture" : "Fixed — 60s"}
+                                        {smartCapture ? (
+                                          <Sparkles className={cn("w-3 h-3", smartLevel === 1 && "text-cyan-400", smartLevel === 2 && "text-blue-400", smartLevel === 3 && "text-purple-400")} />
+                                        ) : (
+                                          <Timer className="w-3 h-3 text-gray-400" />
+                                        )}
+                                        <span className={cn("text-[11px] font-bold uppercase font-mono tracking-wider", smartLevel === 1 && "text-cyan-300", smartLevel === 2 && "text-blue-300", smartLevel === 3 && "text-purple-300", smartLevel === 0 && "text-gray-400")}>
+                                          {smartLevel === 0 ? "Auto — Fixed Timer" : `${SMART_LEVELS[smartLevel].name} — Smart Capture`}
                                         </span>
                                       </div>
                                       <p className="text-[11px] leading-relaxed text-gray-300">{SMART_LEVELS[smartLevel].desc}</p>
-                                      <div className="flex items-center justify-between text-[10px] text-gray-500">
-                                        <span>Click to switch: Fixed ↔ Lite</span>
-                                      </div>
-                                      {smartLevel === 1 && (
+                                      {smartLevel === 0 ? (
+                                        <div className="pt-1 border-t border-white/5 space-y-1.5">
+                                          <div className="flex items-center justify-between text-[10px] text-gray-500">
+                                            <span>Click to switch to smart modes</span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="text-[10px] text-gray-400 font-mono shrink-0">Interval</span>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => { e.stopPropagation(); setVisualCaptureInterval(Math.max(2, visualCaptureInterval - 5)); }}
+                                              className="w-5 h-5 flex items-center justify-center rounded bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+                                              aria-label="Decrease interval"
+                                            >
+                                              <Minus className="w-3 h-3" />
+                                            </button>
+                                            <span className="text-[11px] font-mono font-bold text-orange-300 min-w-[36px] text-center">{visualCaptureInterval}s</span>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => { e.stopPropagation(); setVisualCaptureInterval(Math.min(120, visualCaptureInterval + 5)); }}
+                                              className="w-5 h-5 flex items-center justify-center rounded bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+                                              aria-label="Increase interval"
+                                            >
+                                              <Plus className="w-3 h-3" />
+                                            </button>
+                                            <span className="text-[9px] text-gray-600 font-mono ml-1">2–120s</span>
+                                          </div>
+                                        </div>
+                                      ) : (
                                         <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
                                           <span className="font-mono">
                                             Range: {SMART_LEVELS[smartLevel].minInt}s–{SMART_LEVELS[smartLevel].maxInt}s
@@ -3050,7 +3124,7 @@ export function ForgeLayout() {
                                       aria-label={visualAutoCapture ? "Disable auto-capture" : "Enable auto-capture"}
                                     >
                                       {visualAutoCapture ? <Zap className="w-3 h-3" /> : <CirclePause className="w-3 h-3" />}
-                                      {visualAutoCapture ? "AUTO" : "OFF"}
+                                      {visualAutoCapture ? "ON" : "OFF"}
                                     </button>
                                   } />
                                   <TooltipContent
@@ -3076,13 +3150,13 @@ export function ForgeLayout() {
                                       {visualAutoCapture ? (
                                         <p className="text-[11px] leading-relaxed text-gray-300">
                                           {smartCapture
-                                            ? <>Lite mode is managing capture timing — snapshots are taken when the scene changes meaningfully.</>
-                                            : <>Snapshots are captured automatically every <span className="font-mono text-orange-300">60s</span>. The Forge uses these to understand what's happening on screen.</>
+                                            ? <>{SMART_LEVELS[smartLevel].name} mode is managing capture timing — snapshots are taken when the scene changes meaningfully.</>
+                                            : <>Snapshots are captured automatically every <span className="font-mono text-orange-300">{visualCaptureInterval}s</span>. The Forge uses these to understand what's happening on screen.</>
                                           }
                                         </p>
                                       ) : (
                                         <p className="text-[11px] leading-relaxed text-gray-300">
-                                          Click to start capturing visual snapshots automatically. Use the mode button to switch between Fixed (60s) and Lite (smart timing).
+                                          Click to start capturing visual snapshots automatically. Use the mode button to switch between Auto (fixed timer) and smart modes (Lite / Balanced / Heavy).
                                         </p>
                                       )}
                                       <div className="flex items-center gap-1.5 text-[10px] text-gray-500 pt-1 border-t border-white/5">
@@ -3630,6 +3704,13 @@ export function ForgeLayout() {
                 <div data-tutorial="action-timeline">
                 <ActionTimeline />
                 </div>
+                {/* Room Read — Studio-density variant of the shared Room Read
+                    contract (same useRoomRead derivation as CORE/mobile). */}
+                {!!streamMetadata?.channelName && (
+                  <div className="pb-1">
+                    <RoomReadCard variant="studio" />
+                  </div>
+                )}
                 {/* The Forge fills the rest */}
                 <div className="flex-1 overflow-hidden">
                   <TheForge />
@@ -3803,7 +3884,7 @@ export function ForgeLayout() {
                         </button>
                       </ThemedTooltip>
                     )}
-                    <ThemedTooltip content={`${SMART_LEVELS[smartLevel].name} mode — click to switch`}>
+                    <ThemedTooltip content={`${SMART_LEVELS[smartLevel].name} mode — click to cycle`}>
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); cycleSmartLevel(); }}
@@ -3811,10 +3892,12 @@ export function ForgeLayout() {
                         className={cn(
                           "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
                           smartLevel === 0 && "text-gray-400 bg-white/5 hover:bg-white/10",
-                          smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25"
+                          smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25",
+                          smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25",
+                          smartLevel === 3 && "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25"
                         )}
                       >
-                        <Sparkles className="w-2.5 h-2.5" />
+                        {smartCapture ? <Sparkles className="w-2.5 h-2.5" /> : <Timer className="w-2.5 h-2.5" />}
                       </button>
                     </ThemedTooltip>
                     <ThemedTooltip content={visualAutoCapture ? "Auto-capture ON (click to disable)" : "Auto-capture OFF (click to enable)"}>

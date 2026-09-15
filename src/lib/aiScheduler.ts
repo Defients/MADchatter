@@ -755,6 +755,15 @@ export function getOperationTokenBudget(
     case "autoforge_briefing":
       return 1024;
 
+    case "moment_synthesis":
+      // Room Model enrichment: small structured JSON (title + summary + hints).
+      return 512;
+
+    case "episode_synthesis":
+      // Episodic Memory enrichment: small structured JSON (title + summary +
+      // topics + kind).
+      return 512;
+
     case "memory_extraction":
       return 1536; // Bounded structured JSON — memories + profiles + jokes.
 
@@ -802,6 +811,13 @@ export function getOperationTimeout(
       return isOllama ? 120_000 : 30_000;
     case "memory_extraction":
       return isOllama ? 45_000 : 30_000; // Background — shorter for Ollama so it yields faster.
+    case "moment_synthesis":
+      // Background Room Model enrichment — small JSON, but local models need
+      // cold-start headroom. Yields to interactive/critical work regardless.
+      return isOllama ? 60_000 : 30_000;
+    case "episode_synthesis":
+      // Background Episodic Memory enrichment — same profile as moment synthesis.
+      return isOllama ? 60_000 : 30_000;
     case "smart_reply":
       return isOllama ? 30_000 : 20_000;
     default:

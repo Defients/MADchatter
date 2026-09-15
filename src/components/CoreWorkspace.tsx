@@ -47,6 +47,9 @@ import {
   Send,
   Settings,
   Sparkles,
+  Timer,
+  Minus,
+  Plus,
   Tv,
   Zap,
 } from "lucide-react";
@@ -56,6 +59,7 @@ import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { useCoreReadiness, type CorePhase } from "../hooks/useCoreReadiness";
+import { RoomReadCard } from "./RoomReadCard";
 import { TheForge } from "./TheForge";
 import { VersionBadge } from "./VersionBadge";
 import { PersonaPortrait } from "./PersonaPortrait";
@@ -99,6 +103,9 @@ interface CoreWorkspaceProps {
   // Visual auto-capture mode controls
   smartLevel: number;
   onCycleSmartLevel: () => void;
+  // AUTO mode timer adjustment (2–120s, default 60s)
+  visualCaptureInterval: number;
+  setVisualCaptureInterval: (v: number) => void;
   // Notifies ForgeLayout when the inline Visual panel is hidden/shown so
   // auto-capture can pause when there's nothing to display.
   onVisualInlineHiddenChange?: (hidden: boolean) => void;
@@ -386,6 +393,16 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                 activeLogout={props.activeLogout}
               />
             )}
+            {/* ─── Room Read (shared Room Read contract, once a channel is live) ──
+                Placed above TheForge deliberately: the user verifies MADchatter's
+                understanding BEFORE the first Forge/AutoForge action (connect →
+                observe understanding → trust → authorize). */}
+            {readiness.phase !== "setup" && !!streamMetadata?.channelName && (
+              <div className="mt-3">
+                <RoomReadCard />
+              </div>
+            )}
+
             {/* TheForge stays mounted across phases — hidden during setup so its
                 forge-trigger listener exists and variant state survives the transition.
                 Exception: once the first Forge completes (hasForgedOnce), unhide TheForge
@@ -592,22 +609,43 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                                   Snap
                                 </button>
                               </ThemedTooltip>
-                              <ThemedTooltip content={`${props.smartLevel === 0 ? "Fixed (60s)" : "Lite (smart)"} mode — click to switch`}>
+                              <ThemedTooltip content={`${props.smartLevel === 0 ? `Auto (${props.visualCaptureInterval}s fixed)` : `${["Auto", "Lite", "Balanced", "Heavy"][props.smartLevel]} (smart)`} mode — click to cycle`}>
                                 <button
                                   type="button"
                                   onClick={props.onCycleSmartLevel}
                                   className={cn(
                                     "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
-                                    props.smartLevel === 0
-                                      ? "text-gray-400 bg-white/5 hover:bg-white/10"
-                                      : "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25"
+                                    props.smartLevel === 0 && "text-gray-400 bg-white/5 hover:bg-white/10",
+                                    props.smartLevel === 1 && "text-cyan-400 bg-cyan-500/15 hover:bg-cyan-500/25",
+                                    props.smartLevel === 2 && "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25",
+                                    props.smartLevel === 3 && "text-purple-400 bg-purple-500/15 hover:bg-purple-500/25"
                                   )}
                                   aria-label="Toggle capture mode"
                                 >
-                                  <Sparkles className="w-3 h-3" />
-                                  {props.smartLevel === 0 ? "60s" : "Lite"}
+                                  {props.smartLevel > 0 ? <Sparkles className="w-3 h-3" /> : <Timer className="w-3 h-3" />}
+                                  {props.smartLevel === 0 ? `${props.visualCaptureInterval}s` : ["Lite", "Bal", "Heavy"][props.smartLevel - 1]}
                                 </button>
                               </ThemedTooltip>
+                              {props.smartLevel === 0 && (
+                                <div className="flex items-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => props.setVisualCaptureInterval(Math.max(2, props.visualCaptureInterval - 5))}
+                                    className="w-4 h-4 flex items-center justify-center rounded text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-colors"
+                                    aria-label="Decrease interval"
+                                  >
+                                    <Minus className="w-2.5 h-2.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => props.setVisualCaptureInterval(Math.min(120, props.visualCaptureInterval + 5))}
+                                    className="w-4 h-4 flex items-center justify-center rounded text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-colors"
+                                    aria-label="Increase interval"
+                                  >
+                                    <Plus className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => setVisualInlineHidden(true)}
@@ -2595,6 +2633,8 @@ function PreviousCycleDecisionPanel() {
             className="overflow-hidden"
           >
             <div className="px-3 pb-3 space-y-2.5">
+              {/* Participation posture — calm one-line state (Listening /
+                  Cooling down / Direct-only) + the global STOP control. */}
               {!lastDecision ? (
                 <div className="text-[10px] text-gray-500">
                   {autoForgeEnabled ? "Waiting for first check…" : "AutoForge is off"}

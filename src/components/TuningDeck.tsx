@@ -893,6 +893,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
                   variant="ghost"
                   size="icon"
                   data-tutorial="settings"
+                  aria-label="Open system configuration"
                   className="ml-2 text-gray-400 hover:text-orange-400 rounded-lg h-8 w-8 bg-white/5 border border-white/5 hover:border-orange-500/40 hover:shadow-[0_0_12px_rgba(249,115,22,0.4)] hover:bg-orange-500/10 transition-all duration-300 group"
                 />
               }

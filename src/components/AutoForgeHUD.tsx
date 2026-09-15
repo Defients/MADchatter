@@ -12,6 +12,7 @@ import { Reorder } from 'framer-motion';
 import { ThemedTooltip } from './ui/tooltip';
 import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from './directorNoteShared';
 import { useEffectiveMode } from '../hooks/useMediaQuery';
+import { ParticipationControl } from './ParticipationControl';
 
 // ─── Next Check color thresholds ───────────────────────────────────────────
 // Short = hot/green (about to fire), long = cool/red (calm wait).
@@ -884,6 +885,9 @@ export function AutoForgeHUD() {
 
             {/* Cooldown & Rate Limit Visual */}
             <RateLimitIndicator />
+
+            {/* Participation awareness — state, reasons, quiet/direct-only, STOP */}
+            <ParticipationControl />
 
             {/* Context Token Budget */}
             <div className="flex flex-col gap-2 p-2.5 bg-black/40 rounded border border-white/5">

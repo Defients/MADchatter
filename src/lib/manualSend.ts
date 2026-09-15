@@ -55,7 +55,9 @@ export async function sendManualMessage({
     // Dry run: skip the platform send entirely. Record the message locally so
     // it appears in the chat log, but never post to the live channel.
     if (!dryRun) {
-      await getPlatformSendFn(state.platform, sentBot?.id)(destination, text);
+      // Manual sends bypass the global stop — this is the operator's own
+      // explicit chat input (human intent outranks restraint, always).
+      await getPlatformSendFn(state.platform, sentBot?.id, { bypassGlobalStop: true })(destination, text);
     }
     // Delivery may finish after navigation or an identity change. It cannot be
     // undone, but its old history must never be written into the new session.

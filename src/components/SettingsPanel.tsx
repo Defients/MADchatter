@@ -48,6 +48,10 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const showKeys = variant === "keys" || variant === "full";
   const showConfig = variant === "config" || variant === "full";
+  const synthesisEnabled = useAppStore((s) => s.roomModelSynthesisEnabled);
+  const setSynthesisEnabled = useAppStore((s) => s.setRoomModelSynthesisEnabled);
+  const episodicEnabled = useAppStore((s) => s.episodicMemoryEnabled);
+  const setEpisodicEnabled = useAppStore((s) => s.setEpisodicMemoryEnabled);
 
   const [activeProvider, setActiveProviderState] = useState<
     "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai"
@@ -895,6 +899,22 @@ export function SettingsPanel({
         </div>
       )}
 
+          <div className="mt-auto border-t border-white/5 pt-4">
+            <fieldset className="space-y-3 text-xs text-gray-300">
+              <legend className="mb-2 font-semibold text-white">Room intelligence</legend>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={episodicEnabled} onChange={(e) => setEpisodicEnabled(e.target.checked)} />
+                Remember shared episodes
+              </label>
+              <p className="text-[11px] text-gray-400">Build and recall shared events. Turning this off keeps retained history.</p>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={synthesisEnabled} onChange={(e) => setSynthesisEnabled(e.target.checked)} />
+                AI enrichment for moments and episodes
+              </label>
+              <p className="text-[11px] text-gray-400">Optional summaries use your selected provider, at most once every ten minutes across both systems. Room awareness continues without them.</p>
+            </fieldset>
+          </div>
+
       {showConfig && (
         <>
           <section className="grid grid-cols-2 gap-3">
@@ -1115,12 +1135,7 @@ export function SettingsPanel({
             </div>
           </section>
 
-          <div className="mt-auto border-t border-white/5 pt-4">
-            <div className="flex items-center gap-2 text-[9px] font-mono text-gray-600">
-              <div className="w-2 h-2 rounded-full bg-green-500"></div>
-              API: gemini-3.8-flash [STABLE]
-            </div>
-          </div>
+
         </>
       )}
     </div>

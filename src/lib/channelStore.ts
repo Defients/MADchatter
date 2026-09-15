@@ -22,6 +22,8 @@ import type {
   PersonalityState,
 } from "../types";
 import type { AutoForgeDecision } from "./ai";
+import type { RoomModelSnapshot } from "./roomModel";
+import type { EpisodicMemorySnapshot } from "./episodicMemory";
 
 const DB_NAME = "madchatter-channels";
 const DB_VERSION = 1;
@@ -81,6 +83,12 @@ export interface ChannelSnapshot {
   lastAutoForgeDecision?: AutoForgeDecision | null;
   autoForgeDecisionHistory?: AutoForgeDecision[];
   botSessions?: BotSessionSnapshot[];
+  // Room Model (v28): compact Room State + bounded Moment timeline. Closed
+  // moments survive as episodic history; volatile state resets on restore.
+  roomModel?: RoomModelSnapshot;
+  // Episodic Memory (v29): retained episodes survive as channel history;
+  // open candidates were force-closed on export (session boundary).
+  episodicMemory?: EpisodicMemorySnapshot;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;

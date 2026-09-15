@@ -321,7 +321,9 @@ export type TokenFeatureKey =
   | "autoforge_decide"
   | "vision"
   | "briefing"
-  | "memory_extraction";
+  | "memory_extraction"
+  | "moment_synthesis"
+  | "episode_synthesis";
 
 export interface AutoForgeRateLimitConfig {
   maxActionsPerHour: number;
@@ -688,6 +690,10 @@ export interface BotPersona {
   botIdentityMode: "admit" | "custom";
   botIdentityStory: string;
   activePersonaId: string | null;
+  /** Explicit spoken aliases (Spoken Callout Priority) — what the streamer
+   *  may verbally call this bot besides its username/label. Bounded set,
+   *  user-configured only; never auto-derived from name substrings. */
+  spokenAliases?: string[];
 }
 
 export interface BotRuntime {

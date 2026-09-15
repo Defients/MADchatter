@@ -225,16 +225,22 @@ export function TheForge() {
   };
 
   const handleSend = async (message: string, botId?: string, source: "manual" | "autoforge" = "manual") => {
-    const toastId = toast.loading("Sending message to stream chat...", {
+    const state = useAppStore.getState();
+    const isDryRun = state.autoForgeDryRun && source === "manual";
+    const toastId = toast.loading(isDryRun ? "Previewing message (Dry Run)..." : "Sending message to stream chat...", {
       description: `Message: "${message.substring(0, 30)}..."`
     });
     try {
-      const state = useAppStore.getState();
-      await sendManualMessage({ message, channel: streamMetadata.channelName, botId, source });
-      if (state.messageSoundEnabled) playMessageSound();
-      speakMessage(message);
-      toast.success("Sent to chat!", { id: toastId });
-      playSfx('send_message');
+      await sendManualMessage({ message, channel: streamMetadata.channelName, botId, source, dryRun: isDryRun });
+      if (isDryRun) {
+        toast.success("Dry Run — message previewed in chat log", { id: toastId });
+        playSfx('secret_word');
+      } else {
+        if (state.messageSoundEnabled) playMessageSound();
+        speakMessage(message);
+        toast.success("Sent to chat!", { id: toastId });
+        playSfx('send_message');
+      }
     } catch (e: any) {
       toast.error(e.message || "Failed to send message", { id: toastId });
       playSfx('error');

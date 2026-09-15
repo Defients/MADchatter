@@ -39,7 +39,7 @@ export function createAutoForgeExecutionGuard(identityIsCurrent: () => boolean) 
   const controller = new AbortController();
   const contextMatches = () => {
     const state = useAppStore.getState();
-    return isSessionScopeCurrent(scope) && state.autoForgeEnabled &&
+    return isSessionScopeCurrent(scope) && state.autoForgeEnabled && !state.botsGlobalStop &&
       state.autoForgeDryRun === initial.autoForgeDryRun &&
       state.multiBotEnabled === initial.multiBotEnabled &&
       selectMultiBotActive(state) === multiBotActive && identityIsCurrent();

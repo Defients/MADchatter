@@ -16,14 +16,18 @@ import {
   AUTOFORGE_SYSTEM_PROMPT,
   MEMORY_AWARENESS_PROMPT,
   AUTOFORGE_MEMORY_PROMPT,
+  EPISODIC_AWARENESS_PROMPT,
   ANTI_REPETITION_PROMPT,
   SENTIMENT_AWARENESS_PROMPT,
+  SELF_PERFORMANCE_PROMPT,
   buildBotIdentityPrompt,
   FIRST_MESSAGE_DIRECTIVE,
   SUPERCHARGE_DIRECTIVE,
 } from "./prompts";
 import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
 import { stripEmDashes } from "./textSanitize";
+import { buildMomentSynthesisInput, type RoomMoment } from "./roomModel";
+import type { Episode } from "./episodicMemory";
 import {
   getHealthyFallbackChain,
   recordProviderFailure,
@@ -276,6 +280,10 @@ export interface GenerateChatParams {
   botUsername?: string;
   memoryContext?: string;
   sentimentContext?: string;
+  /** Episodic Memory — bounded, temporally-labeled PAST episodes relevant
+   *  to the current conversation. Built by buildEpisodicPromptContext in
+   *  episodicMemory.ts. Empty when nothing is relevant (valid outcome). */
+  episodicContext?: string;
   availableEmotes?: string[];
   /** Emote names tagged with provider+scope (e.g. "monkaS (7tv-channel)").
    *  When provided, the prompt uses this list with provider/scope tags so the
@@ -425,6 +433,7 @@ LONG-TERM CONTEXT:
 ${params.longTermContext || "None provided"}
 ${params.memoryContext ? `\n${params.memoryContext}` : ""}
 ${params.sentimentContext ? `\n${params.sentimentContext}` : ""}
+${params.episodicContext ? `\n${params.episodicContext}` : ""}
 
 ACTIVE CONFIGURATION:
 - Primary Profile: ${params.config.primaryProfile && params.config.primaryProfile !== "none" ? params.config.primaryProfile : "None (Unmasked/Raw. No selected profile mask. Act as an authentic, natural co-pilot that adapts dynamically to the organic stream vibe without forcing a stylized persona.)"}
@@ -442,7 +451,7 @@ ${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMO
 ${effortDirective}
 ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count} suggestion${params.count > 1 ? "s" : ""}. Do not generate more or fewer than ${params.count}.` : ""}`;
 
-  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
+  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
   let generatedJsonStr = "";
 
   const forgeTimeout = getOperationTimeout("forge", provider);
@@ -1033,6 +1042,10 @@ export interface AutoForgeParams {
   botUsername?: string;
   force?: boolean;
   memoryContext?: string;
+  /** Episodic Memory — bounded, temporally-labeled PAST episodes relevant
+   *  to the current conversation. Built by buildEpisodicPromptContext in
+   *  episodicMemory.ts. Empty when nothing is relevant (valid outcome). */
+  episodicContext?: string;
   antiRepetitionContext?: string;
   sentimentContext?: string;
   availableEmotes?: string[];
@@ -1045,6 +1058,17 @@ export interface AutoForgeParams {
   botIdentityStory?: string;
   audioEnergyLabel?: "silent" | "quiet" | "normal" | "loud" | "spike";
   streamEvents?: string[];
+  /** Room Model — compact deterministic situational summary (activity,
+   *  sentiment, perception freshness, active/recent moments). Advisory by
+   *  construction: the block itself declares that direct evidence above
+   *  outranks it. Built by formatRoomStateContext in roomModel.ts. */
+  roomStateContext?: string;
+  /** Participation awareness — compact restraint guidance (mode, reasons,
+   *  direction) built by formatParticipationContext in
+   *  participationAwareness.ts. Empty when the state is "open" (zero prompt
+   *  cost in a healthy room). Advisory: mentions and direct evidence always
+   *  outrank it. */
+  participationContext?: string;
   /** First Message Mode: when true, appends the temporary "arrival" directive
    *  so the bot's next action (short_reaction / emote_only / quick_followup)
    *  or full_forge generation leans toward a natural entrance. Additive only. */
@@ -1060,6 +1084,15 @@ export interface AutoForgeParams {
    *  Injected into the decision prompt so the bot knows when it's being
    *  replied to and can maintain coherent multi-turn exchanges. */
   threadContext?: string;
+  /** Channel learning — compact historical evidence about how the bot's past
+   *  action types were received in THIS channel (normalized, decayed,
+   *  confidence-labeled). Advisory only; built by buildSelfPerformanceContext
+   *  in channelLearning.ts and gated on adaptiveLearningEnabled. */
+  selfPerformanceContext?: string;
+  /** Session objectives — bounded steering pressure from the user's session
+   *  goals. Built by buildSessionGoalsContext in channelLearning.ts; absent
+   *  when no goals are enabled or all are met. */
+  goalPressureContext?: string;
 }
 
 export interface AutoForgeBriefingParams {
@@ -1193,6 +1226,361 @@ Write it like a friend catching you up — casual but informative. Don't just li
   throw new Error("Invalid provider");
 }
 
+// ─── Room Model Moment Synthesis ──────────────────────────────────────────────
+
+export interface MomentSynthesisParams {
+  /** The closed, high-significance moment to enrich. */
+  moment: RoomMoment;
+  activeProvider: string;
+  channel: string;
+}
+
+export interface MomentSynthesisResult {
+  title?: string;
+  summary?: string;
+  topicHints?: string[];
+  tokenUsage?: TokenUsage;
+}
+
+/**
+ * Sparse AI enrichment of a closed Room Model moment. The prompt contains
+ * ONLY the moment's structured deterministic evidence (never raw history);
+ * the output may only fill semantic fields (title / summary / topicHints).
+ * Runs at background scheduler priority — it must never delay chat
+ * ingestion, sends, or AutoForge decisions. Failure is expected to be
+ * tolerated by the caller: the deterministic moment stays valid without it.
+ */
+export async function generateMomentSynthesis(params: MomentSynthesisParams): Promise<MomentSynthesisResult> {
+  const rawProvider = params.activeProvider || "gemini";
+  const provider = normalizeProvider(rawProvider);
+  const apiKey = getApiKey(rawProvider);
+  if (!apiKey) throw new Error(`No API key configured for ${rawProvider}. Add it in Settings.`);
+
+  const keys = getKeys();
+  const evidence = JSON.stringify(buildMomentSynthesisInput(params.moment, null), null, 2);
+
+  const userMessageContent = `You are the Room Model's synthesis layer for a live stream co-pilot. A significant moment was detected and closed by the deterministic engine. Name and summarize it.
+
+CHANNEL: ${params.channel}
+MOMENT KIND: ${params.moment.kind}
+SIGNIFICANCE: ${params.moment.significance.toFixed(2)} (how much it mattered)
+CONFIDENCE: ${params.moment.confidence.toFixed(2)} (how strongly the evidence agrees)
+DETERMINISTIC EVIDENCE (facts — do not invent beyond these):
+${evidence}
+
+Rules:
+- The title is a short label (max 60 chars) for what happened, e.g. "Final-round loss triggers chat eruption".
+- The summary is 1-2 factual sentences describing the episode and how signals related. Only reference what the evidence supports.
+- topicHints: 0-3 lowercase keywords.
+- If the evidence is thin, say so plainly — never fabricate specifics (names, numbers, causes) that are not in the evidence.
+- NO em-dashes anywhere.
+
+Output ONLY valid JSON, exactly this schema:
+{"title": "string", "summary": "string", "topicHints": ["string"], "confidence": 0.0}`;
+
+  const systemPrompt = "You are a precise, factual summarizer for a stream-analytics system. You only interpret structured evidence you are given; you never invent events, names, or causes. Output ONLY valid JSON matching the requested schema. No markdown fences, no extra text.";
+
+  const synthTimeout = getOperationTimeout("moment_synthesis", provider);
+  const synthPriority: AIRequestPriority = "background";
+  const synthMaxTokens = getOperationTokenBudget("moment_synthesis");
+
+  let rawText = "";
+  let usage: TokenUsage | undefined;
+
+  if (provider === "gemini") {
+    const ai = new GoogleGenAI({ apiKey });
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.3,
+          maxOutputTokens: synthMaxTokens,
+          abortSignal: signal,
+        },
+      }),
+      { operation: `generateMomentSynthesis/${provider}`, provider, model, priority: synthPriority, timeoutMs: synthTimeout },
+    );
+    if (response.usageMetadata) {
+      usage = {
+        prompt_tokens: response.usageMetadata.promptTokenCount,
+        completion_tokens: response.usageMetadata.candidatesTokenCount,
+        total_tokens: response.usageMetadata.totalTokenCount,
+      };
+    }
+    rawText = response.text || "";
+  } else if (isOpenAICompatibleProvider(provider)) {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
+    const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        temperature: 0.3,
+        max_tokens: synthMaxTokens,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessageContent },
+        ],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: `generateMomentSynthesis/${provider}`, provider, model, priority: synthPriority, timeoutMs: synthTimeout },
+    );
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.prompt_tokens,
+        completion_tokens: response.usage.completion_tokens,
+        total_tokens: response.usage.total_tokens,
+      };
+    }
+    rawText = response.choices?.[0]?.message?.content || "";
+  } else if (provider === "claude") {
+    const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const claudeModel = "claude-haiku-4-5-20251001";
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: claudeModel,
+        max_tokens: synthMaxTokens,
+        temperature: 0.3,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMessageContent }],
+      }, { signal }),
+      { operation: `generateMomentSynthesis/${provider}`, provider, model: claudeModel, priority: synthPriority, timeoutMs: synthTimeout },
+    );
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.input_tokens,
+        completion_tokens: response.usage.output_tokens,
+        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+      };
+    }
+    rawText = (response.content[0] as any).text || "";
+  } else {
+    throw new Error("Invalid provider");
+  }
+
+  if (!rawText.trim()) throw new Error("Moment synthesis returned empty output");
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleanJsonStr(rawText));
+  } catch {
+    parsed = JSON.parse(repairTruncatedJson(cleanJsonStr(rawText)));
+  }
+
+  const result: MomentSynthesisResult = { tokenUsage: usage };
+  if (typeof parsed.title === "string" && parsed.title.trim()) {
+    result.title = stripEmDashes(parsed.title).trim().slice(0, 80);
+  }
+  if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+    result.summary = stripEmDashes(parsed.summary).trim().slice(0, 400);
+  }
+  if (Array.isArray(parsed.topicHints)) {
+    result.topicHints = parsed.topicHints
+      .filter((h: unknown) => typeof h === "string" && h.trim())
+      .map((h: string) => h.trim().toLowerCase().slice(0, 30))
+      .slice(0, 3);
+  }
+  // Empty enrichment is a valid outcome — the moment keeps its deterministic
+  // fields either way.
+  return result;
+}
+
+// ─── Episodic Memory Episode Synthesis ────────────────────────────────────────
+
+export interface EpisodeSynthesisParams {
+  /** The closed, retained episode to enrich. */
+  episode: Episode;
+  activeProvider: string;
+  channel: string;
+}
+
+export interface EpisodeSynthesisResult {
+  title?: string;
+  summary?: string;
+  topics?: string[];
+  /** Suggested kind — validated against the EpisodeKind enum by the engine. */
+  kind?: string;
+  tokenUsage?: TokenUsage;
+}
+
+/** Structured evidence block for AI episode synthesis — facts only. */
+function buildEpisodeSynthesisInput(episode: Episode): Record<string, unknown> {
+  return {
+    durationSec: Math.round((episode.endedAt - episode.startedAt) / 1000),
+    kind: episode.kind,
+    significance: episode.significance,
+    confidence: episode.confidence,
+    participants: episode.participants.map((p) => `${p.type}:${p.displayName}`),
+    topics: episode.topics,
+    humanEvidence: episode.humanEvidence,
+    streamerInvolved: episode.streamerInvolved,
+    agentActivity: episode.agentRole,
+    momentCount: episode.evidenceMomentIds.length,
+    evidenceLines: episode.evidenceLines.slice(0, 6),
+  };
+}
+
+/**
+ * Sparse AI enrichment of a closed Episodic Memory episode. The prompt
+ * contains ONLY the episode's structured deterministic evidence; the output
+ * may only fill semantic fields (title / summary / topics / kind) — the
+ * engine's applySynthesis validates the kind against the enum and can never
+ * let AI touch deterministic fields. Runs at background scheduler priority.
+ * Failure is tolerated by the caller: the deterministic episode stays valid.
+ */
+export async function generateEpisodeSynthesis(params: EpisodeSynthesisParams): Promise<EpisodeSynthesisResult> {
+  const rawProvider = params.activeProvider || "gemini";
+  const provider = normalizeProvider(rawProvider);
+  const apiKey = getApiKey(rawProvider);
+  if (!apiKey) throw new Error(`No API key configured for ${rawProvider}. Add it in Settings.`);
+
+  const keys = getKeys();
+  const evidence = JSON.stringify(buildEpisodeSynthesisInput(params.episode), null, 2);
+
+  const userMessageContent = `You are the Episodic Memory synthesis layer for a live stream co-pilot. A significant shared experience (an "episode") was consolidated from deterministic room evidence and closed. Name and summarize it as shared history.
+
+CHANNEL: ${params.channel}
+DETERMINISTIC EVIDENCE (facts — do not invent beyond these):
+${evidence}
+
+Rules:
+- The title is a short label (max 60 chars) for what happened, e.g. "The Haste Conversion" or "The 214-viewer Graycen raid".
+- The summary is 1-3 factual sentences describing what happened, who was involved, and how it resolved. Only reference what the evidence supports — never invent names, numbers, quotes, or causes.
+- topicHints: 0-3 lowercase keywords.
+- kind: pick the best fit from: conversation, shared_joke, milestone, conflict, achievement, callback, stream_event, relationship, agent_interaction, other.
+- If the evidence is thin, say so plainly.
+- NO em-dashes anywhere.
+
+Output ONLY valid JSON, exactly this schema:
+{"title": "string", "summary": "string", "topics": ["string"], "kind": "string"}`;
+
+  const systemPrompt = "You are a precise, factual summarizer for a stream-memory system. You only interpret structured evidence you are given; you never invent events, participants, outcomes, or quotes. Output ONLY valid JSON matching the requested schema. No markdown fences, no extra text.";
+
+  const synthTimeout = getOperationTimeout("episode_synthesis", provider);
+  const synthPriority: AIRequestPriority = "background";
+  const synthMaxTokens = getOperationTokenBudget("episode_synthesis");
+
+  let rawText = "";
+  let usage: TokenUsage | undefined;
+
+  if (provider === "gemini") {
+    const ai = new GoogleGenAI({ apiKey });
+    const model = rawProvider === "gemini-pro" ? "gemini-3.7-flash" : "gemini-3.8-flash";
+    const response = await aiScheduler.execute(
+      (signal) => ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: userMessageContent }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: "application/json",
+          temperature: 0.3,
+          maxOutputTokens: synthMaxTokens,
+          abortSignal: signal,
+        },
+      }),
+      { operation: `generateEpisodeSynthesis/${provider}`, provider, model, priority: synthPriority, timeoutMs: synthTimeout },
+    );
+    if (response.usageMetadata) {
+      usage = {
+        prompt_tokens: response.usageMetadata.promptTokenCount,
+        completion_tokens: response.usageMetadata.candidatesTokenCount,
+        total_tokens: response.usageMetadata.totalTokenCount,
+      };
+    }
+    rawText = response.text || "";
+  } else if (isOpenAICompatibleProvider(provider)) {
+    const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
+    const ai = new OpenAI({
+      apiKey,
+      baseURL: baseUrl,
+      dangerouslyAllowBrowser: true,
+      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+    });
+    const ollamaOpts = buildProviderRequestOptions(provider);
+    const response = await aiScheduler.execute(
+      (signal) => ai.chat.completions.create({
+        model,
+        temperature: 0.3,
+        max_tokens: synthMaxTokens,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessageContent },
+        ],
+        ...ollamaOpts,
+      }, { signal }),
+      { operation: `generateEpisodeSynthesis/${provider}`, provider, model, priority: synthPriority, timeoutMs: synthTimeout },
+    );
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.prompt_tokens,
+        completion_tokens: response.usage.completion_tokens,
+        total_tokens: response.usage.total_tokens,
+      };
+    }
+    rawText = response.choices?.[0]?.message?.content || "";
+  } else if (provider === "claude") {
+    const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const claudeModel = "claude-haiku-4-5-20251001";
+    const response = await aiScheduler.execute(
+      (signal) => ai.messages.create({
+        model: claudeModel,
+        max_tokens: synthMaxTokens,
+        temperature: 0.3,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMessageContent }],
+      }, { signal }),
+      { operation: `generateEpisodeSynthesis/${provider}`, provider, model: claudeModel, priority: synthPriority, timeoutMs: synthTimeout },
+    );
+    if (response.usage) {
+      usage = {
+        prompt_tokens: response.usage.input_tokens,
+        completion_tokens: response.usage.output_tokens,
+        total_tokens: response.usage.input_tokens + response.usage.output_tokens,
+      };
+    }
+    rawText = (response.content[0] as any).text || "";
+  } else {
+    throw new Error("Invalid provider");
+  }
+
+  if (!rawText.trim()) throw new Error("Episode synthesis returned empty output");
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleanJsonStr(rawText));
+  } catch {
+    parsed = JSON.parse(repairTruncatedJson(cleanJsonStr(rawText)));
+  }
+
+  const result: EpisodeSynthesisResult = { tokenUsage: usage };
+  if (typeof parsed.title === "string" && parsed.title.trim()) {
+    result.title = stripEmDashes(parsed.title).trim().slice(0, 80);
+  }
+  if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+    result.summary = stripEmDashes(parsed.summary).trim().slice(0, 400);
+  }
+  if (Array.isArray(parsed.topics)) {
+    result.topics = parsed.topics
+      .filter((t: unknown) => typeof t === "string" && t.trim())
+      .map((t: string) => t.trim().toLowerCase().slice(0, 30))
+      .slice(0, 5);
+  }
+  if (typeof parsed.kind === "string" && parsed.kind.trim()) {
+    result.kind = parsed.kind.trim().toLowerCase();
+  }
+  // Empty enrichment is a valid outcome — the episode keeps its deterministic
+  // fields either way.
+  return result;
+}
+
 export async function autoforgeDecide(params: AutoForgeParams): Promise<AutoForgeDecision> {
   const rawProvider = params.activeProvider || "gemini";
   const fallbackChain = getHealthyFallbackChain(rawProvider);
@@ -1233,6 +1621,9 @@ You are mentioned/targeted in chat: ${params.isMentioned ? "YES — someone is t
 ${params.isMentioned && params.mentionedLines?.length ? `MENTIONING YOU:\n${params.mentionedLines.join("\n")}` : ""}
 ${params.audioEnergyLabel ? `Audio energy level: ${params.audioEnergyLabel}${params.audioEnergyLabel === "spike" ? " — sudden loud burst detected" : params.audioEnergyLabel === "silent" ? " — streamer may be silent or away" : params.audioEnergyLabel === "loud" ? " — high energy moment" : ""}` : ""}
 ${params.streamEvents && params.streamEvents.length > 0 ? `RECENT STREAM EVENTS:\n${params.streamEvents.join("\n")}` : ""}
+${params.roomStateContext ? `\n${params.roomStateContext}` : ""}
+${params.participationContext ? `\n${params.participationContext}` : ""}
+${params.episodicContext ? `\n${params.episodicContext}` : ""}
 
 VISUAL CONTEXT:
 ${truncatedVisual || "None provided"}
@@ -1248,6 +1639,8 @@ ${truncatedLongTerm || "None provided"}
 ${params.memoryContext ? `\n${params.memoryContext}` : ""}
 ${params.sentimentContext ? `\n${params.sentimentContext}` : ""}
 ${params.threadContext ? `\n${params.threadContext}` : ""}
+${params.selfPerformanceContext ? `\n${params.selfPerformanceContext}\n` : ""}
+${params.goalPressureContext ? `\n${params.goalPressureContext}\n` : ""}
 
 ACTIVE CONFIGURATION:
 - Primary Profile: ${params.config.primaryProfile && params.config.primaryProfile !== "none" ? params.config.primaryProfile : "None"}
@@ -1261,7 +1654,7 @@ ${params.force ? "\nFORCE MODE: The user has manually forced this action. You MU
 ${params.antiRepetitionContext ? `\n\n${params.antiRepetitionContext}` : ""}
 DECIDE NOW.`;
 
-  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
+  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + (params.selfPerformanceContext ? SELF_PERFORMANCE_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
 
   let lastError: Error | null = null;
   let usedFallback = false;

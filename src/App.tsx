@@ -31,6 +31,13 @@ import { getKeys } from './lib/keys';
 import { tmiSendManager, getTwitchSession } from './lib/twitch';
 import { recordTwitchMessageId, clearTwitchMessageIdCache } from './lib/twitchReplyCache';
 import { recordIncomingMessage, markAsBotMessage } from './lib/conversationThread';
+import { roomModel } from './lib/roomModel';
+import { perception } from './lib/perceptionLiveness';
+import { usePerceptionLiveness } from './hooks/usePerceptionLiveness';
+import { useEpisodicMemory } from './hooks/useEpisodicMemory';
+import { semanticCoordination } from './lib/semanticCoordination';
+import { participation } from './lib/participationAwareness';
+import { useRoomModel } from './hooks/useRoomModel';
 import { KickChatClient, kickSendManager, fetchKickMetadata, getKickSession } from './lib/kick';
 import { JoystickChatClient, joystickSendManager, getJoystickBasicAuthKey, getJoystickSession, getJoystickBotUsername } from './lib/joystick';
 import { sendManualMessage } from './lib/manualSend';
@@ -171,6 +178,19 @@ export default function App() {
 
   // Initialize AutoForge loop (legacy single-bot; self-disables in multi-bot mode)
   useAutoForge();
+  // Perception Liveness: canonical lane-health engine (tick + store mirror;
+  // sensor notes flow through store actions + the chat chokepoint above,
+  // never through React renders).
+  usePerceptionLiveness();
+  // Room Model: perception → Room State + Moment Timeline (ticks + mirrors
+  // the shared engine; sensor notes flow through store actions + the chat
+  // chokepoint above, never through React renders).
+  useRoomModel();
+  // Episodic Memory: closed Moments → bounded Episodes (the "what happened?"
+  // layer). Ticks + mirrors the shared engine; retained episodes archive per
+  // channel and restore on switch-back. Sparse AI synthesis stays
+  // rate-limited, session-guarded, and failure-tolerant.
+  useEpisodicMemory();
   // Multi-bot orchestrator (no-op unless multiBotEnabled === true). Returns JSX
   // that mounts one useAutoForgeBot loop per active+authenticated bot — MUST be
   // rendered, otherwise the per-bot AutoForge loops never run.
@@ -264,6 +284,37 @@ export default function App() {
     // Classify sentiment
     const { label, score } = classifySentiment(text);
     state.addSentimentReading({ timestamp: Date.now(), label, score, username, text });
+    // Room Model: normalized chat signal (sentiment carried — no recompute).
+    // Own-bot messages never reach here (filtered at the platform handlers),
+    // so this is human/foreign chat only.
+    {
+      const botUsername = platform === 'kick' ? window.__kickSession?.username : platform === 'joystick' ? window.__joystickSession?.username : window.__twitchSession?.username;
+      const isMention = [...ownBotUsernames(state.platform)].some((name) => text.toLowerCase().includes(name));
+      roomModel.noteChat({ username, text, sentimentLabel: label, isMention });
+      // Perception Liveness: valid inbound chat output — own-bot messages are
+      // filtered before this chokepoint, so this is human/foreign chat only.
+      perception.noteChatInput();
+      // Semantic coordination ledger — human chat is attributed so speaker
+      // balance, saturation, and thread health stay human-primary (bot-only
+      // chatter can never manufacture human momentum).
+      semanticCoordination.noteHumanChat({
+        channel: state.streamMetadata.channelName,
+        username,
+        text,
+        sentimentLabel: label,
+      });
+      // Participation awareness: human chat with speaker attribution. The
+      // streamer (username === channel) can issue explicit quiet/resume
+      // instructions — those override inferred annoyance with provenance.
+      participation.noteHumanChat({
+        channel: state.streamMetadata.channelName,
+        username,
+        text,
+        isMention,
+        isStreamer: !!state.streamMetadata.channelName &&
+          username.toLowerCase() === state.streamMetadata.channelName.trim().toLowerCase(),
+      });
+    }
     // Record chat activity for heatmap
     state.recordChatActivity();
     // Update chatter leaderboard stats
@@ -457,26 +508,26 @@ export default function App() {
     // C2: Stream event awareness — follows, subs, raids, cheers, hosts
     client.on('subscription', (_channel, username, methods, _message, _userstate) => {
       const plan = methods?.plan ? String(methods.plan) : "1000";
-      useAppStore.getState().addStreamEvent(`🔔 ${username} subscribed (${methods.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`);
+      useAppStore.getState().addStreamEvent(`🔔 ${username} subscribed (${methods.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`, { kind: "sub", actor: username });
     });
     client.on('resub', (_channel, username, _months, _message, _userstate, methods) => {
       const plan = methods?.plan ? String(methods.plan) : "1000";
-      useAppStore.getState().addStreamEvent(`🔔 ${username} resubscribed (${methods?.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`);
+      useAppStore.getState().addStreamEvent(`🔔 ${username} resubscribed (${methods?.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`, { kind: "resub", actor: username, magnitude: Number(_months) || undefined });
     });
     client.on('subgift', (_channel, username, _streakMonths, recipient, methods, _userstate) => {
       const plan = methods?.plan ? String(methods.plan) : "1000";
-      useAppStore.getState().addStreamEvent(`🎁 ${username} gifted a sub to ${recipient} (${methods?.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`);
+      useAppStore.getState().addStreamEvent(`🎁 ${username} gifted a sub to ${recipient} (${methods?.prime ? "Prime" : "Tier " + (Number(plan) / 1000)})`, { kind: "subgift", actor: username });
     });
     client.on('raided', (_channel, username, viewers) => {
-      useAppStore.getState().addStreamEvent(`⚔️ ${username} raided with ${viewers} viewers`);
+      useAppStore.getState().addStreamEvent(`⚔️ ${username} raided with ${viewers} viewers`, { kind: "raid", actor: username, magnitude: viewers });
     });
     client.on('cheer', (_channel, _userstate, message) => {
       const bits = _userstate.bits || 0;
       const username = _userstate['display-name'] || _userstate.username || 'Someone';
-      useAppStore.getState().addStreamEvent(`💎 ${username} cheered ${bits} bits: "${message}"`);
+      useAppStore.getState().addStreamEvent(`💎 ${username} cheered ${bits} bits: "${message}"`, { kind: "cheer", actor: username, magnitude: Number(bits) || 0 });
     });
     client.on('hosted', (_channel, username, viewers) => {
-      useAppStore.getState().addStreamEvent(`📺 ${username} hosted with ${viewers || 0} viewers`);
+      useAppStore.getState().addStreamEvent(`📺 ${username} hosted with ${viewers || 0} viewers`, { kind: "host", actor: username, magnitude: viewers });
     });
 
     client.on('connected', () => { setTmiReadState('connected'); playSfx('connect'); });

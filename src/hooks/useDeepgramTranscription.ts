@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { transcribeChunk, tryLoadWhisper, preloadWhisper, looksLikeLyrics, setWhisperProgressCallback } from '../lib/whisper';
 import { useAppStore } from '../store';
+import { perception } from '../lib/perceptionLiveness';
 
 export function useDeepgramTranscription() {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -25,8 +26,19 @@ export function useDeepgramTranscription() {
   const whisperIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const whisperPendingRef = useRef<{ source: 'system' | 'microphone'; onTranscriptUpdate: (segment: string) => void } | null>(null);
   const whisperEmbedPendingRef = useRef<{ stream: MediaStream; onTranscriptUpdate: (segment: string) => void } | null>(null);
+  // Perception Liveness: error paths set this BEFORE calling stopDeepgram so
+  // the stop can be classified as a failure (ERROR + reason code) instead of
+  // an intentional stop (OFF). Cleared after reporting.
+  const pendingAudioErrorRef = useRef<string | null>(null);
 
   const stopDeepgram = useCallback(() => {
+    // Perception Liveness: report the stop with its true nature — an error
+    // path leaves a reason code behind; everything else is user intent.
+    const errorCode = pendingAudioErrorRef.current;
+    pendingAudioErrorRef.current = null;
+    perception.noteAudioCapture(false, undefined, { intentional: !errorCode });
+    if (errorCode) perception.noteAudioError(errorCode);
+    perception.noteAudioMode(null);
     whisperActiveRef.current = false;
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
@@ -80,15 +92,18 @@ export function useDeepgramTranscription() {
       }
       
       if (stream.getAudioTracks().length === 0) {
+        pendingAudioErrorRef.current = 'no_audio_track';
         throw new Error('No audio track selected.');
       }
-      
+
       audioStreamRef.current = stream;
       connectDeepgram(apiKey, stream);
     } catch (err: any) {
       if (err.name === 'NotAllowedError') {
+        pendingAudioErrorRef.current = 'permission_denied';
         setError('Permission denied to capture audio.');
       } else {
+        pendingAudioErrorRef.current = pendingAudioErrorRef.current ?? 'start_failed';
         setError(err.message || 'Failed to start Deepgram');
       }
       stopDeepgram();
@@ -102,11 +117,13 @@ export function useDeepgramTranscription() {
 
     try {
       if (stream.getAudioTracks().length === 0) {
+        pendingAudioErrorRef.current = 'no_audio_track';
         throw new Error('No audio track in stream.');
       }
       audioStreamRef.current = stream;
       connectDeepgram(apiKey, stream);
     } catch (err: any) {
+      pendingAudioErrorRef.current = pendingAudioErrorRef.current ?? 'start_failed';
       setError(err.message || 'Failed to start embed capture');
       stopDeepgram();
     }
@@ -123,13 +140,15 @@ export function useDeepgramTranscription() {
       setVoiceEnabled(true);
       setVoiceCapturing(true);
       setIsConnecting(false);
-      
+      // Perception Liveness: cloud transcription pipeline active.
+      perception.noteAudioMode('deepgram');
+
       try {
         let mimeType = 'audio/webm';
         if (!MediaRecorder.isTypeSupported(mimeType)) {
           mimeType = 'audio/ogg';
         }
-        
+
         const recorder = new MediaRecorder(stream, { mimeType });
         mediaRecorderRef.current = recorder;
 
@@ -141,6 +160,7 @@ export function useDeepgramTranscription() {
 
         recorder.start(250);
       } catch (e: any) {
+        pendingAudioErrorRef.current = 'recorder_failed';
         setError('Failed to start audio recording: ' + e.message);
         stopDeepgram();
       }
@@ -168,6 +188,7 @@ export function useDeepgramTranscription() {
     };
 
     ws.onerror = () => {
+      pendingAudioErrorRef.current = 'ws_error';
       setError('WebSocket error connecting to Deepgram');
       stopDeepgram();
     };
@@ -282,6 +303,8 @@ export function useDeepgramTranscription() {
       setVoiceMode('whisper');
       setIsConnecting(false);
       setWhisperDownloading(false);
+      // Perception Liveness: local whisper pipeline active.
+      perception.noteAudioMode('whisper');
 
       startWhisperCycle(stream);
       whisperIntervalRef.current = setInterval(() => {
@@ -291,8 +314,10 @@ export function useDeepgramTranscription() {
       }, 6000);
     } catch (err: any) {
       if (err.name === 'NotAllowedError') {
+        pendingAudioErrorRef.current = 'permission_denied';
         setError('Permission denied to capture audio.');
       } else {
+        pendingAudioErrorRef.current = pendingAudioErrorRef.current ?? 'start_failed';
         setError(err.message || 'Failed to start Whisper transcription');
       }
       stopDeepgram();
@@ -317,6 +342,7 @@ export function useDeepgramTranscription() {
 
   const beginEmbedWhisperRecording = useCallback(async (stream: MediaStream) => {
     if (stream.getAudioTracks().length === 0) {
+      pendingAudioErrorRef.current = 'no_audio_track';
       throw new Error('No audio track in stream.');
     }
     audioStreamRef.current = stream;
@@ -329,6 +355,8 @@ export function useDeepgramTranscription() {
     setVoiceMode('whisper');
     setIsConnecting(false);
     setWhisperDownloading(false);
+    // Perception Liveness: local whisper pipeline active.
+    perception.noteAudioMode('whisper');
 
     startWhisperCycle(stream);
     whisperIntervalRef.current = setInterval(() => {
@@ -363,6 +391,7 @@ export function useDeepgramTranscription() {
     } catch (err: any) {
       setWhisperDownloadProgress(null);
       setWhisperProgressCallback(null);
+      pendingAudioErrorRef.current = 'model_load_failed';
       setError(err.message || 'Failed to download Whisper model');
       stopDeepgram();
     }
@@ -397,6 +426,7 @@ export function useDeepgramTranscription() {
       await beginEmbedWhisperRecording(stream);
       return false;
     } catch (err: any) {
+      pendingAudioErrorRef.current = pendingAudioErrorRef.current ?? 'start_failed';
       setError(err.message || 'Failed to start Whisper transcription');
       stopDeepgram();
       return false;

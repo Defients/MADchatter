@@ -8,6 +8,31 @@ import type { AutoForgeDecision } from "./lib/ai";
 import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
 import { removeBotRateLimiter } from "./lib/actionRateLimiter";
 import { isStudioAvailable } from "./lib/studioAvailability";
+import { roomModel } from "./lib/roomModel";
+import type { RoomState, RoomMoment } from "./lib/roomModel";
+import { episodicMemory } from "./lib/episodicMemory";
+import type { Episode } from "./lib/episodicMemory";
+import { perception, type PerceptionSummary } from "./lib/perceptionLiveness";
+import { semanticCoordination } from "./lib/semanticCoordination";
+import {
+  participation,
+  parseQuietDurationMs,
+  type ManualParticipationMode,
+  type ParticipationSnapshot,
+} from "./lib/participationAwareness";
+import {
+  spokenCallouts,
+  buildSpokenIdentities,
+  type SpokenCallout,
+} from "./lib/spokenCallout";
+import {
+  type ChannelLearningProfile,
+  emptyLearningProfile,
+  learningProfileKey,
+  pruneLearningProfiles,
+  recordLearningOutcome,
+  sanitizeLearningProfile,
+} from "./lib/channelLearning";
 import {
   DEFAULT_AUTO_CHECK_INTERVAL_MS,
   DEFAULT_AUTO_CHECK_MODE,
@@ -17,7 +42,7 @@ import {
 } from "./lib/coreAutoCheck";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 26;
+const SETTINGS_VERSION = 29;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -278,6 +303,8 @@ function createDefaultTokenUsage(): Record<TokenFeatureKey, FeatureTokenStats> {
     vision: zero(),
     briefing: zero(),
     memory_extraction: zero(),
+    moment_synthesis: zero(),
+    episode_synthesis: zero(),
   };
 }
 
@@ -322,6 +349,69 @@ interface AppState {
   // changes. Vision capture captures this to discard results produced by
   // superseded settings. Never persisted (not in partialize).
   visionConfigRevision: number;
+
+  // ─── Room Model (shared situational awareness) ──────────────────────────────
+  // Mirror of the deterministic roomModel engine (src/lib/roomModel.ts) for
+  // React consumers and channel persistence. The engine is the source of
+  // truth; this mirror is flushed ~1/s by the useRoomModel hook. Session-
+  // scoped like chatLog (archived per channel via channelStore, never in
+  // localStorage partialize).
+  roomState: RoomState | null;
+  roomMoments: RoomMoment[];
+  setRoomModelSnapshot: (state: RoomState | null, moments: RoomMoment[]) => void;
+  // ─── Perception Liveness mirror (engine is source of truth) ────────────────
+  // Mirror of the deterministic perceptionLiveness engine (src/lib/
+  // perceptionLiveness.ts) for React consumers — same pattern as the Room
+  // Model mirror. Flushed ~1/s by the usePerceptionLiveness hook with
+  // signature dedup. Runtime-only, NEVER persisted: liveness is session
+  // truth, and a reload must start from truthful initialization state.
+  perceptionSummary: PerceptionSummary | null;
+  setPerceptionSummary: (summary: PerceptionSummary | null) => void;
+  // Sparse AI enrichment of closed high-significance moments (titles +
+  // summaries only). Off = fully deterministic Room Model.
+  roomModelSynthesisEnabled: boolean;
+  setRoomModelSynthesisEnabled: (enabled: boolean) => void;
+
+  // ─── Episodic Memory (v29: "what happened?" layer) ──────────────────────────
+  // Mirror of the deterministic episodicMemory engine (src/lib/
+  // episodicMemory.ts) for React consumers and channel persistence. The engine
+  // is the source of truth; this mirror is flushed ~1s by the useEpisodicMemory
+  // hook. Session-scoped mirror (retained episodes archive per channel via
+  // channelStore, never in localStorage partialize).
+  episodes: Episode[];
+  setEpisodicSnapshot: (episodes: Episode[]) => void;
+  deleteEpisode: (id: string) => void;
+  toggleEpisodePin: (id: string) => void;
+  updateEpisodeFields: (id: string, patch: { title?: string; summary?: string }) => void;
+  // Master toggle (persisted): off = no episode candidates, no synthesis, no
+  // episodic prompt injection. Retained episodes stay in the channel snapshot.
+  episodicMemoryEnabled: boolean;
+  setEpisodicMemoryEnabled: (enabled: boolean) => void;
+
+  // ─── Participation Awareness (Annoyance Awareness / Deliberate Silence) ───
+  // Mirror of the deterministic participation engine (src/lib/
+  // participationAwareness.ts) for React consumers. The engine is the source
+  // of truth; the loops flush this mirror after each evaluation. Session-
+  // scoped like roomState — volatile restraint NEVER persists (yesterday's
+  // temporary annoyance is not today's starting state).
+  participationSnapshot: ParticipationSnapshot | null;
+  setParticipationSnapshot: (snapshot: ParticipationSnapshot | null) => void;
+  // Manual participation control (persisted user preference): "auto" lets the
+  // engine infer, "quiet"/"direct_only" are explicit overrides that always
+  // outrank inferred recovery. Direct mentions still pass in every mode.
+  participationManualMode: ManualParticipationMode;
+  setParticipationManualMode: (mode: ManualParticipationMode) => void;
+  // Master toggle for the INFERRED layer only. Manual quiet/direct-only and
+  // the global stop work regardless.
+  participationAwarenessEnabled: boolean;
+  setParticipationAwarenessEnabled: (enabled: boolean) => void;
+  // STOP ALL BOT SENDS — immediate, reversible, global across every active
+  // MADchatter bot. Blocks all automated send paths (AutoForge loops, rule
+  // engine, queues, overlays) at the platformSend chokepoint. Manual operator
+  // sends from the chat input remain available (explicit human intent).
+  // Persisted so a reload cannot silently resume sending against user intent.
+  botsGlobalStop: boolean;
+  setBotsGlobalStop: (active: boolean) => void;
 
   config: ForgeConfig;
   updateConfig: (updates: Partial<ForgeConfig>) => void;
@@ -389,6 +479,15 @@ interface AppState {
   audioTranscript: string;
   setAudioTranscript: (transcript: string) => void;
   appendAudioTranscript: (line: string) => void;
+  // ─── Spoken Callout Priority (v29) ─────────────────────────────────────────
+  // Mirror of the deterministic spokenCallout engine (src/lib/spokenCallout.ts)
+  // for React consumers. The engine is the source of truth; this mirror is
+  // flushed by appendAudioTranscript (detection/routing) and addSentMessage /
+  // addBotSentMessage (consume-on-response). Runtime-only, NEVER persisted:
+  // callouts are session truth, and a reload starts from a clean slate.
+  spokenCallout: SpokenCallout | null;
+  spokenCalloutLog: SpokenCallout[];
+  setSpokenCallout: (callout: SpokenCallout | null) => void;
   // Audio setup onboarding — runtime-only, not persisted
   audioSetupActive: boolean;
   setAudioSetupActive: (active: boolean) => void;
@@ -401,7 +500,7 @@ interface AppState {
   setAudioEnergy: (energy: { rms: number; peak: number; label: "silent" | "quiet" | "normal" | "loud" | "spike"; updatedAt: number } | null) => void;
   // C2: Stream events
   streamEvents: string[];
-  addStreamEvent: (event: string) => void;
+  addStreamEvent: (event: string, detail?: import("./lib/roomModel").RoomPlatformEventDetail) => void;
   clearStreamEvents: () => void;
   chatLog: ChatMessage[];
   appendChatLog: (msg: ChatMessage) => void;
@@ -714,6 +813,23 @@ interface AppState {
   recordActionEngagement: (actionType: string, engagementLabel: "ignored" | "low" | "moderate" | "high") => void;
   clearActionAccuracy: () => void;
 
+  // ─── Channel Learning Profile (adaptive feedback loop) ──────
+  // Per-channel learned action effectiveness (normalized, decayed,
+  // shrunk toward neutral). Keyed by normalized channel name so
+  // learning is channel-scoped and survives reloads; the live
+  // AutoForge loops read the current channel's entry. Long-lived
+  // (never wiped by clearAllContext — switching channels just
+  // switches which entry is read/written).
+  learningProfiles: Record<string, ChannelLearningProfile>;
+  recordLearningOutcome: (actionType: string, score: number, sampleWeight?: number) => void;
+  // Clears ONLY the current channel's learned behavior (confirm-gated
+  // in the UI) — memories, settings, and other channels are untouched.
+  resetChannelLearning: () => void;
+  // When false, outcomes are still collected (analytics-only) but the
+  // self-performance block is never injected into AutoForge prompts.
+  adaptiveLearningEnabled: boolean;
+  setAdaptiveLearningEnabled: (enabled: boolean) => void;
+
   // ─── Bot Thinking State (B5) ────────────────────────────────
   isAutoForgeThinking: boolean;
   setIsAutoForgeThinking: (thinking: boolean) => void;
@@ -793,6 +909,7 @@ interface AppState {
   addBot: (bot: Omit<BotIdentity, "id" | "createdAt"> & { session?: BotSessionPayload | null }) => string;
   removeBot: (id: string) => void;
   updateBotPersona: (id: string, updates: Partial<BotPersona>) => void;
+  setBotSpokenAliases: (id: string, aliases: string[]) => void;
   updateBotRuntime: (id: string, updates: Partial<BotRuntime>) => void;
   setBotSession: (id: string, session: BotSessionPayload | null) => void;
   toggleBotActive: (id: string) => void;
@@ -941,7 +1058,39 @@ export const partializeAppState = (state: AppState) => ({
   visionProvider: state.visionProvider,
   visionOllamaBaseUrl: state.visionOllamaBaseUrl,
   visionOllamaModel: state.visionOllamaModel,
+  // Channel learning profiles (v27). Keyed per channel so learning survives
+  // reloads and stays isolated across channels. adaptiveLearningEnabled is
+  // the user's collection/injection preference (false = analytics-only).
+  learningProfiles: state.learningProfiles,
+  adaptiveLearningEnabled: state.adaptiveLearningEnabled,
+  // Room Model synthesis toggle (user preference). The Room State + moments
+  // themselves are session data — archived per channel via channelStore,
+  // deliberately NOT in localStorage (same risk profile as chatLog).
+  roomModelSynthesisEnabled: state.roomModelSynthesisEnabled,
+  episodicMemoryEnabled: state.episodicMemoryEnabled,
+  // Participation awareness (v28): user preferences + the global stop
+  // persist. The volatile risk/state machine and receipts never do — they
+  // describe the live session, not a preference.
+  participationManualMode: state.participationManualMode,
+  participationAwarenessEnabled: state.participationAwarenessEnabled,
+  botsGlobalStop: state.botsGlobalStop,
 });
+
+/** Reset intelligence synchronously, before any subscriber can read a new session. */
+function resetIntelligenceSession(channel: string | null): Partial<AppState> {
+  const normalized = channel?.trim().toLowerCase() || null;
+  roomModel.reset(normalized);
+  episodicMemory.reset(normalized);
+  semanticCoordination.reset(normalized);
+  participation.reset(normalized);
+  spokenCallouts.reset(normalized);
+  perception.reset();
+  perception.setChannel(normalized);
+  return {
+    roomState: null, roomMoments: [], episodes: [], perceptionSummary: null,
+    participationSnapshot: null, spokenCallout: null, spokenCalloutLog: [],
+  };
+}
 
 export const useAppStore = create<AppState>()(
   persist(
@@ -949,6 +1098,7 @@ export const useAppStore = create<AppState>()(
       platform: "twitch",
       sessionRevision: 0,
       setPlatform: (platform) => set((state) => ({
+        ...(platform !== state.platform ? resetIntelligenceSession(state.streamMetadata.channelName) : {}),
         platform,
         sessionRevision: state.sessionRevision + (platform !== state.platform ? 1 : 0),
       })),
@@ -964,6 +1114,9 @@ export const useAppStore = create<AppState>()(
       },
       updateStreamMetadata: (updates) =>
         set((state) => ({
+          ...(updates.channelName !== undefined &&
+            updates.channelName.trim().toLowerCase() !== state.streamMetadata.channelName.trim().toLowerCase()
+              ? resetIntelligenceSession(updates.channelName) : {}),
           streamMetadata: { ...state.streamMetadata, ...updates },
           sessionRevision: state.sessionRevision + (updates.channelName !== undefined &&
             updates.channelName.trim().toLowerCase() !== state.streamMetadata.channelName.trim().toLowerCase() ? 1 : 0),
@@ -984,6 +1137,12 @@ export const useAppStore = create<AppState>()(
           set({ visualSnapshotUrl: null, visualContextTags: tags });
           return;
         }
+        // Room Model: vision lane evidence (frame change + semantic tags).
+        roomModel.noteVision({ tags, delta, source });
+        // Perception Liveness: capture-stage evidence — a frame was produced
+        // (semantic success/failure is reported separately at the
+        // visionRequest call sites, after session/config-revision guards).
+        perception.noteVisionFrame(delta ?? null);
         set((state) => {
           const base = {
             visualSnapshotUrl: url,
@@ -1016,6 +1175,63 @@ export const useAppStore = create<AppState>()(
       visionOllamaBaseUrl: "http://localhost:11434/v1",
       visionOllamaModel: "",
       visionConfigRevision: 0,
+      // ─── Room Model mirror (engine is source of truth) ───────────────────
+      roomState: null,
+      roomMoments: [],
+      setRoomModelSnapshot: (state, moments) => set({ roomState: state, roomMoments: moments }),
+      perceptionSummary: null,
+      setPerceptionSummary: (summary) => set({ perceptionSummary: summary }),
+      roomModelSynthesisEnabled: true,
+      setRoomModelSynthesisEnabled: (enabled) => set({ roomModelSynthesisEnabled: enabled }),
+      // ─── Episodic Memory (engine is source of truth) ──────────────────────
+      episodes: [],
+      setEpisodicSnapshot: (episodes) => set({ episodes }),
+      deleteEpisode: (id) => {
+        if (episodicMemory.deleteEpisode(id)) set({ episodes: episodicMemory.getEpisodes() });
+      },
+      toggleEpisodePin: (id) => {
+        const episode = episodicMemory.getEpisodeById(id);
+        if (episode && episodicMemory.setPinned(id, !episode.pinned)) {
+          set({ episodes: episodicMemory.getEpisodes() });
+        }
+      },
+      updateEpisodeFields: (id, patch) => {
+        if (episodicMemory.updateUserFields(id, patch)) set({ episodes: episodicMemory.getEpisodes() });
+      },
+      episodicMemoryEnabled: true,
+      setEpisodicMemoryEnabled: (enabled) => set({ episodicMemoryEnabled: enabled }),
+      // ─── Participation Awareness (v28) ─────────────────────────────────────
+      participationSnapshot: null,
+      setParticipationSnapshot: (snapshot) => set({ participationSnapshot: snapshot }),
+      participationManualMode: "auto",
+      setParticipationManualMode: (mode) => {
+        set({ participationManualMode: mode });
+        // Manual changes clear any chat-detected explicit quiet window —
+        // the operator is the higher authority.
+        participation.setExplicitQuiet(null, "manual");
+        useAppStore.getState().addAutoForgeEvent({
+          timestamp: Date.now(),
+          type: "silence",
+          severity: "low",
+          summary: `Participation mode set to ${mode}`,
+          details: { mode },
+        });
+      },
+      participationAwarenessEnabled: true,
+      setParticipationAwarenessEnabled: (enabled) => set({ participationAwarenessEnabled: enabled }),
+      botsGlobalStop: false,
+      setBotsGlobalStop: (active) => {
+        set({ botsGlobalStop: active });
+        useAppStore.getState().addAutoForgeEvent({
+          timestamp: Date.now(),
+          type: active ? "error" : "action_sent",
+          severity: active ? "high" : "medium",
+          summary: active
+            ? "GLOBAL STOP engaged — all automated bot sends are blocked"
+            : "Global stop released — automated sends resume normal evaluation",
+          details: { active },
+        });
+      },
       setVisionProvider: (mode) =>
         set((state) => ({
           visionProvider: mode,
@@ -1135,17 +1351,160 @@ export const useAppStore = create<AppState>()(
       audioSetupActive: false,
       setAudioSetupActive: (active) => set({ audioSetupActive: active }),
       whisperDownloadProgress: null,
-      setWhisperDownloadProgress: (progress) => set({ whisperDownloadProgress: progress }),
+      setWhisperDownloadProgress: (progress) => {
+        // Perception Liveness: whisper model download = audio INITIALIZING
+        // (never LIVE while a multi-MB model is still loading).
+        perception.noteAudioInitializing(progress);
+        set({ whisperDownloadProgress: progress });
+      },
       voiceCapturing: false,
-      setVoiceCapturing: (capturing) => set({ voiceCapturing: capturing }),
+      setVoiceCapturing: (capturing) => {
+        // Perception Liveness: audio capture stage start/stop.
+        perception.noteAudioCapture(capturing, undefined, { mode: null });
+        set({ voiceCapturing: capturing });
+      },
       audioEnergy: null,
-      setAudioEnergy: (energy) => set({ audioEnergy: energy }),
+      setAudioEnergy: (energy) => {
+        // Room Model: audio-energy lane evidence (label transitions).
+        if (energy) roomModel.noteAudioEnergy({ label: energy.label, rms: energy.rms });
+        // Perception Liveness: energy evidence distinguishes healthy streamer
+        // silence (QUIET) from speech-without-transcript (DEGRADED).
+        if (energy) perception.noteAudioEnergy(energy.label, energy.updatedAt);
+        set({ audioEnergy: energy });
+      },
       streamEvents: [],
-      addStreamEvent: (event) => set((state) => ({
-        streamEvents: [...state.streamEvents, event].slice(-20),
-      })),
+      addStreamEvent: (event, detail) => {
+        // Room Model: platform events are deterministic, high-confidence facts.
+        roomModel.notePlatformEvent({ summary: event, detail });
+        // Perception Liveness: valid platform event = events lane LIVE (the
+        // lane itself stays QUIET-when-silent — raids are sparse by nature).
+        perception.notePlatformEvent();
+        set((state) => ({
+          streamEvents: [...state.streamEvents, event].slice(-20),
+        }));
+      },
       clearStreamEvents: () => set({ streamEvents: [] }),
-      appendAudioTranscript: (line) =>
+      appendAudioTranscript: (line) => {
+        // Room Model: streamer speech segment (transcript lane).
+        roomModel.noteTranscript({ text: line });
+        // Perception Liveness: valid transcript output — immediate recovery
+        // to LIVE for the audio transcription stage.
+        perception.noteTranscript();
+        // ── Spoken Callout Priority (v29) ────────────────────────────────────
+        // Every transcript line runs through the deterministic address
+        // detector: identity → address-vs-mention → intent → confidence →
+        // lifecycle. Only a CONFIRMED callout is mirrored + routed here; a
+        // name that merely appears ("I saw Gremlin earlier") stays ambient
+        // context. This is the single chokepoint for every transcript source
+        // (Whisper, Deepgram, embeds), so liveness is inherent — the line is
+        // being produced by the live pipeline right now.
+        {
+          const state = get();
+          const channel = (state.streamMetadata.channelName || "").trim().toLowerCase() || null;
+          // Legacy single-bot mode: the platform session global may hold the
+          // active username when bots[] is not synced (useRoomRead pattern).
+          const legacyUsernames: string[] = [];
+          if (!state.multiBotEnabled && typeof window !== "undefined") {
+            const w = window as unknown as Record<string, { username?: string } | undefined>;
+            const legacy =
+              state.platform === "kick" ? w.__kickSession?.username :
+              state.platform === "joystick" ? w.__joystickSession?.username :
+              w.__twitchSession?.username;
+            if (legacy) legacyUsernames.push(legacy);
+          }
+          const identities = buildSpokenIdentities(
+            state.multiBotEnabled ? state.bots.filter((b) => b.platform === state.platform) : [],
+            legacyUsernames,
+          );
+          const routing = spokenCallouts.noteTranscriptLine({
+            text: line,
+            // Both live providers only forward final utterances (Deepgram
+            // is_final/speech_final, Whisper chunk output) — interim partials
+            // never reach this action.
+            isFinal: true,
+            channel,
+            identities,
+            now: Date.now(),
+          });
+          if (routing) {
+            const { callout, isNew } = routing;
+            if (callout.kind === "negative_instruction") {
+              participation.setExplicitQuiet(parseQuietDurationMs(callout.transcriptText, Date.now()), "spoken_callout");
+              set({ participationSnapshot: participation.getSnapshot() });
+            }
+            set((s) => ({
+              spokenCallout: callout,
+              // New callouts prepend to the bounded diagnostic trail; repeats
+              // merge into the existing entry (no log spam).
+              spokenCalloutLog: isNew
+                ? [callout, ...s.spokenCalloutLog].slice(0, 20)
+                : s.spokenCalloutLog,
+            }));
+            // Room Model: the callout is a structured fact, not prose the
+            // synthesis step has to rediscover from the raw transcript.
+            roomModel.noteSpokenCallout({
+              targetBotId: callout.target.type === "bot"
+                ? callout.target.botId
+                : callout.target.type === "multi_bot"
+                  ? callout.target.botIds[0]
+                  : undefined,
+              kind: callout.kind,
+              text: callout.transcriptText,
+            });
+            // Routing → the existing autoforge-force-check event (the same
+            // mechanism the HUD Force button and audio mentions used). Hard
+            // controls stay sovereign: the global stop blocks the eventual
+            // send at the platformSend chokepoint, but we also skip the AI
+            // spend entirely when sends are globally stopped. Negative
+            // instructions route to restraint, never a reply. Ambiguous
+            // names never hard-route. Ensemble callouts force a bot only
+            // when exactly one bot is addressable (semantic coordination
+            // resolves multi-bot ensembles at normal cadence instead of
+            // forcing a swarm). Multi-bot targets force the first (the
+            // coordinator serializes the rest via the floor gap).
+            const canRoute =
+              state.autoForgeEnabled &&
+              !state.botsGlobalStop &&
+              callout.kind !== "negative_instruction";
+            if (canRoute) {
+              const addressable = state.bots.filter((b) => b.active && b.session);
+              const t = callout.target;
+              let forceBotId: string | undefined;
+              if (t.type === "bot") {
+                if (addressable.some((b) => b.id === t.botId)) forceBotId = t.botId;
+              } else if (t.type === "multi_bot") {
+                const first = t.botIds.find((id) => addressable.some((b) => b.id === id));
+                if (first) forceBotId = first;
+              } else if (t.type === "ensemble") {
+                if (state.multiBotEnabled) {
+                  if (addressable.length === 1) forceBotId = addressable[0].id;
+                } else if (addressable.length >= 1) {
+                  forceBotId = addressable[0].id;
+                } else if (identities.length > 0 && identities[0].botId) {
+                  forceBotId = identities[0].botId;
+                }
+              }
+              const legacyTarget = !state.multiBotEnabled && identities.some((i) => i.botId === "");
+              if ((forceBotId || legacyTarget) && callout.state === "confirmed") {
+                spokenCallouts.markClaimed(callout.id);
+                set({ spokenCallout: spokenCallouts.getActiveCallout() ?? callout });
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("autoforge-force-check", {
+                    detail: { botId: forceBotId, spokenCallout: true },
+                  }));
+                }
+              } else if (isNew) {
+                console.log(
+                  `[SpokenCallout] Confirmed ${callout.kind} for ${callout.targetDisplay} — target not routable (unavailable/ambiguous); logged only`,
+                );
+              }
+            } else if (isNew && callout.kind === "negative_instruction") {
+              console.log(
+                `[SpokenCallout] Suppression instruction for ${callout.targetDisplay} — honored (no reply routed)`,
+              );
+            }
+          }
+        }
         set((state) => {
           const updated = state.audioTranscript
             ? state.audioTranscript + "\n" + line
@@ -1157,7 +1516,11 @@ export const useAppStore = create<AppState>()(
               ? updated.slice(-MAX_AUDIO_TRANSCRIPT)
               : updated,
           };
-        }),
+        });
+      },
+      spokenCallout: null,
+      spokenCalloutLog: [],
+      setSpokenCallout: (callout) => set({ spokenCallout: callout }),
       chatLog: [],
       appendChatLog: (msg) =>
         set((state) => {
@@ -1195,7 +1558,8 @@ export const useAppStore = create<AppState>()(
       goldenMemoryId: null,
       setGoldenMemory: (id) => set({ goldenMemoryId: id }),
 
-      clearAllContext: () =>
+      clearAllContext: () => {
+        resetIntelligenceSession(get().streamMetadata.channelName);
         set((state) => ({
           sessionRevision: state.sessionRevision + 1,
           variants: [],
@@ -1211,6 +1575,16 @@ export const useAppStore = create<AppState>()(
           pinnedMemories: [],
           goldenMemoryId: null,
           lastTokenUsage: null,
+          // Room Model: volatile room state dies with the session. The useRoomModel
+          // hook rebinds the engine to the (new) channel; restoreChannelSnapshot
+          // re-populates historical moments for switch-backs.
+          roomState: null,
+          roomMoments: [],
+          episodes: [],
+          perceptionSummary: null,
+          participationSnapshot: null,
+          spokenCallout: null,
+          spokenCalloutLog: [],
           // Session analytics + AutoForge report/decision state — the previous
           // channel's data was snapshotted to IndexedDB before this wipe, so
           // the new channel starts fresh (or gets restored from its own
@@ -1275,7 +1649,8 @@ export const useAppStore = create<AppState>()(
               personalityState: null,
             },
           })),
-        })),
+        }));
+      },
 
       // Per-streamer persistence: save current LTM + AutoForge events to the
       // channelSnapshots IndexedDB store. Called before channel switches and
@@ -1299,6 +1674,13 @@ export const useAppStore = create<AppState>()(
           pinnedMemories: state.pinnedMemories,
           goldenMemoryId: state.goldenMemoryId,
           autoForgeEvents: merged,
+          // Room Model: current Room State + bounded Moment timeline. Closed
+          // moments survive as episodic history; volatile state resets on
+          // restore (stream-restart semantics).
+          roomModel: roomModel.exportSnapshot(),
+          // Episodic Memory: retained episodes survive as channel history;
+          // open candidates were already closed on export (session boundary).
+          episodicMemory: episodicMemory.exportSnapshot(),
           // Session analytics + recent context — archived per channel so a
           // switch shows a fresh view and switching back restores it.
           sessionStats: state.sessionStats,
@@ -1350,8 +1732,30 @@ export const useAppStore = create<AppState>()(
         const snapshot: ChannelSnapshot | null = await loadChannelSnapshot(channel);
         if (!snapshot || get().sessionRevision !== revision || get().platform !== platform ||
           get().streamMetadata.channelName.trim().toLowerCase() !== channel.trim().toLowerCase()) return;
+        // Room Model: restore closed moments as episodic history. Volatile
+        // state (active moment, freshness, baselines) stays fresh — yesterday's
+        // live room never merges into today's. Guarded by the revision check
+        // above, so a channel switch during the async load can't attach the
+        // wrong channel's moments.
+        roomModel.restore(channel, snapshot.roomModel);
+        // Semantic coordination: the ledger is session-scoped — closed-moment
+        // history may restore, but live conversational ownership/debt does not.
+        semanticCoordination.reset(channel);
+        // Participation awareness: same lifecycle — inferred restraint state,
+        // buffers, and receipts are volatile per channel visit. Channel-A quiet
+        // can never leak into Channel B (A→B→A gets a fresh engine each hop).
+        participation.reset(channel);
+        // Episodic Memory: restore retained episodes as channel history. Open
+        // candidates were force-closed on export; session-episodes died with
+        // their producing session. Guarded by the revision check above, so a
+        // channel switch during the async load can't attach the wrong
+        // channel's episodes.
+        episodicMemory.restore(channel, snapshot.episodicMemory);
         set((state) => ({
           longTermMemory: snapshot.longTermMemory,
+          roomState: roomModel.getState(),
+          roomMoments: roomModel.getMoments(),
+          episodes: episodicMemory.getEpisodes(),
           pinnedMemories: snapshot.pinnedMemories,
           goldenMemoryId: snapshot.goldenMemoryId,
           // Restore global events; per-bot events go to the primary bot if in
@@ -1436,14 +1840,7 @@ export const useAppStore = create<AppState>()(
       },
 
       lastTokenUsage: null,
-      tokenUsageByFeature: {
-        forge: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-        refine: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-        autoforge_decide: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-        vision: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-        briefing: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-        memory_extraction: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-      },
+      tokenUsageByFeature: createDefaultTokenUsage(),
       recordTokenUsage: (feature, usage) =>
         set((state) => {
           const totalTokens = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
@@ -1514,10 +1911,25 @@ export const useAppStore = create<AppState>()(
       setIsAutoForgeReportOpen: (isOpen) => set({ isAutoForgeReportOpen: isOpen }),
 
       sentMessages: [],
-      addSentMessage: (msg) =>
+      addSentMessage: (msg) => {
+        if (!msg.dryRun) {
+          // Room Model: agent activity — attributed, but never able to inflate
+          // human room state (chat velocity / significance use human messages only).
+          roomModel.noteAgentSend({ message: msg.message, source: msg.source });
+          // Participation awareness: legacy-identity bot send (attributed, so
+          // saturation / loop / recency pressure can see it).
+          participation.noteBotSend({ channel: get().streamMetadata.channelName });
+          // Spoken Callout Priority: the legacy bot just spoke — record for TTS
+          // echo suppression and consume the active callout it answered (a
+          // consumed callout can never trigger a second response).
+          spokenCallouts.noteAgentSpeech({ text: msg.message });
+          const consumed = spokenCallouts.consumeForBot("");
+          if (consumed) set({ spokenCallout: spokenCallouts.getActiveCallout() });
+        }
         set((state) => ({
           sentMessages: [...state.sentMessages, { ...msg, id: generateId() }].slice(-100),
-        })),
+        }));
+      },
       clearSentMessages: () => set({ sentMessages: [] }),
 
       sessionStats: {
@@ -1591,7 +2003,13 @@ export const useAppStore = create<AppState>()(
         set((state) => ({ microToursSeen: { ...state.microToursSeen, [tourId]: seen } })),
 
       tmiReadState: "disconnected",
-      setTmiReadState: (state) => set({ tmiReadState: state }),
+      setTmiReadState: (state) => {
+        // Perception Liveness: chat read transport lifecycle (tmi/Kick/Joystick
+        // share the same store field). Explicit transport evidence — a
+        // connected socket with no messages is QUIET, never stale.
+        perception.noteChatTransport(state);
+        set({ tmiReadState: state });
+      },
       tmiSendState: "disconnected",
       setTmiSendState: (state) => set({ tmiSendState: state }),
 
@@ -1809,14 +2227,7 @@ export const useAppStore = create<AppState>()(
             peakChatVelocity: 0,
             uniqueChatters: 0,
           },
-          tokenUsageByFeature: {
-            forge: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-            refine: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-            autoforge_decide: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-            vision: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-            briefing: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-            memory_extraction: { totalTokens: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, callCount: 0, lastCallAt: null },
-          },
+          tokenUsageByFeature: createDefaultTokenUsage(),
         }),
 
       rateLimitConfig: {
@@ -2195,6 +2606,31 @@ export const useAppStore = create<AppState>()(
         }),
       clearActionAccuracy: () => set({ actionAccuracy: [] }),
 
+      // ─── Channel Learning Profile (adaptive feedback loop) ──
+      learningProfiles: {},
+      recordLearningOutcome: (actionType, score, sampleWeight) => {
+        const channel = learningProfileKey(get().streamMetadata.channelName);
+        // No channel connected — nothing to attribute the outcome to.
+        if (!channel) return;
+        set((state) => {
+          const existing = state.learningProfiles[channel] ?? emptyLearningProfile();
+          const next = recordLearningOutcome(existing, actionType, score, Date.now(), sampleWeight);
+          return { learningProfiles: pruneLearningProfiles({ ...state.learningProfiles, [channel]: next }) };
+        });
+      },
+      resetChannelLearning: () => {
+        const channel = learningProfileKey(get().streamMetadata.channelName);
+        if (!channel) return;
+        set((state) => {
+          if (!(channel in state.learningProfiles)) return {};
+          const next = { ...state.learningProfiles };
+          delete next[channel];
+          return { learningProfiles: next };
+        });
+      },
+      adaptiveLearningEnabled: true,
+      setAdaptiveLearningEnabled: (enabled) => set({ adaptiveLearningEnabled: enabled }),
+
       // ─── Bot Thinking State (B5) ────────────────────────────
       isAutoForgeThinking: false,
       setIsAutoForgeThinking: (thinking) => set({ isAutoForgeThinking: thinking }),
@@ -2529,6 +2965,39 @@ export const useAppStore = create<AppState>()(
         set((state) => ({
           bots: state.bots.map((b) => (b.id === id ? { ...b, persona: { ...b.persona, ...updates } } : b)),
         })),
+      // Spoken Callout Priority: bounded, validated spoken aliases. Trimmed,
+      // deduped, capped at SPOKEN_CALLOUT_LIMITS.maxAliasesPerBot, and any
+      // alias another ACTIVE bot already answers to is dropped (a shared
+      // alias would create an ambiguous callout target — better silent than
+      // wrong-bot routing).
+      setBotSpokenAliases: (id, aliases) =>
+        set((state) => {
+          const bot = state.bots.find((b) => b.id === id);
+          if (!bot) return {};
+          const claimed = new Set<string>();
+          for (const other of state.bots) {
+            if (other.id === id || !other.active || !other.session) continue;
+            for (const n of buildSpokenIdentities([other])) {
+              for (const name of n.names) claimed.add(name);
+            }
+          }
+          const cleaned: string[] = [];
+          for (const raw of aliases) {
+            const a = raw.trim().toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+            if (
+              a.length < 2 ||
+              cleaned.includes(a) ||
+              claimed.has(a) ||
+              cleaned.length >= 6 // bounded (SPOKEN_CALLOUT_LIMITS.maxAliasesPerBot)
+            ) continue;
+            cleaned.push(a);
+          }
+          return {
+            bots: state.bots.map((b) =>
+              b.id === id ? { ...b, persona: { ...b.persona, spokenAliases: cleaned } } : b
+            ),
+          };
+        }),
       updateBotRuntime: (id, updates) =>
         set((state) => ({
           bots: state.bots.map((b) => (b.id === id ? { ...b, runtime: { ...b.runtime, ...updates } } : b)),
@@ -2550,6 +3019,37 @@ export const useAppStore = create<AppState>()(
 
       // ─── Bot-scoped action twins (additive) ───────────────────────────────
       addBotSentMessage: (id, msg) => {
+        if (!msg.dryRun) {
+          // Room Model: per-bot agent activity (attributed, non-human).
+          const bot = get().bots.find((b) => b.id === id);
+          roomModel.noteAgentSend({
+            botName: bot?.session?.username,
+            message: msg.message,
+            source: msg.source,
+          });
+          // Semantic coordination ledger: bot sends are attributed so speaker
+          // balance, redundancy, dogpile, and saturation all see them. A send
+          // whose cohort status is "sending" is the bot's First Message greeting
+          // (checked BEFORE completeBotFirstMessage flips it to "complete").
+          semanticCoordination.noteBotSend({
+            channel: get().streamMetadata.channelName,
+            botId: id,
+            botUsername: bot?.session?.username,
+            message: msg.message,
+            isGreeting: get().firstMessageCohort?.status[id] === "sending",
+          });
+          // Participation awareness: per-bot send (ensemble-level saturation —
+          // every MADchatter bot's send raises channel-level pressure).
+          participation.noteBotSend({ channel: get().streamMetadata.channelName, botId: id });
+          // Spoken Callout Priority: this bot just spoke — record for TTS echo
+          // suppression (a bot's own speech can never call out another bot)
+          // and consume the active callout it answered. Consumed callouts can
+          // never trigger a second response; response latency is recorded for
+          // diagnostics only (never an optimization target).
+          spokenCallouts.noteAgentSpeech({ text: msg.message });
+          const consumedCallout = spokenCallouts.consumeForBot(id);
+          if (consumedCallout) set({ spokenCallout: spokenCallouts.getActiveCallout() });
+        }
         set((state) => ({
           bots: state.bots.map((b) =>
             b.id === id
@@ -2768,6 +3268,16 @@ export const useAppStore = create<AppState>()(
           visionProvider: state.visionProvider,
           visionOllamaBaseUrl: state.visionOllamaBaseUrl,
           visionOllamaModel: state.visionOllamaModel,
+          // Channel learning profiles (v27) — behavioral evidence only,
+          // never credentials. Sanitized per-profile on import.
+          learningProfiles: state.learningProfiles,
+          adaptiveLearningEnabled: state.adaptiveLearningEnabled,
+          // Participation awareness (v28) — preferences + global stop only.
+          participationManualMode: state.participationManualMode,
+          participationAwarenessEnabled: state.participationAwarenessEnabled,
+          botsGlobalStop: state.botsGlobalStop,
+          roomModelSynthesisEnabled: state.roomModelSynthesisEnabled,
+          episodicMemoryEnabled: state.episodicMemoryEnabled,
           exportedAt: new Date().toISOString(),
           version: SETTINGS_VERSION,
         };
@@ -2778,7 +3288,7 @@ export const useAppStore = create<AppState>()(
         try {
           const data = JSON.parse(json);
           if (data.config) set((state) => ({ config: { ...state.config, ...data.config } }));
-          if (data.platform) set({ platform: data.platform });
+          if (data.platform === "twitch" || data.platform === "kick" || data.platform === "joystick") get().setPlatform(data.platform);
           if (data.r34lEnabled !== undefined) set({ r34lEnabled: data.r34lEnabled });
           if (data.cosmotechTheme !== undefined) set({ cosmotechTheme: data.cosmotechTheme });
           if (data.theme) set({ theme: data.theme, cosmotechTheme: data.theme === "cosmotech" });
@@ -2833,6 +3343,25 @@ export const useAppStore = create<AppState>()(
           if (data.visionProvider !== undefined) set((state) => ({ visionProvider: data.visionProvider === "ollama" ? "ollama" : "text", visionConfigRevision: state.visionConfigRevision + 1 }));
           if (data.visionOllamaBaseUrl !== undefined) set((state) => ({ visionOllamaBaseUrl: data.visionOllamaBaseUrl, visionConfigRevision: state.visionConfigRevision + 1 }));
           if (data.visionOllamaModel !== undefined) set((state) => ({ visionOllamaModel: data.visionOllamaModel, visionConfigRevision: state.visionConfigRevision + 1 }));
+          // Channel learning profiles (v27). Each profile is sanitized
+          // defensively — malformed imported data degrades to fresh.
+          if (data.learningProfiles && typeof data.learningProfiles === "object") {
+            const sanitized: Record<string, ChannelLearningProfile> = {};
+            for (const [channel, profile] of Object.entries(data.learningProfiles)) {
+              sanitized[learningProfileKey(channel)] = sanitizeLearningProfile(profile);
+            }
+            set({ learningProfiles: pruneLearningProfiles(sanitized) });
+          }
+          if (data.adaptiveLearningEnabled !== undefined) set({ adaptiveLearningEnabled: data.adaptiveLearningEnabled === true });
+          // Participation awareness (v28) — defensive: mode degrades to "auto".
+          if (data.participationManualMode !== undefined) {
+            const mode = data.participationManualMode;
+            set({ participationManualMode: mode === "quiet" || mode === "direct_only" ? mode : "auto" });
+          }
+          if (data.participationAwarenessEnabled !== undefined) set({ participationAwarenessEnabled: data.participationAwarenessEnabled === true });
+          if (data.botsGlobalStop !== undefined) set({ botsGlobalStop: data.botsGlobalStop === true });
+          if (typeof data.roomModelSynthesisEnabled === "boolean") get().setRoomModelSynthesisEnabled(data.roomModelSynthesisEnabled);
+          if (typeof data.episodicMemoryEnabled === "boolean") get().setEpisodicMemoryEnabled(data.episodicMemoryEnabled);
           return true;
         } catch (e) {
           console.warn("[store] importSettings failed:", e);
@@ -3141,6 +3670,39 @@ export const useAppStore = create<AppState>()(
           if (persistedState.visionOllamaModel === undefined) {
             persistedState.visionOllamaModel = "";
           }
+        }
+        // v27: Channel learning profiles (adaptive feedback loop). Existing
+        // users start with no learned evidence (cold start = existing
+        // behavior — no prompt injection until evidence accumulates).
+        // adaptiveLearningEnabled defaults true: outcomes are collected and
+        // the (initially empty) advisory block is allowed once evidence
+        // crosses the minimum-sample gate. Every persisted profile is
+        // sanitized defensively — malformed legacy data degrades to fresh.
+        if (version < 27 && persistedState) {
+          if (persistedState.learningProfiles === undefined || typeof persistedState.learningProfiles !== "object") {
+            persistedState.learningProfiles = {};
+          } else {
+            const sanitized: Record<string, ChannelLearningProfile> = {};
+            for (const [channel, profile] of Object.entries(persistedState.learningProfiles as Record<string, unknown>)) {
+              sanitized[learningProfileKey(channel)] = sanitizeLearningProfile(profile);
+            }
+            persistedState.learningProfiles = sanitized;
+          }
+          if (persistedState.adaptiveLearningEnabled === undefined) {
+            persistedState.adaptiveLearningEnabled = true;
+          }
+        }
+        // v28: Participation awareness (Annoyance Awareness / Deliberate
+        // Silence). User preferences + global stop persist; the volatile risk
+        // model / state machine / receipts are session-scoped (never here).
+        if (version < 28 && persistedState) {
+          if (persistedState.participationManualMode === undefined) persistedState.participationManualMode = "auto";
+          if (persistedState.participationAwarenessEnabled === undefined) persistedState.participationAwarenessEnabled = true;
+          if (persistedState.botsGlobalStop === undefined) persistedState.botsGlobalStop = false;
+        }
+        if (version < 29 && persistedState) {
+          if (typeof persistedState.episodicMemoryEnabled !== "boolean") persistedState.episodicMemoryEnabled = true;
+          if (typeof persistedState.roomModelSynthesisEnabled !== "boolean") persistedState.roomModelSynthesisEnabled = true;
         }
         return persistedState;
       },

@@ -16,14 +16,16 @@ const SUPERCHARGE_FLOOR_GAP_MS = 2_000;
  * coordinator is reset and no per-bot loops run.
  *
  * Mention routing: handled inside each useAutoForgeBot via per-bot username
- * detection — a message mentioning bot A raises bot A's personaFit (and thus
- * its odds of winning the speaker floor), so mentions naturally route to the
- * mentioned bot. The coordinator guarantees only one bot speaks per cycle.
+ * detection — a directly addressed bot's bid carries the mention, and the
+ * semantic coordinator gives it obligation priority (others defer unless the
+ * target can't clear the bar). The coordinator guarantees at most one bot
+ * speaks per opportunity — or deliberate collective silence.
  */
 export function useMultiBotOrchestrator() {
   const multiBotActive = useAppStore(selectMultiBotActive);
   const bots = useAppStore((s) => s.bots);
   const superchargeActive = useAppStore((s) => s.superchargeActive);
+  const channelName = useAppStore((s) => s.streamMetadata.channelName);
   // Track which bot ids we've mounted loops for so we can (re)mount on changes.
   const mountedRef = useRef<Set<string>>(new Set());
 
@@ -35,11 +37,27 @@ export function useMultiBotOrchestrator() {
     }
   }, [multiBotActive]);
 
+  // Channel scoping: every channel change re-binds the semantic ledger and
+  // wipes the floor — no stale Channel-A bid, ledger entry, or floor cooldown
+  // can influence a Channel-B window.
+  useEffect(() => {
+    botCoordinator.setChannel(channelName ?? null);
+  }, [channelName]);
+
+  useEffect(() => useAppStore.subscribe((state, previous) => {
+    if (state.sessionRevision !== previous.sessionRevision) {
+      botCoordinator.reset();
+      botCoordinator.setChannel(state.streamMetadata.channelName || null);
+    }
+  }), []);
+
   // Supercharge mode: shrink the coordinator floor gap so bots can talk
-  // closer together. Restore the default when it's off. (The bid window is
-  // left at its default — we still want competing bots to resolve fairly.)
+  // closer together, and relax the semantic saturation pressure (loop
+  // detection stays on). Restore the defaults when it's off. (The bid window
+  // is left at its default — we still want competing bots to resolve fairly.)
   useEffect(() => {
     botCoordinator.configure({ floorGapMs: superchargeActive ? SUPERCHARGE_FLOOR_GAP_MS : DEFAULT_FLOOR_GAP_MS });
+    botCoordinator.setSupercharge(superchargeActive);
   }, [superchargeActive]);
 
   // Mount a loop for every active, authenticated bot. We render a hidden

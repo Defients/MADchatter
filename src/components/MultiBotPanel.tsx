@@ -12,6 +12,7 @@ import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { ThemedTooltip } from "./ui/tooltip";
+import { semanticCoordination } from "../lib/semanticCoordination";
 import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from "./directorNoteShared";
 
 /** Bot card with a pulse effect when the bot sends a message. */
@@ -81,6 +82,19 @@ function BotCard({
   const lastSentTimeStr = lastSent
     ? new Date(lastSent).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     : "—";
+
+  // ── Ensemble coordination status ────────────────────────────────────────
+  // How this bot's last speaker-floor bid resolved (semantic coordinator
+  // receipt): speaking / deferred / silenced, with a human-readable reason.
+  // Re-read on the existing 1s tick — cheap map lookup, no subscription.
+  const coordination = bot?.active ? semanticCoordination.getBotDisposition(botId, now) : null;
+  const coordinationLabel = coordination
+    ? coordination.disposition === "speak"
+      ? "SPEAKING"
+      : coordination.disposition === "defer"
+        ? "DEFERRED"
+        : "SUPPRESSED"
+    : null;
 
   useEffect(() => {
     if (sentCount > prevSentCount.current) {
@@ -168,6 +182,16 @@ function BotCard({
             {idx === 0 ? " · primary" : ""}
             {!bot.active ? " · paused" : ""}
           </div>
+          {coordination && coordinationLabel && (
+            <div className={cn(
+              "text-[9px] leading-tight truncate",
+              coordination.disposition === "speak" ? "text-emerald-400"
+                : coordination.disposition === "defer" ? "text-amber-400/80"
+                : "text-gray-500",
+            )}>
+              ensemble: {coordinationLabel.toLowerCase()} — {coordination.reason}
+            </div>
+          )}
         </div>
         <button
           onClick={() => setExpandedId(expandedId === bot.id ? null : bot.id)}

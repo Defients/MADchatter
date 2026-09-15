@@ -99,6 +99,29 @@ async function scenario(name, run) {
   passed++; console.log(`PASS ${name}`);
 }
 
+await scenario('STOP cancels an admitted rate wait even after immediate resume', async () => {
+  await reset();
+  api.sendGuard.sendTimestamps = Array(20).fill(Date.now());
+  const pending = assert.rejects(send('twitch')('alpha', 'stopped while waiting'), Cancelled);
+  await tick();
+  store.getState().setBotsGlobalStop(true);
+  store.getState().setBotsGlobalStop(false);
+  await pending;
+  assert.equal(fx.writes.length, 0);
+});
+await scenario('STOP blocks automation but preserves explicit manual delivery', async () => {
+  await reset(); store.getState().setBotsGlobalStop(true);
+  await assert.rejects(send('twitch')('alpha', 'blocked'), Cancelled);
+  await send('twitch', undefined, { bypassGlobalStop: true })('alpha', 'operator message');
+  assert.deepEqual(fx.writes.map(w => w.message), ['operator message']);
+});
+await scenario('STOP permanently invalidates an active AutoForge run', async () => {
+  await reset(); store.setState({ autoForgeEnabled: true });
+  const guard = api.createAutoForgeExecutionGuard(() => true);
+  store.getState().setBotsGlobalStop(true); store.getState().setBotsGlobalStop(false);
+  assert.equal(guard.isCurrent(), false); assert.equal(guard.signal.aborted, true);
+  guard.dispose();
+});
 await scenario('Twitch connection cancellation prevents late join/send and permits recovery', async () => {
   await reset(); const connected = deferred(); fx.connect = () => connected.promise;
   const controller = new AbortController();

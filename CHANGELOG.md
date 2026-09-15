@@ -2,7 +2,42 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
-## [Unreleased] — 2026-09-15
+## [1.1.0] — 2026-09-15
+
+### Added — Spoken Callout Priority (v29)
+- New deterministic voice-address engine (`src/lib/spokenCallout.ts`) that detects when the streamer addresses a bot in the audio transcript ("Gremlin, what do you think?"). Direct address confirms and routes an immediate opportunity; third-person speech is rejected.
+- Intent classification: `direct_question`, `command_request`, `greeting`, `negative_instruction` ("be quiet" — routes to restraint, never a reply), `acknowledgment`, `generic_address`.
+- Anti-false-positive guards: common-word names ("May", "can", "will") require strictly stronger vocative syntax; bot TTS echo suppression detects speech heard back through the microphone via Jaccard overlap (12s window); colliding aliases yield `ambiguous` (never routes arbitrarily).
+- Confirmed callouts dispatch an `autoforge-force-check` with `detail: { botId, spokenCallout: true }`. Consumed on send via `spokenCallouts.consumeForBot(botId)` with response latency tracked for diagnostics. Repeats merge within 20s.
+- 36 deterministic tests (`src/lib/spokenCallout.test.ts`): vocative syntax, negative suppression, echo protection, common-word penalties, ensemble, multi-bot, engine lifecycle, TTL expiry.
+
+### Added — Episodic Memory (v29: "what happened?" layer)
+- New deterministic consolidation engine (`src/lib/episodicMemory.ts`) that turns closed Room Moments into bounded, provenance-aware `Episode`s — coherent experiences with boundaries, participants, topics, significance, and confidence.
+- Moments below candidate threshold (<0.55) are ignored; bot-only moments cannot open episodes (capped at 0.30 significance). Retention: `persistent` (≥0.62, survives sessions) vs `session` (≥0.50, stream-local) vs discard (<0.50).
+- Wiring hook (`useEpisodicMemory.ts`, mounted in `App.tsx`): feeds closed moments, runs ~1s lifecycle tick, mirrors `episodes` to store, and drives sparse background AI synthesis of closed high-significance episodes (at most 1 per 10 min, channel-guarded, token usage under `episode_synthesis`).
+- Context injection: both AutoForge loops build bounded `episodicContext` via `buildAutoForgeEpisodicContext` (gated on `episodicMemoryEnabled`). Injected into `autoforgeDecide` with `EPISODIC_AWARENESS_PROMPT` — framed explicitly as past events; direct evidence outranks it.
+- Channel persistence: retained episodes archive in `ChannelSnapshot.episodicMemory` via `channelStore`; restored on switch-back.
+- 22 deterministic tests (`src/lib/episodicMemory.test.ts`): candidate formation, human-evidence guard, fusion, retention, fallback title/summary, retrieval, mutations, channel isolation.
+
+### Added — Room Read Card (semantic proof of understanding)
+- New pure semantic contract over the Room Model (`src/lib/roomRead.ts`): `deriveRoomRead()` turns the deterministic Room State + Moment Timeline into one canonical `RoomReadState` — status (observing/ready/quiet/partial/stale), a confidence-scaled headline, 3–5 human-readable signal chips, inspectable evidence, per-lane freshness, and a semantic anchor key. No AI calls, no duplicated sensor logic.
+- Headline priority: direct streamer callout (fuzzy transcript name match) > platform event anchor (raid/cheer/sub) > fresh active Moment (AI summary or deterministic kind template) > contextual synthesis from live signals > factual fallback. Confidence bands scale the language — low evidence reads "Chat seems to be reacting", never assertive fiction. Semantic claims expire: moments only anchor while their evidence is fresh, and stale vision/audio never appear in present-tense claims.
+- `stabilizeRoomRead()` prevents headline flicker: same anchor keeps the headline, new anchors wait a 10s minimum lifetime unless they outrank the current one (raid/callout preempt instantly), and quiet↔ready activity status has hysteresis. Fast deterministic layers (chips, freshness, lanes) still update every derivation.
+- Rewrote the ROOM READ card (`RoomReadCard.tsx`) as the primary perception surface: semantic headline, signal chips, "Updated Ns ago · confidence" line, expandable "Why this read?" evidence panel, collapsed Moment timeline, and a single contextual action bridge (Forge reply, pre-first-forge only). Three density variants over the same contract: core (desktop), compact (mobile), studio (dense — mounted in the Studio center panel above The Forge).
+- CORE placement moved above The Forge: connect → Room Read proves understanding → persona → Forge → AutoForge (trust inversion — verify understanding before authorizing autonomy).
+- Bot-only activity can never masquerade as a busy room: activity is human-only from the engine; when only MADchatter bots are talking, the read says so explicitly.
+- `useRoomRead` hook: one derivation per second via store polling (no rerender on raw chat messages), streamer-callout detection from transcript growth, session-revision-guarded (channel A's read never renders in channel B), and a `getRoomReadDebug()` observability helper.
+- 60 deterministic contract tests (`src/lib/roomRead.test.ts`): lifecycle states, headline priority, confidence-scaled wording, semantic TTL, bot attribution, stability/hysteresis, stale-async guards, and observability shape. All 33 suites pass; zero new AI calls, dependencies, or persisted fields.
+
+### Added — Room Model / Moment Timeline (shared situational awareness)
+- New deterministic engine (`src/lib/roomModel.ts`) that fuses chat velocity, audio energy, transcript, vision deltas/tags, platform events, conversation threads, sentiment shifts, and the bots' own sends into a continuous Room State plus a bounded Moment Timeline. Core detection works with no AI provider, offline Ollama, or dark sensor lanes.
+- Correlated signals fuse into one moment (chat + audio + vision spike = one reaction; raid + chat eruption = one anchored stream-event moment). Significance and confidence are separate bounded scores; human and bot activity are attributed so bot-only chatter can never manufacture room importance.
+- Moments idle-close, compact on topic shift, and bounded retention (max 60 moments / 24 evidence refs / 6 evidence lines). Sustained human silence becomes at most one quiet moment per 10 minutes.
+- AutoForge (legacy + per-bot loops) now consumes a compact advisory `[ROOM STATE]` block in every decision; the block self-declares that direct evidence outranks it.
+- Optional sparse AI enrichment: closed high-significance moments (≥ 0.75) get a synthesized title/summary/topicHints at most once per 10 minutes via the scheduler's background priority. Channel-guarded, idempotent, semantic-fields-only — synthesis failure leaves the deterministic moment fully valid. Toggle: `roomModelSynthesisEnabled` (default on); token usage tracked as `moment_synthesis`.
+- New ROOM READ card (desktop + compact mobile) showing the live read, per-lane perception liveness (live/quiet/stale/unavailable), and an expandable moment timeline with evidence.
+- Channel-scoped persistence: moments archive per channel in the existing channelStore snapshot; switching A→B→A restores A's closed moments while volatile state (active moment, freshness, baselines) always resets. `clearAllContext` resets the engine with the session.
+- 94 deterministic engine tests (`src/lib/roomModel.test.ts`) covering fusion, lifecycle, quiet handling, conversations, raids, bot-inflation, late/stale async results, synthesis guards, channel isolation, restore semantics, retention bounds, and concurrent-input races. All 32 existing suites still pass; no new dependencies.
 
 ### Fixed — Cancellation through queued sends and transport preparation
 - Bind platform sends to their originating session and identity; add backward-compatible optional abort signals through adapters and rate admission. Withdrawn queued sends and rate waits do not deliver or consume additional capacity.

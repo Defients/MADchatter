@@ -4,30 +4,40 @@
  * Problem: each bot runs an independent AutoForge decision loop. If two bots
  * decide to speak at nearly the same time, they'd talk over each other.
  *
- * Solution: a time-based floor + short bidding window.
+ * Solution: a time-based floor + short bidding window, resolved by the
+ * SemanticCoordination layer (v1.1).
  *   - After any bot sends, a `floorGapMs` cooldown blocks new sends (prevents
  *     rapid-fire overlap).
  *   - When a bot requests the floor and the cooldown has elapsed, a short
  *     `bidWindowMs` window opens to collect competing candidates. When the
- *     window closes, the highest-scoring candidate wins the floor (persona-
- *     assigned routing: score = confidence, tiebreak by personaFit). The winner
- *     may send; all others are told to stand down until their next cycle.
+ *     window closes, the semantic engine classifies the shared opportunity
+ *     (mention / question / hype / social opening), scores every bid with
+ *     normalized components (confidence, persona-function fit, mention
+ *     priority, continuity) minus ensemble modifiers (redundancy, dogpile,
+ *     saturation, interruption, loop suppression), and resolves exactly one
+ *     winner — or deliberate collective silence. Directly addressed bots own
+ *     their opportunity; others defer. See semanticCoordination.ts.
+ *
+ * Channel safety: the coordinator is channel-scoped. `setChannel` wipes the
+ * floor + the semantic ledger on every channel change, so no Channel-A bid or
+ * ledger entry can influence a Channel-B window. The bot loops' own session
+ * guards remain authoritative for the actual sends.
  *
  * Manual `force` sends bypass the coordinator (the forced bot always speaks,
  * subject only to its own per-account rate limit).
  */
 
-export interface BotCandidate {
-  decision: string;
-  confidence: number;
-  payload?: string;
-  personaFit: number; // 0–1, how well the bot's persona fits the moment
-  isMentioned?: boolean; // true when this bot was directly mentioned in chat
-}
+import {
+  semanticCoordination,
+  type SemanticCandidate,
+} from "./semanticCoordination";
+
+export interface BotCandidate extends SemanticCandidate {}
 
 interface PendingRequest {
   botId: string;
   candidate: BotCandidate;
+  enqueuedAt: number;
   resolve: (granted: boolean) => void;
 }
 
@@ -44,13 +54,32 @@ class BotCoordinator {
   private pending: PendingRequest[] = [];
   private windowTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<SpeakerChosenListener>();
+  private channel: string | null = null;
+  private superchargeActive = false;
 
   configure(opts: { floorGapMs?: number; bidWindowMs?: number }) {
     if (opts.floorGapMs !== undefined) this.floorGapMs = opts.floorGapMs;
     if (opts.bidWindowMs !== undefined) this.bidWindowMs = opts.bidWindowMs;
   }
 
-  /** Reset all state (e.g. when multi-bot mode is disabled). */
+  /**
+   * Channel scoping. Any change re-binds the semantic ledger and wipes the
+   * floor — pending Channel-A bids are stood down, not resolved into the new
+   * channel.
+   */
+  setChannel(channel: string | null) {
+    const normalized = channel ? channel.trim().toLowerCase() : null;
+    if (normalized === this.channel) return;
+    this.channel = normalized;
+    this.reset();
+    semanticCoordination.reset(normalized);
+  }
+
+  setSupercharge(active: boolean) {
+    this.superchargeActive = active;
+  }
+
+  /** Reset floor state (e.g. when multi-bot mode is disabled). */
   reset() {
     if (this.windowTimer) {
       clearTimeout(this.windowTimer);
@@ -69,8 +98,8 @@ class BotCoordinator {
 
   /**
    * Request the floor for a bot. Resolves true if this bot won the floor and
-   * should send now; false if it should stand down (either because the cooldown
-   * hasn't elapsed, or it lost the bidding window to a higher-scoring bot).
+   * should send now; false if it should stand down (cooldown active, lost the
+   * semantic bid, or the ensemble chose collective silence).
    */
   requestFloor(botId: string, candidate: BotCandidate): Promise<boolean> {
     const now = Date.now();
@@ -82,7 +111,7 @@ class BotCoordinator {
 
     // Open / join a bidding window.
     return new Promise<boolean>((resolve) => {
-      this.pending.push({ botId, candidate, resolve });
+      this.pending.push({ botId, candidate, enqueuedAt: now, resolve });
       if (this.windowTimer === null) {
         this.windowTimer = setTimeout(() => this.resolveWindow(), this.bidWindowMs);
       }
@@ -95,27 +124,28 @@ class BotCoordinator {
     this.pending = [];
     if (requests.length === 0) return;
 
-    // Pick the highest-scoring candidate.
-    // score = confidence + personaFit tiebreak + mention bonus.
-    // The 0.15 mention bonus lets a mentioned bot win over a slightly-higher-
-    // confidence non-mentioned bot, but doesn't override a strong confidence gap.
-    let best = requests[0];
-    for (const r of requests) {
-      const rScore = r.candidate.confidence + r.candidate.personaFit * 0.001 + (r.candidate.isMentioned ? 0.15 : 0);
-      const bScore = best.candidate.confidence + best.candidate.personaFit * 0.001 + (best.candidate.isMentioned ? 0.15 : 0);
-      if (rScore > bScore) best = r;
-    }
-
-    this.lastSpeakMs = Date.now();
-    this.lastSpeakerBotId = best.botId;
-
-    for (const r of requests) {
-      r.resolve(r === best);
-    }
-
-    this.listeners.forEach((l) =>
-      l({ botId: best.botId, candidate: best.candidate }),
+    const now = Date.now();
+    const result = semanticCoordination.resolveWindow(
+      requests.map((r) => ({ botId: r.botId, candidate: r.candidate, enqueuedAt: r.enqueuedAt })),
+      { now, channel: this.channel, supercharge: this.superchargeActive },
     );
+
+    // Only an actual winner advances the floor clock — collective silence
+    // must not block the next (potentially worthwhile) opportunity.
+    if (result.winnerBotId) {
+      this.lastSpeakMs = now;
+      this.lastSpeakerBotId = result.winnerBotId;
+      const winner = requests.find((r) => r.botId === result.winnerBotId);
+      if (winner) {
+        this.listeners.forEach((l) =>
+          l({ botId: result.winnerBotId!, candidate: winner.candidate }),
+        );
+      }
+    }
+
+    for (const r of requests) {
+      r.resolve(r.botId === result.winnerBotId);
+    }
   }
 
   getlastSpeakerBotId() {

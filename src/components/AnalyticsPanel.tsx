@@ -7,6 +7,15 @@ import { ThemedTooltip } from './ui/tooltip';
 import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
 import { actionRateLimiter } from '../lib/actionRateLimiter';
 import { SENTIMENT_COLORS } from '../lib/sentiment';
+import {
+  SILENCE_ACTION,
+  describeConfidence,
+  emptyLearningProfile,
+  getLearnedActionStats,
+  getLearningDiagnostics,
+  learningProfileKey,
+  summarizeLearningStatus,
+} from '../lib/channelLearning';
 import type { SentimentLabel, GoalType, SessionGoal } from '../types';
 
 // B1: Animated number counter
@@ -80,6 +89,11 @@ export function AnalyticsPanel() {
     actionAccuracy,
     clearActionAccuracy,
     tokenUsageByFeature,
+    learningProfiles,
+    adaptiveLearningEnabled,
+    setAdaptiveLearningEnabled,
+    resetChannelLearning,
+    streamMetadata,
   } = useAppStore();
 
   const [now, setNow] = useState(Date.now());
@@ -98,6 +112,7 @@ export function AnalyticsPanel() {
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [newGoalType, setNewGoalType] = useState<GoalType>('mentionResponseRate');
   const [newGoalTarget, setNewGoalTarget] = useState('80');
+  const [confirmResetLearning, setConfirmResetLearning] = useState(false);
 
   // Memoize sorted chatters and max count to avoid recompute on every render
   const sortedChatters = useMemo(() =>
@@ -203,6 +218,10 @@ export function AnalyticsPanel() {
                       goals: s.goalEvaluationResults,
                       providerFallbacks: s.providerFallbackHistory,
                       actionAccuracy: s.actionAccuracy,
+                      channelLearning: getLearningDiagnostics(
+                        s.learningProfiles[learningProfileKey(s.streamMetadata.channelName)] ?? emptyLearningProfile(),
+                        now,
+                      ),
                       streamHealth: s.streamHealth,
                     };
                     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
@@ -364,6 +383,8 @@ export function AnalyticsPanel() {
                 { key: "vision", label: "Vision", icon: Eye, color: "bg-cyan-500" },
                 { key: "briefing", label: "Briefing", icon: ScrollText, color: "bg-teal-500" },
                 { key: "memory_extraction", label: "Memory Extract", icon: Brain, color: "bg-pink-500" },
+                { key: "moment_synthesis", label: "Moment Synthesis", icon: Brain, color: "bg-indigo-500" },
+                { key: "episode_synthesis", label: "Episode Synthesis", icon: Brain, color: "bg-violet-500" },
               ];
               const activeFeatures = featureConfig.filter(f => tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature]?.callCount > 0);
               const maxTokens = Math.max(1, ...activeFeatures.map(f => tokenUsageByFeature[f.key as keyof typeof tokenUsageByFeature]?.totalTokens || 0));
@@ -479,6 +500,84 @@ export function AnalyticsPanel() {
                 </div>
               </div>
             )}
+
+            {/* Channel Learning — adaptive feedback loop status */}
+            {(() => {
+              const channel = learningProfileKey(streamMetadata.channelName);
+              const profile = learningProfiles[channel] ?? emptyLearningProfile();
+              const status = summarizeLearningStatus(profile, now);
+              const views = Object.keys(profile.actions)
+                .map((actionType) => getLearnedActionStats(profile, actionType, now))
+                .filter((v) => v !== null)
+                .sort((a, b) => b.effectiveWeight - a.effectiveWeight)
+                .slice(0, 6);
+              if (status.observations === 0 && views.length === 0) return null;
+              return (
+                <div className="space-y-2 p-3 bg-white/[0.03] rounded-lg border border-white/5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+                      <Brain className="w-3.5 h-3.5 text-cyan-400" />
+                      Channel Learning
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { setAdaptiveLearningEnabled(!adaptiveLearningEnabled); playSfx(adaptiveLearningEnabled ? 'hud_close' : 'hud_open'); }}
+                        className={cn("text-[9px] px-1.5 py-0.5 rounded", adaptiveLearningEnabled ? "text-green-400 bg-green-500/10" : "text-gray-500 bg-white/5")}
+                      >
+                        {adaptiveLearningEnabled ? "influencing" : "analytics only"}
+                      </button>
+                      {confirmResetLearning ? (
+                        <span className="flex items-center gap-1 text-[9px]">
+                          <button onClick={() => { resetChannelLearning(); setConfirmResetLearning(false); playSfx('clear_context'); }} className="text-red-400 hover:text-red-300">confirm</button>
+                          <button onClick={() => setConfirmResetLearning(false)} className="text-gray-500 hover:text-gray-400">cancel</button>
+                        </span>
+                      ) : (
+                        <button onClick={() => setConfirmResetLearning(true)} className="text-[9px] text-gray-500 hover:text-red-400">reset</button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                    <span className={cn(adaptiveLearningEnabled ? "text-green-400" : "text-gray-400")}>
+                      {adaptiveLearningEnabled ? "ACTIVE" : "PAUSED"}
+                    </span>
+                    <span>·</span>
+                    <span>{status.observations} observations</span>
+                    <span>·</span>
+                    <span>confidence: <span className={cn(status.confidence === "high" ? "text-green-400" : status.confidence === "moderate" ? "text-yellow-400" : "text-gray-400")}>{status.confidence.toUpperCase()}</span></span>
+                    {status.observations > 0 && status.confidence === "low" && <span className="text-gray-600">— gathering evidence</span>}
+                  </div>
+                  <div className="space-y-1">
+                    {views.map((v) => {
+                      const isSilence = v.actionType === SILENCE_ACTION;
+                      const pct = Math.round(Math.abs(v.score) * 100);
+                      const positive = v.score >= 0;
+                      return (
+                        <div key={v.actionType} className="flex items-center gap-2 text-[10px]" title={`${v.samples} samples · effective weight ${v.effectiveWeight.toFixed(1)} · trend ${v.trend}`}>
+                          <span className="text-gray-400 w-28 truncate font-mono">{isSilence ? "restraint" : v.actionType}</span>
+                          <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden flex">
+                            <div className="w-1/2 flex justify-end">
+                              {!positive && <div className="h-full bg-red-500/50 rounded-l-full" style={{ width: `${pct}%` }} />}
+                            </div>
+                            <div className="w-1/2">
+                              {positive && <div className={cn("h-full rounded-r-full", v.actionable ? "bg-green-500/60" : "bg-green-500/25")} style={{ width: `${pct}%` }} />}
+                            </div>
+                          </div>
+                          <span className={cn("w-10 tabular-nums text-right", positive ? (v.actionable ? "text-green-400" : "text-gray-500") : v.actionable ? "text-red-400" : "text-gray-500")}>
+                            {positive ? "↑" : "↓"}{pct}%
+                          </span>
+                          <span className={cn("w-14 text-right", v.confidence >= 0.7 ? "text-green-500" : v.confidence >= 0.45 ? "text-yellow-500" : "text-gray-600")}>
+                            {v.actionable ? describeConfidence(v.confidence) : "uncertain"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[9px] text-gray-600 leading-relaxed">
+                    Advisory evidence from this channel's outcomes — normalized for room activity, bot lines excluded, decayed over time. Never overrides mentions, safety, or rate limits.
+                  </p>
+                </div>
+              );
+            })()}
 
             {/* D3: Provider Fallback History */}
             {providerFallbackHistory.length > 0 && (
