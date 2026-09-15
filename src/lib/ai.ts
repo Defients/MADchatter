@@ -23,6 +23,7 @@ import {
   SUPERCHARGE_DIRECTIVE,
 } from "./prompts";
 import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
+import { stripEmDashes } from "./textSanitize";
 import {
   getHealthyFallbackChain,
   recordProviderFailure,
@@ -112,6 +113,10 @@ export interface AutoForgeDecision {
   used_fallback_provider?: string;
   // Stamped by autoforgeDecide() when token usage is available.
   tokenUsage?: TokenUsage;
+  // Set by the loops when a cycle was skipped by a cheap gate (vibe check,
+  // cadence) before any model call. Lets panels show the loop is alive while
+  // preserving the last real model decision — a gate skip never overwrites it.
+  gateSkipped?: boolean;
 }
 
 export interface TokenUsage {
@@ -588,7 +593,12 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
     console.warn("[generateChat] Parsed response keys:", Object.keys(parsedResponse));
     throw new Error("Model returned no usable suggestions. Try again or lower the effort level.");
   }
-  parsedResponse.suggestions = validSuggestions;
+  parsedResponse.suggestions = validSuggestions.map((s: any) => ({
+    ...s,
+    message: stripEmDashes(s.message),
+    why_it_fits: typeof s.why_it_fits === "string" ? stripEmDashes(s.why_it_fits) : s.why_it_fits,
+    tone: typeof s.tone === "string" ? stripEmDashes(s.tone) : s.tone,
+  }));
 
   if (currentVisualContext && currentVisualContext !== params.visualContext) {
     parsedResponse.visualContext = currentVisualContext;
@@ -998,6 +1008,8 @@ Custom Instruction: ${params.customInstruction || "None"}
   if (parsed.why_it_fits != null && typeof parsed.why_it_fits !== "string") {
     parsed.why_it_fits = String(parsed.why_it_fits);
   }
+  if (typeof parsed.message === "string") parsed.message = stripEmDashes(parsed.message);
+  if (typeof parsed.why_it_fits === "string") parsed.why_it_fits = stripEmDashes(parsed.why_it_fits);
   if (usage) parsed.tokenUsage = usage;
   return parsed;
 }
@@ -1126,7 +1138,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-    return { text: response.text || "Unable to generate briefing.", tokenUsage: usage };
+    return { text: stripEmDashes(response.text || "Unable to generate briefing."), tokenUsage: usage };
   } else if (isOpenAICompatibleProvider(provider)) {
     const { baseUrl, model } = openAiCompatEndpoint(provider, keys);
     const ai = new OpenAI({
@@ -1156,7 +1168,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         total_tokens: response.usage.total_tokens,
       };
     }
-    return { text: response.choices?.[0]?.message?.content || "Unable to generate briefing.", tokenUsage: usage };
+    return { text: stripEmDashes(response.choices?.[0]?.message?.content || "Unable to generate briefing."), tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const response = await aiScheduler.execute(
@@ -1176,7 +1188,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
         total_tokens: response.usage.input_tokens + response.usage.output_tokens,
       };
     }
-    return { text: (response.content[0] as any).text || "Unable to generate briefing.", tokenUsage: usage };
+    return { text: stripEmDashes((response.content[0] as any).text || "Unable to generate briefing."), tokenUsage: usage };
   }
   throw new Error("Invalid provider");
 }
@@ -1386,6 +1398,10 @@ DECIDE NOW.`;
       if (result.suggested_trigger != null && typeof result.suggested_trigger !== "string") {
         result.suggested_trigger = String(result.suggested_trigger);
       }
+      // Em-dashes are banned from user-facing output — strip after coercion.
+      if (typeof result.action_payload === "string") result.action_payload = stripEmDashes(result.action_payload);
+      if (typeof result.reason === "string") result.reason = stripEmDashes(result.reason);
+      if (typeof result.suggested_trigger === "string") result.suggested_trigger = stripEmDashes(result.suggested_trigger);
       recordProviderSuccess(currentProvider);
       if (usedFallback && currentProvider !== rawProvider) {
         result.used_fallback_provider = currentProvider;

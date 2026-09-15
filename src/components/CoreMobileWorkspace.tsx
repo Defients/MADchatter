@@ -55,6 +55,7 @@ import {
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useCoreReadiness } from "../hooks/useCoreReadiness";
 import { useEffectiveMode, useStudioAvailable } from "../hooks/useMediaQuery";
+import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
 import { getCoreProviderSummary } from "../lib/coreProviderSummary";
 import { getActiveProvider, getKeys, setActiveProvider, saveKeys, getProviderWithKey } from "../lib/keys";
 import { sendManualMessage } from "../lib/manualSend";
@@ -214,7 +215,7 @@ export function CoreMobileWorkspace(props: {
   const autoForgeConfidenceThreshold = useAppStore((s) => s.autoForgeConfidenceThreshold);
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
-  const lastAutoForgeDecision = useAppStore((s) => s.lastAutoForgeDecision);
+  const { decision: lastAutoForgeDecision, bot: lastDecisionBot } = useEffectiveAutoForgeDecision();
   const autoForgeNextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -531,6 +532,9 @@ export function CoreMobileWorkspace(props: {
                   <div className="flex items-center justify-between text-[10px]">
                     <span className="text-orange-400 font-bold uppercase">
                       Decision: {lastAutoForgeDecision.decision}
+                      {lastDecisionBot && (
+                        <span className="text-purple-300 font-mono normal-case"> @{lastDecisionBot.session?.username ?? lastDecisionBot.label}</span>
+                      )}
                     </span>
                     <span className="text-gray-400 font-mono">
                       {(lastAutoForgeDecision.confidence * 100).toFixed(0)}% conf

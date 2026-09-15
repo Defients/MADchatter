@@ -467,6 +467,23 @@ export function useAutoForge() {
             summary: `Vibe check skip: ${vibe.reason}`,
             details: { reason: vibe.reason, chatVelocity, activityLevel },
           });
+          // Record the skip as this cycle's outcome (no history append) so
+          // the Last Cycle panel reflects that a check ran — otherwise a dead
+          // chat would leave "Waiting for first check" up forever. Guarded:
+          // a skip never overwrites a real model decision (dry-run payloads
+          // must stay visible/sendable until the next real evaluation).
+          const prevDecision = useAppStore.getState().lastAutoForgeDecision;
+          if (!prevDecision || prevDecision.gateSkipped) {
+            setLastAutoForgeDecision({
+              decision: "deliberate_silence",
+              confidence: 1,
+              reason: `Skipped (vibe check): ${vibe.reason}`,
+              estimated_next_action_minutes: Math.max(0.1, vibe.nextCheckDelayMs / 60000),
+              timestamp: Date.now(),
+              activityLevel,
+              gateSkipped: true,
+            }, false);
+          }
           setAutoForgeNextActionMs(Date.now() + vibe.nextCheckDelayMs);
           return;
         }
@@ -500,7 +517,21 @@ export function useAutoForge() {
         });
         if (!cadence.run) {
           // Cheap heartbeat return — no model call, no reschedule. The tick
-          // re-evaluates in 15s and runs as soon as the gate opens.
+          // re-evaluates in 15s and runs as soon as the gate opens. Record
+          // the skip (no history append, never overwrites a real decision) so
+          // Last Cycle shows the loop is alive instead of looking frozen.
+          const prevDecision = useAppStore.getState().lastAutoForgeDecision;
+          if (!prevDecision || prevDecision.gateSkipped) {
+            setLastAutoForgeDecision({
+              decision: "deliberate_silence",
+              confidence: 1,
+              reason: `Auto-check skipped: ${cadence.reason}`,
+              estimated_next_action_minutes: Math.max(0.1, (state.autoForgeNextActionMs - Date.now()) / 60000),
+              timestamp: Date.now(),
+              activityLevel,
+              gateSkipped: true,
+            }, false);
+          }
           setAutoForgeCheckArmed(cadence.armed);
           return;
         }
@@ -628,6 +659,12 @@ export function useAutoForge() {
         setAutoForgeLastActionMs(Date.now());
         let nextMinutes = decision.estimated_next_action_minutes || 1.5;
         if (!Number.isFinite(nextMinutes) || nextMinutes < 0) nextMinutes = 1.5;
+        // In dry-run nothing is actually sent, so the model's self-pacing
+        // serves no protective purpose — clamp the next check to the user's
+        // cadence so decisions visibly cycle at 30s/1m/2m/5m instead of
+        // hiding for 3-5 min and looking stuck.
+        const cadenceMinutes = (state.autoForgeAutoCheckIntervalMs || 30000) / 60000;
+        nextMinutes = Math.min(nextMinutes, cadenceMinutes);
         setAutoForgeNextActionMs(Date.now() + nextMinutes * 60 * 1000);
         return;
       }

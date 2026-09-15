@@ -417,6 +417,22 @@ export function useAutoForgeBot(botId: string) {
             summary: `[${bot.session.username}] Vibe check skip: ${vibe.reason}`,
             details: { reason: vibe.reason, chatVelocity, activityLevel },
           });
+          // Record the skip as this cycle's outcome (no history append) so
+          // Last Cycle / HUD telemetry shows a check ran instead of freezing.
+          // Guarded: never overwrites a real model decision.
+          const prevDecision = useAppStore.getState().bots.find((b) => b.id === botId)?.runtime?.lastAutoForgeDecision;
+          if (!prevDecision || prevDecision.gateSkipped) {
+            store.setBotLastAutoForgeDecision(botId, {
+              decision: "deliberate_silence",
+              confidence: 1,
+              reason: `Skipped (vibe check): ${vibe.reason}`,
+              estimated_next_action_minutes: Math.max(0.1, vibe.nextCheckDelayMs / 60000),
+              timestamp: now,
+              activityLevel,
+              isMentioned,
+              gateSkipped: true,
+            }, false);
+          }
           store.setBotAutoForgeNextActionMs(botId, Date.now() + vibe.nextCheckDelayMs);
           return;
         }
@@ -447,6 +463,22 @@ export function useAutoForgeBot(botId: string) {
           urgent: isMentioned || activitySpike,
         });
         if (!cadence.run) {
+          // Cheap heartbeat return — no model call. Record the skip (no
+          // history append, never overwrites a real decision) so Last Cycle
+          // shows the loop is alive.
+          const prevDecision = useAppStore.getState().bots.find((b) => b.id === botId)?.runtime?.lastAutoForgeDecision;
+          if (!prevDecision || prevDecision.gateSkipped) {
+            store.setBotLastAutoForgeDecision(botId, {
+              decision: "deliberate_silence",
+              confidence: 1,
+              reason: `Auto-check skipped: ${cadence.reason}`,
+              estimated_next_action_minutes: Math.max(0.1, (bot.runtime.autoForgeNextActionMs - Date.now()) / 60000),
+              timestamp: now,
+              activityLevel,
+              isMentioned,
+              gateSkipped: true,
+            }, false);
+          }
           store.setAutoForgeCheckArmed(cadence.armed);
           return;
         }
@@ -597,6 +629,10 @@ export function useAutoForgeBot(botId: string) {
         store.setBotAutoForgeLastActionMs(botId, Date.now());
         let nextMin = decision.estimated_next_action_minutes || 1.5;
         if (!Number.isFinite(nextMin) || nextMin < 0) nextMin = 1.5;
+        // Dry-run: clamp to the user's cadence — nothing is really sent, so
+        // the model's self-pacing only hides decisions and looks stuck.
+        const cadenceMin = (store.autoForgeAutoCheckIntervalMs || 30000) / 60000;
+        nextMin = Math.min(nextMin, cadenceMin);
         store.setBotAutoForgeNextActionMs(botId, Date.now() + nextMin * 60 * 1000);
         releaseFM();
         return;

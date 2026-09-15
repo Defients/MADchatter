@@ -353,7 +353,10 @@ interface AppState {
   isAutoForgeHUDOpen: boolean;
   setIsAutoForgeHUDOpen: (isOpen: boolean) => void;
   lastAutoForgeDecision: AutoForgeDecision | null;
-  setLastAutoForgeDecision: (decision: AutoForgeDecision | null) => void;
+  // record=false updates the visible "last cycle" telemetry without appending
+  // to autoForgeDecisionHistory — used for cheap gate-skip records (vibe check,
+  // cadence gate) so the 20-entry history stays real decisions only.
+  setLastAutoForgeDecision: (decision: AutoForgeDecision | null, record?: boolean) => void;
   // Bounded history of recent decisions (last ~20). Used by the Q hotkey
   // to recover unsent messages from earlier cycles.
   autoForgeDecisionHistory: AutoForgeDecision[];
@@ -803,7 +806,7 @@ interface AppState {
   addBotDecisionLogEntry: (id: string, entry: Omit<DecisionLogEntry, "id">) => string;
   updateBotDecisionLogEntry: (id: string, entryId: string, updates: Partial<DecisionLogEntry>) => void;
   addBotSentimentReading: (id: string, reading: SentimentReading) => void;
-  setBotLastAutoForgeDecision: (id: string, decision: AutoForgeDecision | null) => void;
+  setBotLastAutoForgeDecision: (id: string, decision: AutoForgeDecision | null, record?: boolean) => void;
   setBotAutoForgeLastActionMs: (id: string, ms: number | null) => void;
   setBotAutoForgeNextActionMs: (id: string, ms: number) => void;
   setBotIsAutoForgeThinking: (id: string, thinking: boolean) => void;
@@ -1093,9 +1096,9 @@ export const useAppStore = create<AppState>()(
       setIsAutoForgeHUDOpen: (isOpen) => set({ isAutoForgeHUDOpen: isOpen }),
       lastAutoForgeDecision: null,
       autoForgeDecisionHistory: [],
-      setLastAutoForgeDecision: (decision) => set((state) => ({
+      setLastAutoForgeDecision: (decision, record = true) => set((state) => ({
         lastAutoForgeDecision: decision,
-        autoForgeDecisionHistory: decision
+        autoForgeDecisionHistory: decision && record
           ? [...state.autoForgeDecisionHistory, decision].slice(-20)
           : state.autoForgeDecisionHistory,
       })),
@@ -2611,11 +2614,11 @@ export const useAppStore = create<AppState>()(
             return { ...b, runtime: { ...b.runtime, sentimentHistory: updated } };
           }),
         })),
-      setBotLastAutoForgeDecision: (id, decision) =>
+      setBotLastAutoForgeDecision: (id, decision, record = true) =>
         set((state) => ({
           bots: state.bots.map((b) => {
             if (b.id !== id) return b;
-            const history = decision
+            const history = decision && record
               ? [...b.runtime.autoForgeDecisionHistory, decision].slice(-20)
               : b.runtime.autoForgeDecisionHistory;
             return { ...b, runtime: { ...b.runtime, lastAutoForgeDecision: decision, autoForgeDecisionHistory: history } };

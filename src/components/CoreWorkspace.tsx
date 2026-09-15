@@ -69,6 +69,7 @@ import { playSfx } from "../lib/sfx";
 import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
 import { switchChannel } from "../lib/channelSwitch";
 import { useMediaQuery, useStudioAvailable, useEffectiveMode } from "../hooks/useMediaQuery";
+import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
 import { ThemedTooltip } from "./ui/tooltip";
 import { AutoCheckControls } from "./AutoCheckControls";
 import { fireConfetti } from "../lib/confetti";
@@ -2417,7 +2418,7 @@ function PersonalityGrid(props: { config: any; updateConfig: (c: any) => void; a
 // header grip; position is kept in local state (not persisted).
 
 function PreviousCycleDecisionPanel() {
-  const lastDecision = useAppStore((s) => s.lastAutoForgeDecision);
+  const { decision: lastDecision, bot: decisionBot } = useEffectiveAutoForgeDecision();
   const autoForgeEnabled = useAppStore((s) => s.autoForgeEnabled);
   const autoForgeDryRun = useAppStore((s) => s.autoForgeDryRun);
   const streamMetadata = useAppStore((s) => s.streamMetadata);
@@ -2563,6 +2564,14 @@ function PreviousCycleDecisionPanel() {
         >
           {decisionLabel}
         </span>
+        {decisionBot && (
+          <span
+            title={`Decision by @${decisionBot.session?.username ?? decisionBot.label}`}
+            className="text-[10px] font-mono text-purple-300 shrink-0 truncate max-w-[90px]"
+          >
+            @{decisionBot.session?.username ?? decisionBot.label}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1.5 shrink-0 pl-1">
           <span className="text-[9px] text-gray-500 font-mono">{ts}</span>
           <button
