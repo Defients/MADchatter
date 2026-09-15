@@ -1,3 +1,4 @@
+import { throwIfSendCancelled, notifySendIdentityChange } from "./sendCancellation";
 import { SendRateLimiter } from "./rateLimiter";
 import { useAppStore } from "../store";
 
@@ -39,7 +40,8 @@ interface KickChannelInfo {
   };
 }
 
-export async function fetchKickChannelInfo(slug: string): Promise<KickChannelInfo | null> {
+export async function fetchKickChannelInfo(slug: string, signal?: AbortSignal): Promise<KickChannelInfo | null> {
+  throwIfSendCancelled(signal);
   const encSlug = encodeURIComponent(slug);
 
   const parseV2Api = (data: any): KickChannelInfo | null => {
@@ -81,6 +83,7 @@ export async function fetchKickChannelInfo(slug: string): Promise<KickChannelInf
   // Method 1: Direct v2 API (public, no auth needed) — fastest, no proxy dependency
   try {
     const res = await fetch(`${KICK_API_V2}/channels/${encSlug}`, {
+      signal,
       headers: {
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -88,6 +91,7 @@ export async function fetchKickChannelInfo(slug: string): Promise<KickChannelInf
     });
     if (res.ok) {
       const parsed = parseV2Api(await res.json());
+      throwIfSendCancelled(signal);
       if (parsed) {
         console.log('[Kick] Channel resolved via direct v2 API:', slug, 'chatroom_id:', parsed.chatroom_id);
         return parsed;
@@ -96,12 +100,15 @@ export async function fetchKickChannelInfo(slug: string): Promise<KickChannelInf
       console.warn('[Kick] Direct v2 API returned', res.status, 'for', slug);
     }
   } catch (e) {
+    throwIfSendCancelled(signal);
     console.warn('[Kick] Method 1 (direct v2) failed:', e);
   }
 
+  throwIfSendCancelled(signal);
   // Method 2: Direct v1 API (public, no auth needed)
   try {
     const res = await fetch(`${KICK_API_V1}/channels/${encSlug}`, {
+      signal,
       headers: {
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -109,45 +116,54 @@ export async function fetchKickChannelInfo(slug: string): Promise<KickChannelInf
     });
     if (res.ok) {
       const parsed = parseV2Api(await res.json());
+      throwIfSendCancelled(signal);
       if (parsed) {
         console.log('[Kick] Channel resolved via direct v1 API:', slug, 'chatroom_id:', parsed.chatroom_id);
         return parsed;
       }
     }
   } catch (e) {
+    throwIfSendCancelled(signal);
     console.warn('[Kick] Method 2 (direct v1) failed:', e);
   }
 
+  throwIfSendCancelled(signal);
   // Method 3: Proxy to v1 legacy API (CORS fallback)
   try {
-    const res = await fetch(`${PROXY_BASE}/channel/${encSlug}`);
+    const res = await fetch(`${PROXY_BASE}/channel/${encSlug}`, { signal });
     if (res.ok) {
       const parsed = parseV2Api(await res.json());
+      throwIfSendCancelled(signal);
       if (parsed) {
         console.log('[Kick] Channel resolved via proxy v1:', slug, 'chatroom_id:', parsed.chatroom_id);
         return parsed;
       }
     }
   } catch (e) {
+    throwIfSendCancelled(signal);
     console.warn('[Kick] Method 3 (proxy v1) failed:', e);
   }
 
+  throwIfSendCancelled(signal);
   // Method 4: Proxy to official public API (with auth if available)
   const session = getKickSession();
   if (session?.accessToken) {
     try {
       const headers: Record<string, string> = {};
       const res = await fetch(`${PROXY_BASE}/channels?slug=${encSlug}`, {
+        signal,
         headers: { 'Authorization': `Bearer ${session.accessToken}` },
       });
       if (res.ok) {
         const parsed = parsePublicApi(await res.json());
+        throwIfSendCancelled(signal);
         if (parsed) {
           console.log('[Kick] Channel resolved via proxy public API:', slug, 'chatroom_id:', parsed.chatroom_id);
           return parsed;
         }
       }
     } catch (e) {
+      throwIfSendCancelled(signal);
       console.warn('[Kick] Method 4 (proxy + auth) failed:', e);
     }
   }
@@ -367,12 +383,12 @@ class KickSendManager extends SendRateLimiter {
   private state: ChatReadState = 'disconnected';
   private stateListeners: Set<(state: string) => void> = new Set();
   private channelInfoCache: Map<string, { broadcasterUserId: number; expiresAt: number }> = new Map();
-  private ensureValid: () => Promise<KickSession | null>;
-  private refresh: (session: KickSession) => Promise<KickSession | null>;
+  private ensureValid: (signal?: AbortSignal) => Promise<KickSession | null>;
+  private refresh: (session: KickSession, signal?: AbortSignal) => Promise<KickSession | null>;
 
   constructor(
-    ensureValid: () => Promise<KickSession | null> = ensureValidKickSession,
-    refresh: (session: KickSession) => Promise<KickSession | null> = refreshKickToken,
+    ensureValid: (signal?: AbortSignal) => Promise<KickSession | null> = ensureValidKickSession,
+    refresh: (session: KickSession, signal?: AbortSignal) => Promise<KickSession | null> = refreshKickToken,
   ) {
     super();
     this.ensureValid = ensureValid;
@@ -399,18 +415,20 @@ class KickSendManager extends SendRateLimiter {
     return { used: this.sendTimestamps.length, max: this.maxPerWindow, windowMs: this.windowMs };
   }
 
-  async send(channel: string, message: string): Promise<void> {
+  async send(channel: string, message: string, signal?: AbortSignal): Promise<void> {
     if (message.length > 500) {
       throw new Error(`Message exceeds Kick's 500-character limit (${message.length} chars). Shorten your message and try again.`);
     }
 
-    return this.sendWithRateLimit(message, () => this.deliver(channel, message));
+    return this.sendWithRateLimit(message, () => this.deliver(channel, message, signal), signal);
   }
 
-  private async deliver(channel: string, message: string): Promise<void> {
+  private async deliver(channel: string, message: string, signal?: AbortSignal): Promise<void> {
 
     // Ensure we have a valid session (auto-refresh if token is expired)
-    let session = await this.ensureValid();
+    throwIfSendCancelled(signal);
+    const session = await this.ensureValid(signal);
+    throwIfSendCancelled(signal);
     if (!session) {
       throw new Error('Not authenticated with Kick. Please log in via the Kick login button to send chat messages.');
     }
@@ -423,7 +441,8 @@ class KickSendManager extends SendRateLimiter {
     if (cached && cached.expiresAt > Date.now()) {
       broadcasterUserId = cached.broadcasterUserId;
     } else {
-      const info = await fetchKickChannelInfo(channel);
+      const info = await fetchKickChannelInfo(channel, signal);
+      throwIfSendCancelled(signal);
       if (!info || !info.user_id) {
         throw new Error(`Could not resolve broadcaster_user_id for Kick channel "${channel}". The channel may not exist or all API endpoints are unreachable.`);
       }
@@ -444,12 +463,14 @@ class KickSendManager extends SendRateLimiter {
     };
 
     const attemptSend = async (token: string): Promise<Response> => {
+      throwIfSendCancelled(signal);
       // Method 1: Direct API — try first, but only trust the result if it's OK.
       // Kick's chat API requires Origin/Referer headers that browsers can't set,
       // so non-OK responses from direct may be due to missing headers, not real errors.
       // In that case, fall through to proxy which sets those headers server-side.
       try {
         const res = await fetch(`${KICK_PUBLIC_API}/chat`, {
+          signal,
           method: 'POST',
           headers: { ...chatHeaders, Authorization: `Bearer ${token}` },
           body: chatBody,
@@ -459,11 +480,14 @@ class KickSendManager extends SendRateLimiter {
         }
         console.warn('[Kick Send] Direct API returned', res.status, '— trying proxy');
       } catch (e) {
+        throwIfSendCancelled(signal);
         console.warn('[Kick Send] Direct API failed, falling back to proxy:', e);
       }
 
+      throwIfSendCancelled(signal);
       // Method 2: Proxy fallback — sets Origin/Referer headers server-side
       const res = await fetch(`${PROXY_BASE}/chat`, {
+        signal,
         method: 'POST',
         headers: { ...chatHeaders, Authorization: `Bearer ${token}` },
         body: chatBody,
@@ -473,16 +497,23 @@ class KickSendManager extends SendRateLimiter {
 
     try {
       let res = await attemptSend(session.accessToken);
+      // A confirmed success still belongs in the limiter's duplicate history,
+      // even if its caller cancelled while the response was arriving.
+      if (signal?.aborted && res.ok) return;
+      throwIfSendCancelled(signal);
 
       // If 401/403, try refreshing the token and retrying once
       if (res.status === 401 || res.status === 403) {
         const errText = await res.text().catch(() => '');
         console.warn(`[Kick Send] Got ${res.status}, attempting token refresh...`, errText);
 
-        const refreshed = await this.refresh(session);
+        throwIfSendCancelled(signal);
+        const refreshed = await this.refresh(session, signal);
+        throwIfSendCancelled(signal);
         if (refreshed) {
           console.log('[Kick Send] Token refreshed, retrying send...');
           res = await attemptSend(refreshed.accessToken);
+          if (signal?.aborted && res.ok) return;
         } else {
           this.setState('error');
           throw new Error(
@@ -514,10 +545,12 @@ class KickSendManager extends SendRateLimiter {
         throw new Error(`Kick API error ${res.status}: ${errText}`);
       }
 
+      throwIfSendCancelled(signal);
       this.setState('connected');
       console.log('[Kick Send] Message sent successfully to', channel);
     } catch (err) {
-      this.setState('error');
+      this.setState(signal?.aborted ? 'disconnected' : 'error');
+      throwIfSendCancelled(signal);
       throw err;
     }
   }
@@ -532,8 +565,8 @@ export function getKickSendManagerForBot(botId: string): KickSendManager {
   let mgr = kickSendManagerRegistry.get(botId);
   if (!mgr) {
     mgr = new KickSendManager(
-      () => ensureValidKickSessionForBot(botId),
-      (session) => refreshKickTokenForBot(botId, session),
+      (signal) => ensureValidKickSessionForBot(botId, signal),
+      (session, signal) => refreshKickTokenForBot(botId, session, signal),
     );
     kickSendManagerRegistry.set(botId, mgr);
   }
@@ -582,6 +615,7 @@ export function setKickSession(session: KickSession | null): void {
   } else {
     localStorage.removeItem(KICK_SESSION_KEY);
   }
+  notifySendIdentityChange();
 }
 
 // ─── Multi-Bot: per-bot Kick session accessors (additive) ───────────────────
@@ -613,7 +647,8 @@ export function removeKickSessionForBot(botId: string): void {
 
 // ─── Token Refresh ────────────────────────────────────────────────────────────
 
-export async function refreshKickToken(session: KickSession): Promise<KickSession | null> {
+export async function refreshKickToken(session: KickSession, signal?: AbortSignal): Promise<KickSession | null> {
+  throwIfSendCancelled(signal);
   if (!session.refreshToken) {
     console.warn('[Kick Auth] No refresh_token available — cannot refresh. User must re-authenticate.');
     return null;
@@ -627,6 +662,7 @@ export async function refreshKickToken(session: KickSession): Promise<KickSessio
   try {
     // Token refresh must go through the proxy (requires client_secret)
     const res = await fetch(`${PROXY_BASE}/refresh`, {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -636,18 +672,21 @@ export async function refreshKickToken(session: KickSession): Promise<KickSessio
       }),
     });
 
+    throwIfSendCancelled(signal);
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       console.error(`[Kick Auth] Token refresh failed (${res.status}):`, errText);
       // If refresh token is invalid, clear the session
       if (res.status === 400 || res.status === 401) {
         console.warn('[Kick Auth] Refresh token is invalid or expired. Clearing session.');
+        throwIfSendCancelled(signal);
         setKickSession(null);
       }
       return null;
     }
 
     const tokenData = await res.json();
+    throwIfSendCancelled(signal);
     const newSession: KickSession = {
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token || session.refreshToken,
@@ -662,12 +701,14 @@ export async function refreshKickToken(session: KickSession): Promise<KickSessio
     console.log('[Kick Auth] Token refreshed successfully, new expiresAt:', new Date(newSession.expiresAt!).toISOString());
     return newSession;
   } catch (e) {
+    throwIfSendCancelled(signal);
     console.error('[Kick Auth] Token refresh error:', e);
     return null;
   }
 }
 
-export async function ensureValidKickSession(): Promise<KickSession | null> {
+export async function ensureValidKickSession(signal?: AbortSignal): Promise<KickSession | null> {
+  throwIfSendCancelled(signal);
   const session = getKickSession();
   if (!session) return null;
 
@@ -682,7 +723,7 @@ export async function ensureValidKickSession(): Promise<KickSession | null> {
   }
 
   console.log(`[Kick Auth] Token ${now > session.expiresAt ? 'expired' : 'expiring soon'}, attempting refresh...`);
-  const refreshed = await refreshKickToken(session);
+  const refreshed = await refreshKickToken(session, signal);
   if (refreshed) return refreshed;
 
   // Refresh failed — return null so caller can prompt re-auth
@@ -691,7 +732,8 @@ export async function ensureValidKickSession(): Promise<KickSession | null> {
 
 // ─── Multi-Bot: per-bot token refresh + ensure (additive) ───────────────────
 
-export async function refreshKickTokenForBot(botId: string, session: KickSession): Promise<KickSession | null> {
+export async function refreshKickTokenForBot(botId: string, session: KickSession, signal?: AbortSignal): Promise<KickSession | null> {
+  throwIfSendCancelled(signal);
   if (!session.refreshToken) {
     console.warn('[Kick Auth] No refresh_token available — cannot refresh. User must re-authenticate.');
     return null;
@@ -700,10 +742,12 @@ export async function refreshKickTokenForBot(botId: string, session: KickSession
   const clientSecret = DEFAULT_KICK_CLIENT_SECRET;
   try {
     const res = await fetch(`${PROXY_BASE}/refresh`, {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: session.refreshToken, client_id: clientId, client_secret: clientSecret }),
     });
+    throwIfSendCancelled(signal);
     if (!res.ok) {
       if (res.status === 400 || res.status === 401) {
         setKickSessionForBot(botId, null);
@@ -711,6 +755,7 @@ export async function refreshKickTokenForBot(botId: string, session: KickSession
       return null;
     }
     const tokenData = await res.json();
+    throwIfSendCancelled(signal);
     const newSession: KickSession = {
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token || session.refreshToken,
@@ -723,19 +768,21 @@ export async function refreshKickTokenForBot(botId: string, session: KickSession
     setKickSessionForBot(botId, newSession);
     return newSession;
   } catch (e) {
+    throwIfSendCancelled(signal);
     console.error('[Kick Auth] Per-bot token refresh error:', e);
     return null;
   }
 }
 
-export async function ensureValidKickSessionForBot(botId: string): Promise<KickSession | null> {
+export async function ensureValidKickSessionForBot(botId: string, signal?: AbortSignal): Promise<KickSession | null> {
+  throwIfSendCancelled(signal);
   const session = getKickSessionForBot(botId);
   if (!session) return null;
   if (!session.expiresAt) return session;
   const now = Date.now();
   const bufferMs = 60_000;
   if (now < session.expiresAt - bufferMs) return session;
-  const refreshed = await refreshKickTokenForBot(botId, session);
+  const refreshed = await refreshKickTokenForBot(botId, session, signal);
   return refreshed ?? null;
 }
 
@@ -837,11 +884,11 @@ export async function fetchKickUser(accessToken: string): Promise<{ id: string; 
   }
 }
 
-export async function sendKickMessage(channel: string, message: string): Promise<void> {
-  await kickSendManager.send(channel, message);
+export async function sendKickMessage(channel: string, message: string, signal?: AbortSignal): Promise<void> {
+  await kickSendManager.send(channel, message, signal);
 }
 
 // Multi-bot: send as a specific Kick bot identity (independent rate limit + dedup).
-export async function sendKickMessageAsBot(botId: string, channel: string, message: string): Promise<void> {
-  await getKickSendManagerForBot(botId).send(channel, message);
+export async function sendKickMessageAsBot(botId: string, channel: string, message: string, signal?: AbortSignal): Promise<void> {
+  await getKickSendManagerForBot(botId).send(channel, message, signal);
 }

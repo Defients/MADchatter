@@ -1,3 +1,4 @@
+import { SendCancelledError } from "../lib/sendCancellation";
 import { useEffect, useRef } from "react";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { toast } from "sonner";
@@ -321,6 +322,7 @@ export function useAutoForge() {
         );
 
         const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx);
+        if (!guard.isCurrent()) return;
         const firedRules = ruleResults.filter((r) => r.fired);
         if (firedRules.length > 0) {
           console.log(`[AutoForge] Rule engine: ${firedRules.length} rule(s) fired`);
@@ -773,9 +775,11 @@ export function useAutoForge() {
             return;
           }
           try {
-            await sendFn(state.streamMetadata.channelName, messageToSend);
+            await sendFn(state.streamMetadata.channelName, messageToSend, guard.signal);
+            if (!guard.isCurrent()) { return; }
             updateDecisionRef.current(decisionLogId, { outcome: "sent" });
           } catch (e: any) {
+            if (e instanceof SendCancelledError || !guard.isCurrent()) { return; }
             updateDecisionRef.current(decisionLogId, { outcome: "failed" });
             console.error("[AutoForge] full_forge send failed:", e);
             addEventRef.current({
@@ -946,9 +950,11 @@ export function useAutoForge() {
             return;
           }
           try {
-            await sendFn(state.streamMetadata.channelName, decision.action_payload);
+            await sendFn(state.streamMetadata.channelName, decision.action_payload, guard.signal);
+            if (!guard.isCurrent()) { return; }
             updateDecisionRef.current(decisionLogId, { outcome: "sent" });
           } catch (e: any) {
+            if (e instanceof SendCancelledError || !guard.isCurrent()) { return; }
             updateDecisionRef.current(decisionLogId, { outcome: "failed" });
             console.error("[AutoForge] send failed:", e);
             addEventRef.current({
@@ -1037,6 +1043,7 @@ export function useAutoForge() {
             const sendFn2 = getPlatformSendFn(state.platform);
             sendFn2(state.streamMetadata.channelName, decision.action_payload)
               .then(() => {
+                if (!isSessionScopeCurrent(followupScope)) return;
                 updateDecisionRef.current(decisionLogId, { outcome: "sent" });
                 if (state.messageSoundEnabled && state.platform === 'joystick') playMessageSound();
                 speakMessage(decision.action_payload);
@@ -1065,6 +1072,7 @@ export function useAutoForge() {
                 });
               })
               .catch((e) => {
+                if (e instanceof SendCancelledError || !isSessionScopeCurrent(followupScope)) return;
                 updateDecisionRef.current(decisionLogId, { outcome: "failed" });
                 console.error("[AutoForge] quick_followup send failed:", e);
                 addEventRef.current({

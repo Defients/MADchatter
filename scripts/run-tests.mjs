@@ -14,10 +14,10 @@ async function discover(directory) {
 
 // Each suite owns its browser fakes and may call process.exit. Isolate suites
 // in separate processes and preserve their exit codes, including timeouts.
-const channelSuite = resolve(root, 'src/lib/channelSwitch.test.ts');
-const suites = (await discover(resolve(root, 'src'))).filter((file) => file !== channelSuite)
+const bundledSuites = new Set(['channelSwitch', 'ruleEngine'].map(name => resolve(root, `src/lib/${name}.test.ts`)));
+const suites = (await discover(resolve(root, 'src'))).filter((file) => !bundledSuites.has(file))
   .map((file) => ({ name: relative(root, file), args: ['--import', 'tsx', file] }));
-for (const script of ['check-channel-switch.mjs', 'check-manual-send.mjs', 'check-platform-send.mjs']) {
+for (const script of ['check-channel-switch.mjs', 'check-manual-send.mjs', 'check-platform-send.mjs', 'check-rule-engine.mjs', 'check-send-cancellation.mjs']) {
   suites.push({ name: `scripts/${script}`, args: [resolve(root, 'scripts', script)] });
 }
 let failed = 0;

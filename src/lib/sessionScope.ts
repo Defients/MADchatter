@@ -36,6 +36,7 @@ export function createAutoForgeExecutionGuard(identityIsCurrent: () => boolean) 
   const initial = useAppStore.getState();
   const multiBotActive = selectMultiBotActive(initial);
   let cancelled = false;
+  const controller = new AbortController();
   const contextMatches = () => {
     const state = useAppStore.getState();
     return isSessionScopeCurrent(scope) && state.autoForgeEnabled &&
@@ -44,12 +45,13 @@ export function createAutoForgeExecutionGuard(identityIsCurrent: () => boolean) 
       selectMultiBotActive(state) === multiBotActive && identityIsCurrent();
   };
   const unsubscribe = useAppStore.subscribe(() => {
-    if (!contextMatches()) cancelled = true;
+    if (!contextMatches()) { cancelled = true; controller.abort(); }
   });
   return {
     scope,
+    signal: controller.signal,
     isCurrent: () => !cancelled && contextMatches(),
     dispose: unsubscribe,
-    cancel: () => { cancelled = true; unsubscribe(); },
+    cancel: () => { cancelled = true; controller.abort(); unsubscribe(); },
   };
 }

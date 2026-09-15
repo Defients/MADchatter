@@ -9,6 +9,32 @@ import { useAppStore } from "../store";
 import { getPlatformSendFn } from "./platformSend";
 import { toast } from "sonner";
 import { playSfx } from "./sfx";
+import { captureSessionScope, isSessionScopeCurrent } from "./sessionScope";
+import { waitForSendDelay } from "./sendCancellation";
+
+/** Rules may intentionally toggle AutoForge, so only session/identity changes
+ * invalidate the sequence. Cancellation stays sticky across off/on round trips. */
+function createRuleExecutionGuard(botId?: string) {
+  const scope = captureSessionScope();
+  const initial = useAppStore.getState();
+  const bot = botId ? initial.bots.find((b) => b.id === botId) : undefined;
+  const contextMatches = () => {
+    const current = useAppStore.getState();
+    const currentBot = botId ? current.bots.find((b) => b.id === botId) : undefined;
+    return isSessionScopeCurrent(scope) && current.multiBotEnabled === initial.multiBotEnabled &&
+      (!botId || (!!bot?.session && !!currentBot?.active &&
+        currentBot.platform === scope.platform && currentBot.platform === bot.platform &&
+        currentBot.session?.username === bot.session.username &&
+        currentBot.session?.userId === bot.session.userId));
+  };
+  let cancelled = !contextMatches();
+  const controller = new AbortController();
+  if (cancelled) controller.abort();
+  const dispose = useAppStore.subscribe(() => {
+    if (!contextMatches()) { cancelled = true; controller.abort(); }
+  });
+  return { isCurrent: () => !cancelled && contextMatches(), signal: controller.signal, dispose };
+}
 
 // ─── Condition Evaluation ────────────────────────────────────────────────────
 
@@ -111,7 +137,7 @@ function evaluateConditions(
 
 // ─── Action Execution ────────────────────────────────────────────────────────
 
-async function executeAction(action: RuleAction, botId?: string): Promise<boolean> {
+async function executeAction(action: RuleAction, botId: string | undefined, isCurrent: () => boolean, signal: AbortSignal): Promise<boolean> {
   const state = useAppStore.getState();
   const channel = state.streamMetadata?.channelName;
 
@@ -126,10 +152,10 @@ async function executeAction(action: RuleAction, botId?: string): Promise<boolea
       // When botId is omitted (legacy single-bot mode), uses the singleton.
       const sendFn = getPlatformSendFn(state.platform, botId);
       try {
-        await sendFn(channel, action.payload);
+        await sendFn(channel, action.payload, signal);
         return true;
       } catch (e: any) {
-        toast.error(`Rule send failed: ${e.message || e}`);
+        if (isCurrent()) toast.error(`Rule send failed: ${e?.message || e}`);
         return false;
       }
     }
@@ -261,14 +287,29 @@ export async function fireRule(
   ctx: RuleEngineContext,
   botId?: string
 ): Promise<RuleEvaluationResult> {
+  const guard = createRuleExecutionGuard(botId);
+  try {
+    return await fireRuleInScope(rule, ctx, botId, guard.isCurrent, guard.signal);
+  } finally {
+    guard.dispose();
+  }
+}
+
+async function fireRuleInScope(
+  rule: AutoForgeRule,
+  ctx: RuleEngineContext,
+  botId: string | undefined,
+  isCurrent: () => boolean,
+  signal: AbortSignal,
+): Promise<RuleEvaluationResult> {
   const { shouldFire, reason } = evaluateRule(rule, ctx);
 
-  if (!shouldFire) {
+  if (!shouldFire || !isCurrent()) {
     return {
       ruleId: rule.id,
       ruleName: rule.name,
       fired: false,
-      reason,
+      reason: isCurrent() ? reason : "Cancelled: session or bot identity changed",
       actionsExecuted: 0,
     };
   }
@@ -282,23 +323,38 @@ export async function fireRule(
   // Execute actions with delays
   let actionsExecuted = 0;
   for (const action of rule.actions) {
+    if (!isCurrent()) break;
     if (action.delayMs > 0) {
-      await new Promise((r) => setTimeout(r, action.delayMs));
+      try { await waitForSendDelay(action.delayMs, signal); }
+      catch (error) { if (!isCurrent()) break; throw error; }
     }
-    const success = await executeAction(action, botId);
-    if (success) actionsExecuted++;
+    if (!isCurrent()) break;
+    try {
+      const success = await executeAction(action, botId, isCurrent, signal);
+      // A started transport may finish later; do not attribute it to a new session.
+      if (!isCurrent()) break;
+      if (success) actionsExecuted++;
+    } catch (error) {
+      if (isCurrent()) toast.error(`Rule action failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
-  toast.success(`Rule fired: ${rule.name}`, {
-    description: `${actionsExecuted}/${rule.actions.length} actions executed`,
-    duration: 4000,
-  });
+  const cancelled = !isCurrent();
+  const complete = actionsExecuted === rule.actions.length;
+  if (!cancelled) {
+    const notify = complete ? toast.success : toast.warning;
+    notify(`Rule ${complete ? "fired" : "incomplete"}: ${rule.name}`, {
+      description: `${actionsExecuted}/${rule.actions.length} actions executed`,
+      duration: 4000,
+    });
+  }
 
   return {
     ruleId: rule.id,
     ruleName: rule.name,
     fired: true,
-    reason: "Fired successfully",
+    reason: cancelled ? "Cancelled: session or bot identity changed" :
+      complete ? "Fired successfully" : "One or more actions failed",
     actionsExecuted,
   };
 }
@@ -311,14 +367,19 @@ export async function evaluateAllRules(
   botId?: string
 ): Promise<RuleEvaluationResult[]> {
   const results: RuleEvaluationResult[] = [];
+  const guard = createRuleExecutionGuard(botId);
+  try {
+    for (const rule of rules) {
+      if (!guard.isCurrent()) break;
+      // Re-read the rule from store to get latest fireCount/lastFiredMs.
+      const currentRule = useAppStore.getState().autoForgeRules.find((r) => r.id === rule.id);
+      if (!currentRule) continue;
 
-  for (const rule of rules) {
-    // Re-read the rule from store to get latest fireCount/lastFiredMs
-    const currentRule = useAppStore.getState().autoForgeRules.find((r) => r.id === rule.id);
-    if (!currentRule) continue;
-
-    const result = await fireRule(currentRule, ctx, botId);
-    results.push(result);
+      const result = await fireRuleInScope(currentRule, ctx, botId, guard.isCurrent, guard.signal);
+      results.push(result);
+    }
+  } finally {
+    guard.dispose();
   }
 
   return results;
@@ -335,10 +396,10 @@ export function dryRunRule(
     passed: evaluateCondition(c, ctx),
   }));
 
-  const overall =
+  const overall = rule.conditions.length > 0 && (
     rule.conditionOperator === "and"
       ? conditionResults.every((r) => r.passed)
-      : conditionResults.some((r) => r.passed);
+      : conditionResults.some((r) => r.passed));
 
   return { conditionResults, overall };
 }

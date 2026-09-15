@@ -1,3 +1,4 @@
+import { throwIfSendCancelled, notifySendIdentityChange } from "./sendCancellation";
 import type { Platform } from "./kick";
 import { SendRateLimiter } from "./rateLimiter";
 
@@ -269,15 +270,15 @@ class JoystickSendManager extends SendRateLimiter {
     return { used: this.sendTimestamps.length, max: this.maxPerWindow, windowMs: this.windowMs };
   }
 
-  async send(channel: string, message: string, chatClient: JoystickChatClient | null): Promise<void> {
+  async send(channel: string, message: string, chatClient: JoystickChatClient | null, signal?: AbortSignal): Promise<void> {
     if (message.length > 500) {
       throw new Error(`Message exceeds Joystick's 500-character limit (${message.length} chars). Shorten your message and try again.`);
     }
 
-    return this.sendWithRateLimit(message, () => this.deliver(message, chatClient));
+    return this.sendWithRateLimit(message, () => this.deliver(message, chatClient), signal);
   }
 
-  private async deliver(message: string, chatClient: JoystickChatClient | null): Promise<void> {
+  private async deliver(message: string, chatClient: JoystickChatClient | null, signal?: AbortSignal): Promise<void> {
 
     if (!chatClient) {
       throw new Error("Joystick chat client not connected. Wait for the WebSocket to connect before sending.");
@@ -359,6 +360,7 @@ export function setJoystickSession(session: JoystickSession | null): void {
   } else {
     localStorage.removeItem(JOYSTICK_SESSION_KEY);
   }
+  notifySendIdentityChange();
 }
 
 // ─── Token Refresh ────────────────────────────────────────────────────────────
@@ -556,7 +558,8 @@ export async function fetchJoystickChannelInfo(channelId: string, accessToken: s
 
 // ─── Send Message Export ─────────────────────────────────────────────────────
 
-export async function sendJoystickMessage(channel: string, message: string, chatClient: JoystickChatClient | null): Promise<void> {
+export async function sendJoystickMessage(channel: string, message: string, chatClient: JoystickChatClient | null, signal?: AbortSignal): Promise<void> {
+  throwIfSendCancelled(signal);
   // If chatClient doesn't have channelId yet, try to inject from session
   if (chatClient && !chatClient.getChannelId()) {
     const session = getJoystickSession();
@@ -565,5 +568,5 @@ export async function sendJoystickMessage(channel: string, message: string, chat
       console.log("[Joystick Send] Injected channelId from session:", session.channelId);
     }
   }
-  await joystickSendManager.send(channel, message, chatClient);
+  await joystickSendManager.send(channel, message, chatClient, signal);
 }

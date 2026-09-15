@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { SendRateLimiter } from "./rateLimiter";
+import { SendCancelledError } from "./sendCancellation";
 
 const realNow = Date.now;
 let now = 0;
@@ -104,4 +105,63 @@ test("capacity is rechecked when a timer wakes early", async () => {
   await sender.send("two");
   assert.equal(sender.waits.length, 2);
   assert.ok(now >= 30_000);
+});
+
+class CancellableSender extends SendRateLimiter {
+  constructor(limit = 20) { super(); this.maxPerWindow = limit; }
+  send(message: string, deliver = async () => {}, signal?: AbortSignal) {
+    return this.sendWithRateLimit(message, deliver, signal);
+  }
+}
+
+test("pre-cancelled admission consumes no capacity and never delivers", async () => {
+  const sender = new CancellableSender();
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(sender.send("cancelled", async () => { assert.fail("must not deliver"); }, controller.signal), SendCancelledError);
+  assert.equal(sender.getRateStatus().used, 0);
+  await sender.send("cancelled");
+});
+
+test("cancelled queued caller leaves promptly but does not overtake active delivery", async () => {
+  const sender = new CancellableSender();
+  let finish!: () => void;
+  const first = sender.send("first", () => new Promise<void>(resolve => { finish = resolve; }));
+  const controller = new AbortController();
+  const cancelled = assert.rejects(sender.send("withdrawn", async () => { assert.fail("withdrawn send delivered"); }, controller.signal), SendCancelledError);
+  controller.abort();
+  await cancelled;
+  assert.equal(sender.getRateStatus().used, 1);
+  let lastDelivered = false;
+  const last = sender.send("last", async () => { lastDelivered = true; });
+  await Promise.resolve();
+  assert.equal(lastDelivered, false);
+  finish();
+  await Promise.all([first, last]);
+  assert.equal(sender.getRateStatus().used, 2);
+});
+
+test("cancelling a rate wait consumes no additional capacity", async () => {
+  const sender = new CancellableSender(1);
+  await sender.send("first");
+  const controller = new AbortController();
+  const pending = assert.rejects(sender.send("waiting", async () => { assert.fail("must not deliver"); }, controller.signal), SendCancelledError);
+  await Promise.resolve();
+  controller.abort();
+  await pending;
+  assert.equal(sender.getRateStatus().used, 1);
+});
+
+test("cancelled non-abortable delivery retains ordering and success deduplication", async () => {
+  const sender = new CancellableSender();
+  const controller = new AbortController();
+  let finish!: () => void;
+  const first = assert.rejects(sender.send("uncertain", () => new Promise<void>(resolve => { finish = resolve; }), controller.signal), SendCancelledError);
+  await Promise.resolve();
+  controller.abort();
+  await first;
+  const duplicate = assert.rejects(sender.send("uncertain"), /Duplicate message/);
+  finish();
+  await duplicate;
+  await sender.send("next");
 });

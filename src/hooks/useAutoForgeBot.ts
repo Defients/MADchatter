@@ -1,3 +1,4 @@
+import { SendCancelledError } from "../lib/sendCancellation";
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../store";
 import { toast } from "sonner";
@@ -138,11 +139,13 @@ export function useAutoForgeBot(botId: string) {
     // Execution guard: invalidates in-flight work if the session context
     // changes mid-check (channel switch incl. A→B→A round-trips, platform
     // switch, AutoForge toggle, dry-run flip, multi-bot mode flip) OR if
-    // this bot loses its identity (deactivated/session lost). Disposed in
+    // this bot loses or replaces its identity. Disposed in
     // the finally below so we don't leak a subscription per cycle.
     const guard = createAutoForgeExecutionGuard(() => {
       const b = useAppStore.getState().bots.find((x) => x.id === botId);
-      return !!b && b.active && !!b.session;
+      return !!b && b.active && !!b.session && b.platform === bot.platform &&
+        b.session.username === bot.session.username &&
+        b.session.userId === bot.session.userId;
     });
     try {
       const activeProvider = getActiveProvider();
@@ -364,6 +367,7 @@ export function useAutoForgeBot(botId: string) {
         );
 
         const ruleResults = await evaluateAllRules(autoForgeRules, ruleCtx, botId);
+        if (!guard.isCurrent()) return;
         const firedRules = ruleResults.filter((r) => r.fired);
         if (firedRules.length > 0) {
           const ruleActions = firedRules.reduce((s, r) => s + r.actionsExecuted, 0);
@@ -809,9 +813,11 @@ export function useAutoForgeBot(botId: string) {
               store.incrementStat("autoForgeActions");
 
               try {
-                await sendFn(channel, messageToSend);
+                await sendFn(channel, messageToSend, guard.signal);
+                if (!guard.isCurrent()) { releaseFM(); return; }
                 store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
               } catch (e: any) {
+                if (e instanceof SendCancelledError || !guard.isCurrent()) { releaseFM(); return; }
                 store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
                 console.error(`[AutoForgeBot ${bot.session.username}] full_forge send failed:`, e);
                 store.addBotAutoForgeEvent(botId, {
@@ -983,6 +989,7 @@ export function useAutoForgeBot(botId: string) {
             }
             const sendFn = getPlatformSendFn(store.platform, botId);
             sendFn(channel, followupPayload).then(() => {
+              if (!isSessionScopeCurrent(followupScope)) { releaseFM(); return; }
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
               speakMessage(followupPayload);
               store.addBotSentMessage(botId, {
@@ -1013,6 +1020,7 @@ export function useAutoForgeBot(botId: string) {
                 details: { decision: "quick_followup", confidence: followupConf, reason: followupReason, action_payload: followupPayload, delay_ms: delayMs },
               });
             }).catch((e) => {
+              if (e instanceof SendCancelledError || !isSessionScopeCurrent(followupScope)) { releaseFM(); return; }
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
               console.error(`[AutoForgeBot ${bot.session.username}] quick_followup send failed:`, e);
               store.addBotAutoForgeEvent(botId, {
@@ -1135,9 +1143,11 @@ export function useAutoForgeBot(botId: string) {
           store.incrementStat("autoForgeActions");
 
           try {
-            await sendFn(channel, decision.action_payload);
+            await sendFn(channel, decision.action_payload, guard.signal);
+            if (!guard.isCurrent()) { releaseFM(); return; }
             store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
           } catch (e: any) {
+            if (e instanceof SendCancelledError || !guard.isCurrent()) { releaseFM(); return; }
             store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "failed" });
             console.error(`[AutoForgeBot ${bot.session.username}] send failed:`, e);
             store.addBotAutoForgeEvent(botId, {

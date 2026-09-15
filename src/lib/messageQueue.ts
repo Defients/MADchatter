@@ -1,6 +1,7 @@
 import type { QueuedMessage } from "../types";
 import { generateId } from "./ids";
 import { getPlatformSendFn } from "./platformSend";
+import { SendCancelledError } from "./sendCancellation";
 
 const MAX_QUEUE_SIZE = 20;
 const MAX_RETRIES = 5;
@@ -16,6 +17,7 @@ export class MessageQueue {
   private queue: QueuedMessage[] = [];
   private listeners: Set<(depth: number) => void> = new Set();
   private processing = false;
+  private processingAbort: AbortController | null = null;
 
   enqueue(message: string, channel: string, platform: string, lastError?: string): QueuedMessage {
     const now = Date.now();
@@ -61,6 +63,8 @@ export class MessageQueue {
   async processQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
+    const controller = new AbortController();
+    this.processingAbort = controller;
 
     try {
       const now = Date.now();
@@ -68,13 +72,24 @@ export class MessageQueue {
       if (ready.length === 0) return;
 
       for (const entry of ready) {
+        if (controller.signal.aborted) break;
+        if (!this.queue.includes(entry)) continue;
         try {
           const sendFn = getPlatformSendFn(entry.platform as any);
-          await sendFn(entry.channel, entry.message);
+          await sendFn(entry.channel, entry.message, controller.signal);
+          if (controller.signal.aborted) break;
           this.queue = this.queue.filter((m) => m.id !== entry.id);
           this.notifyListeners();
           console.log(`[MessageQueue] Successfully sent queued message: "${entry.message.slice(0, 50)}"`);
         } catch (e: any) {
+          if (controller.signal.aborted) break;
+          if (e instanceof SendCancelledError) {
+            // Every entry in this ready snapshot belongs to the withdrawn run.
+            // Preserve entries enqueued later, but never start another old send.
+            this.queue = this.queue.filter((m) => !ready.includes(m));
+            this.notifyListeners();
+            break;
+          }
           entry.retryCount++;
           entry.lastError = e?.message || "Unknown error";
           entry.nextRetryMs = Date.now() + getRetryDelay(entry.retryCount);
@@ -88,10 +103,12 @@ export class MessageQueue {
       }
     } finally {
       this.processing = false;
+      this.processingAbort = null;
     }
   }
 
   clear(): void {
+    this.processingAbort?.abort();
     this.queue = [];
     this.notifyListeners();
   }

@@ -1,3 +1,4 @@
+import { throwIfSendCancelled, waitForSend, notifySendIdentityChange } from "./sendCancellation";
 import tmi from "tmi.js";
 import { toast } from "sonner";
 import { SendRateLimiter } from "./rateLimiter";
@@ -40,6 +41,8 @@ const TWITCH_NOTICE_MSGIDS: Record<string, string> = {
 class TmiSendManager {
   private client: tmi.Client | null = null;
   private connectingPromise: Promise<tmi.Client> | null = null;
+  private connectionAbort: AbortController | null = null;
+  private connectionIdentity: string | null = null;
   private currentChannel: string | null = null;
   private connectionState: "disconnected" | "connecting" | "connected" | "error" = "disconnected";
   private stateListeners: Set<(state: string) => void> = new Set();
@@ -63,97 +66,75 @@ class TmiSendManager {
     this.stateListeners.forEach((l) => l(state));
   }
 
-  async getClient(channel: string): Promise<tmi.Client> {
+  async getClient(channel: string, signal?: AbortSignal): Promise<tmi.Client> {
+    throwIfSendCancelled(signal);
     const session = this.sessionGetter();
     if (!session) throw new Error("Not authenticated with Twitch");
-
-    // If channel changed, tear down old connection
-    if (this.currentChannel && this.currentChannel !== channel) {
-      await this.disconnect();
+    const identity = JSON.stringify([session.username, session.userId]);
+    if (this.client && (this.currentChannel !== channel || this.connectionIdentity !== identity ||
+      this.connectionState === "disconnected" || this.connectionState === "error")) {
+      await waitForSend(this.disconnect(), signal);
+      throwIfSendCancelled(signal);
     }
+    if (this.client && this.connectionState === "connected") return this.client;
+    if (this.connectingPromise) return waitForSend(this.connectingPromise, signal);
 
-    // Already connected to the right channel
-    if (this.client && this.connectionState === "connected" && this.currentChannel === channel) {
-      return this.client;
-    }
-
-    // Already connecting — wait for that to finish
-    if (this.connectingPromise && this.currentChannel === channel) {
-      return this.connectingPromise;
-    }
-
-    // Start a new connection
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    const client = new tmi.Client({
+      connection: { secure: true, reconnect: true },
+      options: { skipUpdatingEmotesets: true },
+      identity: { username: session.username, password: `oauth:${session.accessToken}` },
+      channels: [channel],
+    });
+    signal?.addEventListener("abort", cancel, { once: true });
+    this.client = client;
+    this.connectionAbort = controller;
+    this.connectionIdentity = identity;
     this.currentChannel = channel;
     this.setState("connecting");
-
-    this.connectingPromise = new Promise<tmi.Client>((resolve, reject) => {
-      const client = new tmi.Client({
-        connection: { secure: true, reconnect: true },
-        // tmi.js 1.8.5 fetches emotes from Twitch's deprecated Kraken API
-        // (api.twitch.tv/kraken/chat/emoticon_images), which is dead in
-        // browsers and throws a CORS error every cycle. We don't use tmi's
-        // emote parsing (emotes are handled elsewhere), so skip it entirely.
-        options: { skipUpdatingEmotesets: true },
-        identity: {
-          username: session.username,
-          password: `oauth:${session.accessToken}`,
-        },
-        channels: [channel],
-      });
-
-      // Surface Twitch chat-rejection notices so the user sees WHY a message
-      // didn't go through (e.g. unverified email, channel blocked, rate limit)
-      // instead of a silent drop + false "sent" success.
-      client.on("notice", (_ch, msgid, msg) => {
-        const friendly = TWITCH_NOTICE_MSGIDS[msgid];
-        if (friendly) {
-          toast.error(`@${session.username}: ${friendly}`, { description: msg });
-        }
-      });
-
-      client.on("connected", () => {
-        this.setState("connected");
-      });
-
-      client.on("disconnected", () => {
-        this.setState("disconnected");
-      });
-
-      // Resolve once the bot has actually JOINED the target channel. tmi.js
-      // emits 'join' with self=true on self-join, with the channel in
-      // "#channel" form — normalize before comparing to our bare channel name.
-      const targetCh = channel.toLowerCase().replace(/^#/, "");
-      const joinPromise = new Promise<void>((jResolve) => {
-        const onJoin = (jCh: string, _user: string, self: boolean) => {
-          if (self && jCh.toLowerCase().replace(/^#/, "") === targetCh) {
-            client.removeListener("join", onJoin);
-            this.setState("connected");
-            jResolve();
-          }
-        };
-        client.on("join", onJoin);
-      });
-
-      client.connect().then(() => {
-        this.client = client;
-        // Race the join against a timeout so we don't hang forever.
-        return Promise.race([
-          joinPromise,
-          new Promise<void>((_, jReject) =>
-            setTimeout(() => jReject(new Error(`Couldn't join #${channel} — @${session.username} may need email verification, or is blocked/banned from the channel.`)), 8000),
-          ),
-        ]);
-      }).then(() => {
-        this.connectingPromise = null;
-        resolve(client);
-      }).catch((err) => {
-        this.connectingPromise = null;
-        this.setState("error");
-        reject(err);
-      });
+    const current = () => this.client === client && !controller.signal.aborted;
+    client.on("notice", (_ch, msgid, msg) => {
+      if (current() && TWITCH_NOTICE_MSGIDS[msgid]) {
+        toast.error(`@${session.username}: ${TWITCH_NOTICE_MSGIDS[msgid]}`, { description: msg });
+      }
     });
-
-    return this.connectingPromise;
+    client.on("disconnected", () => { if (current()) this.setState("disconnected"); });
+    // A connected socket is not sufficient: wait for our own channel join.
+    let joined!: () => void;
+    const joinPromise = new Promise<void>(resolve => { joined = resolve; });
+    const onJoin = (joinedChannel: string, _user: string, self: boolean) => {
+      if (current() && self && joinedChannel.toLowerCase().replace(/^#/, "") === channel.toLowerCase().replace(/^#/, "")) joined();
+    };
+    client.on("join", onJoin);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 8000);
+    const connecting = Promise.resolve().then(async () => {
+      try {
+        throwIfSendCancelled(controller.signal);
+        await waitForSend(Promise.all([client.connect(), joinPromise]), controller.signal);
+        throwIfSendCancelled(controller.signal);
+        this.setState("connected");
+        throwIfSendCancelled(controller.signal);
+        return client;
+      } catch (error) {
+        // Retired clients must never change a newer connection's state.
+        if (this.client === client) {
+          this.client = null;
+          this.setState(signal?.aborted ? "disconnected" : "error");
+        }
+        Promise.resolve().then(() => client.disconnect()).catch(() => {});
+        if (timedOut) throw new Error(`Couldn't join #${channel} within 8 seconds. Check the connection and this account's channel access.`);
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        client.removeListener("join", onJoin);
+        signal?.removeEventListener("abort", cancel);
+        if (this.connectionAbort === controller) this.connectingPromise = null;
+      }
+    });
+    this.connectingPromise = connecting;
+    return connecting;
   }
 
   /**
@@ -167,8 +148,9 @@ class TmiSendManager {
    * Falls back to a regular `client.say()` if the reply tag fails (e.g. the
    * message ID is too old or invalid), so the message still goes through.
    */
-  async send(channel: string, message: string, replyToMessageId?: string): Promise<void> {
-    const client = await this.getClient(channel);
+  async send(channel: string, message: string, replyToMessageId?: string, signal?: AbortSignal): Promise<void> {
+    const client = await waitForSend(this.getClient(channel, signal), signal);
+    throwIfSendCancelled(signal);
     if (replyToMessageId) {
       try {
         // Send a raw IRC PRIVMSG with the reply tag. tmi.js 1.8.5 doesn't
@@ -180,26 +162,32 @@ class TmiSendManager {
         await client.raw(`@reply-parent-msg-id=${replyToMessageId} PRIVMSG ${chan} :${message}`);
         return;
       } catch (e) {
+        throwIfSendCancelled(signal);
         // Reply tag can fail if the message ID is stale/invalid. Fall back
         // to a regular say() so the message still goes through.
         console.warn(`[twitch] reply tag failed (falling back to regular send):`, e);
       }
     }
+    throwIfSendCancelled(signal);
     await client.say(channel, message);
   }
 
   async disconnect(): Promise<void> {
-    if (this.client) {
-      try {
-        await this.client.disconnect();
-      } catch (e) {
-        console.warn("[twitch] disconnect error (non-fatal):", e);
-      }
-    }
+    const client = this.client;
+    // Invalidate synchronously, before disconnect can await a socket response.
+    this.client = null;
+    this.connectionAbort?.abort();
+    this.connectionAbort = null;
     this.connectingPromise = null;
     this.currentChannel = null;
+    this.connectionIdentity = null;
     this.setState("disconnected");
+    if (client) {
+      try { await client.disconnect(); }
+      catch (error) { console.warn("[twitch] disconnect error (non-fatal):", error); }
+    }
   }
+
 }
 
 // Legacy singleton — uses the global single-bot session. Unchanged behavior.
@@ -237,14 +225,14 @@ export function disposeTmiSendManagerForBot(botId: string): void {
 // same message was sent within the last 60s, we block it.
 
 class SendGuard extends SendRateLimiter {
-  private doSend: (channel: string, message: string, replyToMessageId?: string) => Promise<void>;
+  private doSend: (channel: string, message: string, replyToMessageId?: string, signal?: AbortSignal) => Promise<void>;
 
-  constructor(doSend: (channel: string, message: string, replyToMessageId?: string) => Promise<void> = (ch, msg, rid) => tmiSendManager.send(ch, msg, rid)) {
+  constructor(doSend: (channel: string, message: string, replyToMessageId?: string, signal?: AbortSignal) => Promise<void> = (ch, msg, rid, signal) => tmiSendManager.send(ch, msg, rid, signal)) {
     super();
     this.doSend = doSend;
   }
 
-  async send(channel: string, message: string): Promise<void> {
+  async send(channel: string, message: string, signal?: AbortSignal): Promise<void> {
     if (message.length > 500) {
       throw new Error(`Message exceeds Twitch's 500-character limit (${message.length} chars). Trim it before sending.`);
     }
@@ -254,8 +242,8 @@ class SendGuard extends SendRateLimiter {
     // render the mention as clickable/special text instead of plain text.
     await this.sendWithRateLimit(message, async () => {
       const replyId = findReplyTargetFromMentions(message);
-      await this.doSend(channel, message, replyId ?? undefined);
-    });
+      await this.doSend(channel, message, replyId ?? undefined, signal);
+    }, signal);
   }
 }
 
@@ -269,7 +257,7 @@ function getSendGuardForBot(botId: string): SendGuard {
   let guard = botSendGuardRegistry.get(botId);
   if (!guard) {
     const mgr = getTmiSendManagerForBot(botId);
-    guard = new SendGuard((ch, msg, rid) => mgr.send(ch, msg, rid));
+    guard = new SendGuard((ch, msg, rid, signal) => mgr.send(ch, msg, rid, signal));
     botSendGuardRegistry.set(botId, guard);
   }
   return guard;
@@ -309,6 +297,7 @@ export function setTwitchSession(session: TwitchSession | null): void {
   } else {
     localStorage.removeItem(SESSION_KEY);
   }
+  notifySendIdentityChange();
 }
 
 // ─── Multi-Bot: per-bot session accessors (additive) ────────────────────────
@@ -388,11 +377,11 @@ export async function validateDevToken(accessToken: string, username: string): P
   };
 }
 
-export async function sendTwitchMessage(channel: string, message: string): Promise<void> {
-  await sendGuard.send(channel, message);
+export async function sendTwitchMessage(channel: string, message: string, signal?: AbortSignal): Promise<void> {
+  await sendGuard.send(channel, message, signal);
 }
 
 // Multi-bot: send as a specific bot identity (independent rate limit + dedup).
-export async function sendTwitchMessageAsBot(botId: string, channel: string, message: string): Promise<void> {
-  await getSendGuardForBot(botId).send(channel, message);
+export async function sendTwitchMessageAsBot(botId: string, channel: string, message: string, signal?: AbortSignal): Promise<void> {
+  await getSendGuardForBot(botId).send(channel, message, signal);
 }

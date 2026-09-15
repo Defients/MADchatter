@@ -2,6 +2,8 @@
  * Shared rate-limiter + dedup base class used by Twitch, Kick, and Joystick send managers.
  * Provides ordered delivery, sliding-window attempt limits and success-only deduplication.
  */
+import { throwIfSendCancelled, waitForSend, waitForSendDelay } from "./sendCancellation";
+
 export class SendRateLimiter {
   protected sendTimestamps: number[] = [];
   protected recentMessages: Map<string, number> = new Map();
@@ -11,27 +13,32 @@ export class SendRateLimiter {
   private sendTail: Promise<void> = Promise.resolve();
 
   /** Serialize admission and delivery per account; a rejected send releases the queue. */
-  protected sendWithRateLimit(message: string, deliver: () => Promise<void>): Promise<void> {
+  protected sendWithRateLimit(message: string, deliver: () => Promise<void>, signal?: AbortSignal): Promise<void> {
     const send = this.sendTail.then(async () => {
+      throwIfSendCancelled(signal);
       // Recheck after acquiring the slot: another queued send may have just succeeded.
       if (this.isDuplicate(message)) {
         throw new Error("Duplicate message blocked — this exact message was sent within the last 60 seconds. Modify the message and try again.");
       }
       while (!this.canSendNow()) {
-        await this.waitForCapacity(this.getWaitMs());
+        await this.waitForCapacity(this.getWaitMs(), signal);
+        throwIfSendCancelled(signal);
       }
       // Reserve capacity before awaiting transport. Failed attempts still consume
       // capacity, but only successful delivery enters the duplicate cache.
+      throwIfSendCancelled(signal);
       this.sendTimestamps.push(Date.now());
       await deliver();
       this.recentMessages.set(message.trim().toLowerCase(), Date.now());
     });
     this.sendTail = send.catch(() => {});
-    return send;
+    // The caller can leave promptly. Keep the ordered tail attached to real
+    // delivery settlement: a non-abortable IRC write must not overlap a retry.
+    return waitForSend(send, signal);
   }
 
-  protected waitForCapacity(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  protected waitForCapacity(ms: number, signal?: AbortSignal): Promise<void> {
+    return waitForSendDelay(ms, signal);
   }
 
   /** Returns true if this message is a duplicate within the dedup window */

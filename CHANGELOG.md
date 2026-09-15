@@ -4,6 +4,21 @@ All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD f
 
 ## [Unreleased] — 2026-09-15
 
+### Fixed — Cancellation through queued sends and transport preparation
+- Bind platform sends to their originating session and identity; add backward-compatible optional abort signals through adapters and rate admission. Withdrawn queued sends and rate waits do not deliver or consume additional capacity.
+- Cancel Twitch connection/join preparation, clean up timers/listeners, prevent retired connections from overwriting current state, and retain the ordered tail until non-abortable IRC writes settle. Cancelled replies never fall back to a plain send. Connection plus self-join now shares an eight-second deadline.
+- Carry cancellation through Kick channel lookup, initial token refresh, direct/proxy delivery, and refresh retries. Aborts stop fallback and stale credential writes; confirmed late successes retain duplicate protection. Joystick skips withdrawn queued WebSocket sends.
+- Propagate AutoForge/rule cancellation into delivery; cancel rule delay timers immediately. Suppress cancelled/stale AutoForge completion and failure updates. Clearing the retry queue aborts its run, and session-cancelled ready batches are dropped without retries.
+- Add four limiter regressions and 22 transport integration scenarios, including manual-send lock/history behavior and subscription cleanup. Preserve existing call sites through optional parameters; no new UI, dependencies, saved fields, or version bump. See `docs/SEND_CANCELLATION_REVIEW_2026-09-15.md`.
+
+### Fixed — Session-safe delayed rules and truthful previews
+- Delayed rule actions and remaining rules in a batch stop after channel/platform/session changes, multi-bot mode changes, or selected-bot removal, deactivation, sign-out, or identity replacement. Cancellation survives channel and toggle round trips.
+- Both AutoForge loops recheck their execution guard after rule evaluation before recording activity or continuing the cycle. Per-bot guards also reject platform, username, and user-ID replacement.
+- Late transport completion does not count toward a superseded rule run or show stale completion/error toasts. An already-started transport is not cancelled by this guard.
+- Failed actions report incomplete execution instead of success; unexpected action exceptions are contained so remaining valid actions can run. Existing rule sequences that intentionally turn AutoForge off still finish their subsequent actions.
+- Empty AND condition previews now agree with execution: a rule with no conditions does not qualify.
+- Added 19 deterministic rule-engine scenarios with local effects and included the bundled harness in `npm test`. Public signatures, saved settings, dependencies, and version 1.0.8 are unchanged. See `docs/RULE_EXECUTION_REVIEW_2026-09-15.md` for evidence and remaining boundaries.
+
 ### Fixed — Ordered delivery and reliable retry accounting
 - Twitch, Kick, and Joystick now share ordered, per-manager rate-limit admission. Concurrent sends cannot all pass the same capacity check or wake from a rate-limit wait and burst past the local allowance. Each bot's existing manager remains independent.
 - Duplicate history is written only after transport success. Twitch failures no longer mark unsent messages as duplicates for 60 seconds. Concurrent duplicates are checked after the preceding send settles; failed sends release the queue and allow retry.
