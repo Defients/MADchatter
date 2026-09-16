@@ -9,3 +9,44 @@ export function stripEmDashes(text: string): string {
   if (!text || typeof text !== "string") return text;
   return text.replace(/\s*—\s*/g, " - ").trim();
 }
+
+/**
+ * Actual Unicode emoji characters (😂 💀 🔥 ⭐) are banned from bot chat
+ * output. Twitch chat convention is TEXT emotes — Twitch native or
+ * BetterTTV/7TV/FrankerFaceZ names ("POG", "LUL", "KEKW", "monkaS") — which
+ * render as images for everyone. Emoji glyphs render inconsistently, can be
+ * unreadable on some clients, and instantly mark the sender as a bot. Text
+ * emote names are untouched. Also strips variation selectors, zero-width
+ * joiners, and keycap combinators so decomposed sequences ("1️⃣") degrade
+ * cleanly to their base character.
+ *
+ * EMOJI_GLYPH_REGEX is the SINGLE glyph table for the whole app — tts.ts's
+ * speech cleaner imports it instead of keeping its own copy. The two lists
+ * had already drifted (this table originally missed the media-control /
+ * geometric-shape / enclosed-ideograph ranges like ⏰ 🔄 ▶ ㊙ that TTS
+ * stripped), so they are unified here as the union of both.
+ */
+export const EMOJI_GLYPH_REGEX = new RegExp(
+  [
+    "[\\u{1F000}-\\u{1FAFF}]", // all emoji blocks (flags, pictographs, symbols)
+    "[\\u{2600}-\\u{27BF}]",   // misc symbols + dingbats (☀ ✂ ✅)
+    "[\\u{2B00}-\\u{2BFF}]",   // star/arrows block additions (⭐ ⬛)
+    "[\\u{231A}-\\u{231B}]",   // watch + hourglass (⌚ ⌛)
+    "[\\u{23E9}-\\u{23FA}]",   // media controls + alarm/timer (⏩ ⏰ ⏳ ⏸ ⏺)
+    "[\\u{25AA}-\\u{25AB}\\u{25B6}\\u{25C0}\\u{25FB}-\\u{25FE}]", // shape buttons (▪ ▶ ◀ ◼)
+    "[\\u{2934}-\\u{2935}]",   // repeat arrows (🔄 🔁)
+    "\\u{3030}",               // wavy dash (〰)
+    "\\u{303D}",               // part alternation mark (〽)
+    "\\u{3297}",               // circled ideograph congratulation (㊗)
+    "\\u{3299}",               // circled ideograph secret (㊙)
+    "[\\u{FE00}-\\u{FE0F}]",   // variation selectors (incl. emoji VS-16)
+    "\\u{200D}",               // zero-width joiner (ZWJ sequences)
+    "\\u{20E3}",               // combining enclosing keycap
+  ].join("|"),
+  "gu",
+);
+
+export function stripEmojis(text: string): string {
+  if (!text || typeof text !== "string") return text;
+  return text.replace(EMOJI_GLYPH_REGEX, "").replace(/ {2,}/g, " ").trim();
+}

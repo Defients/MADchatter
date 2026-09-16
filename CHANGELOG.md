@@ -6,7 +6,12 @@ All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD f
 
 Internal polish pass: no new features, no behaviour or API changes, no version bump.
 
-### Fixed — Shared clock subscription lifecycle
+### Added — Emoji output hardening
+- Bot chat output now strips actual Unicode emoji glyphs in addition to em-dashes. Twitch convention is text emotes ("POG", "KEKW", "monkaS") — emoji glyphs render inconsistently across clients and mark the sender as a bot. `stripEmojis()` (`src/lib/textSanitize.ts`) runs on Forge suggestion messages, refined messages, and AutoForge `action_payload`; smart replies inherit it through `generateChat`. The Forge, AutoForge, and Refine system prompts (plus the mirrored `server.ts` prompt copy) now carry an `EMOTE POLICY` rule, and the `emote_only` examples are text emote names. New regression suite `src/lib/emojiSanitize.test.ts` (24 checks).
+- One glyph table: the TTS speech cleaner (`tts.ts`) kept its own emoji regex, which had already drifted from the chat-output copy — TTS stripped media-control, geometric-shape, and enclosed-ideograph ranges (⏰ 🔄 ▶ ㊙) that the chat path missed. Both now share the exported `EMOJI_GLYPH_REGEX` from `textSanitize.ts` (the union of both lists), so the lists cannot drift again.
+
+### Added — Multi-Bot panel position memory
+- The draggable MultiBotPanel now remembers its position across hide/show and reloads: the drag offset is cached at module level and persisted to localStorage (`madchatter-multibot-panel-pos`), viewport-clamped on restore so a saved position can never become unrecoverable. Previously every remount (the panel unmounts on close) snapped back to its top-right anchor. No bot-profile/roster snapshot logic was added — bot sessions are untouched.### Fixed — Shared clock subscription lifecycle
 - Joining an active clock no longer silently changes its cached snapshot; the first subscriber still refreshes a stopped clock immediately.
 - Each subscription now owns its cleanup, including repeated registrations of the same callback. A listener removed during notification is skipped; newly added listeners begin on the following tick.
 - Replaced 6.4 seconds of intentional test sleeps with seven deterministic lifecycle scenarios covering snapshot consistency, timer sharing, independent cleanup, and subscription changes during notification.

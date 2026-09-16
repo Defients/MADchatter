@@ -270,7 +270,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `Emote` interface includes `provider` ("7tv" | "ffz" | "bttv") and `scope` ("channel" | "global").
 - `getAvailableEmoteNames(channel, limit)` — plain emote names for chat style analysis (emote density counting).
 - `getAvailableEmotesTagged(channel, limit)` — provider+scope-tagged names (e.g. `"monkaS (7tv-channel)"`) for the AI prompt. Channel emotes listed first, then globals.
-- **Emote preference (v1.0.4):** All three system prompts (Forge, AutoForge, Refine) include an `EMOTE PREFERENCE` rule: favor channel-specific emotes from BTTV/7TV/FFZ, rarely use generic/standard emotes not in the list. The prompt's `AVAILABLE EMOTES` line uses the tagged format when `availableEmotesTagged` is provided, falling back to plain names otherwise.
+- **Emote policy:** Bots use TEXT-based platform emotes (Twitch native or BTTV/7TV/FFZ emote NAMES like "POG", "LUL", "KEKW") — never actual Unicode emoji characters (😂 💀 🔥), which render inconsistently and mark the sender as a bot. All three system prompts (Forge, AutoForge, Refine) carry an `EMOTE POLICY` rule to this effect; the `emote_only` examples are text emote names (also mirrored in `server.ts`'s prompt copy). Output hardening: `stripEmojis()` (`src/lib/textSanitize.ts`) removes emoji glyphs from Forge suggestion messages, refined messages, and AutoForge `action_payload` (alongside `stripEmDashes`). The glyph table (`EMOJI_GLYPH_REGEX`) is the single source of truth — `tts.ts`'s speech cleaner imports it rather than keeping its own drifting copy. Tests: `npx tsx src/lib/emojiSanitize.test.ts`.
 
 ### Provider Keys (`src/lib/keys.ts`)
 - `getApiKey(provider)` — returns key or null. Ollama returns a dummy `"ollama-local"`.
@@ -292,6 +292,10 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Cohort semantics: fixed at toggle-on; newly activated bots do NOT join; deactivated/removed bots are dropped (can't deadlock completion).
 - Celebration: `FirstMessageWatcher` (`src/components/FirstMessageWatcher.tsx`) fires a one-shot dual-corner `fireConfetti("bottom")` when all members complete. Guarded by `cohort.celebrated` + a per-cohort-id ref.
 - Stream/channel change → `resetFirstMessageCohort()` (clean state, no leak). Reload → re-arms from current active bots if the preference is on.
+
+### Multi-Bot panel position memory
+- The header-draggable `MultiBotPanel` persists its drag offset (module cache + localStorage key `madchatter-multibot-panel-pos`, viewport-clamped on restore), so hide→show and reloads reopen the panel where the user left it.
+- **No bot-profile snapshot system.** A previous attempt (`BotProfile` / `applyBotProfile`, schema v31) was rejected and reverted: rebuilding the roster with `session: null` dropped live authentications. Any future roster-swap feature MUST preserve bot sessions.
 
 ### Core Mode + Interactive Launchpad (v1.0.7)
 - **Two interface-density modes:** `interfaceMode: 'core' | 'studio'` — one authoritative mode drives presentation density. Core = minimal operational surface (connect, AI, personality, Forge, send, AutoForge, chat). Studio = the existing full-density experience. Mode changes presentation only, never engine behavior or config.

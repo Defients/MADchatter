@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { motion, AnimatePresence, useDragControls, useAnimationControls, Reorder } from "framer-motion";
+import { motion, AnimatePresence, useDragControls, useAnimationControls, useMotionValue, Reorder } from "framer-motion";
 import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown, ChevronUp, Megaphone } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAppStore, selectMultiBotActive } from "../store";
@@ -256,7 +256,46 @@ function BotCard({
  * panel shows just the toggle; the rest of the app remains on the original
  * single-bot UI. Enabling copies the current single-bot state into bots[0]
  * (non-destructive); disabling syncs bots[0] back into the global fields.
+ *
+ * The panel is draggable by its header and REMEMBERS ITS POSITION across
+ * hide/show (and reloads): the drag offset is written to the module-level
+ * cache + localStorage on every drag end, and the x/y motion values are
+ * seeded from it on mount. Without this, remounting the panel (AnimatePresence
+ * unmounts it on close) resets the drag transform to the `fixed top-16 right-4`
+ * anchor.
  */
+
+const PANEL_POS_STORAGE_KEY = "madchatter-multibot-panel-pos";
+
+/** Keep a restored offset reachable: clamp so part of the panel always stays
+ *  inside the viewport (a persisted far-off-screen position would otherwise
+ *  become unrecoverable across reloads). */
+function clampPanelPos(x: number, y: number): { x: number; y: number } {
+  if (typeof window === "undefined") return { x, y };
+  const reach = Math.max(window.innerWidth, window.innerHeight) * 0.6;
+  return {
+    x: Math.max(-reach, Math.min(reach, x)),
+    y: Math.max(-reach, Math.min(reach, y)),
+  };
+}
+
+/** Module-level position cache — survives hide/show within a session (the
+ *  panel unmounts on close); localStorage adds reload persistence. */
+const savedPanelPos: { x: number; y: number } = (() => {
+  try {
+    const raw = localStorage.getItem(PANEL_POS_STORAGE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (typeof p?.x === "number" && typeof p?.y === "number" && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+        return clampPanelPos(p.x, p.y);
+      }
+    }
+  } catch {
+    // localStorage unavailable (privacy mode / test env) — default anchor.
+  }
+  return { x: 0, y: 0 };
+})();
+
 export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
   const enableMultiBot = useAppStore((s) => s.enableMultiBot);
@@ -272,6 +311,10 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const dragControls = useDragControls();
+  // Restored drag offset — seeded from the persisted position so the panel
+  // reopens exactly where the user left it (see module comment above).
+  const panelX = useMotionValue(savedPanelPos.x);
+  const panelY = useMotionValue(savedPanelPos.y);
 
   // Bots that already have a live session.
   const authedBots = bots.filter((b) => b.session);
@@ -337,6 +380,18 @@ export function MultiBotPanel({ onClose }: { onClose?: () => void }) {
       dragListener={false}
       dragControls={dragControls}
       dragMomentum={false}
+      style={{ x: panelX, y: panelY }}
+      onDragEnd={() => {
+        // Remember the panel position: update the module cache (instant
+        // restore on hide→show) and persist for reloads.
+        savedPanelPos.x = panelX.get();
+        savedPanelPos.y = panelY.get();
+        try {
+          localStorage.setItem(PANEL_POS_STORAGE_KEY, JSON.stringify({ x: savedPanelPos.x, y: savedPanelPos.y }));
+        } catch {
+          // localStorage unavailable — module cache still covers this session.
+        }
+      }}
       data-tutorial="multibot-panel"
       className="w-80 max-h-[70vh] overflow-hidden bg-[#0F0F12]/95 border border-white/10 rounded-lg shadow-2xl backdrop-blur-md flex flex-col"
     >

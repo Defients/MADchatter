@@ -26,7 +26,7 @@ import {
   SUPERCHARGE_DIRECTIVE,
 } from "./prompts";
 import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
-import { stripEmDashes } from "./textSanitize";
+import { stripEmDashes, stripEmojis } from "./textSanitize";
 import { buildMomentSynthesisInput, type RoomMoment } from "./roomModel";
 import type { Episode } from "./episodicMemory";
 import {
@@ -625,7 +625,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
   }
   parsedResponse.suggestions = validSuggestions.map((s: any) => ({
     ...s,
-    message: stripEmDashes(s.message),
+    message: stripEmojis(stripEmDashes(s.message)),
     why_it_fits: typeof s.why_it_fits === "string" ? stripEmDashes(s.why_it_fits) : s.why_it_fits,
     tone: typeof s.tone === "string" ? stripEmDashes(s.tone) : s.tone,
   }));
@@ -1038,7 +1038,7 @@ Custom Instruction: ${params.customInstruction || "None"}
   if (parsed.why_it_fits != null && typeof parsed.why_it_fits !== "string") {
     parsed.why_it_fits = String(parsed.why_it_fits);
   }
-  if (typeof parsed.message === "string") parsed.message = stripEmDashes(parsed.message);
+  if (typeof parsed.message === "string") parsed.message = stripEmojis(stripEmDashes(parsed.message));
   if (typeof parsed.why_it_fits === "string") parsed.why_it_fits = stripEmDashes(parsed.why_it_fits);
   if (usage) parsed.tokenUsage = usage;
   return parsed;
@@ -1813,7 +1813,7 @@ DECIDE NOW.`;
         result.suggested_trigger = String(result.suggested_trigger);
       }
       // Em-dashes are banned from user-facing output — strip after coercion.
-      if (typeof result.action_payload === "string") result.action_payload = stripEmDashes(result.action_payload);
+      if (typeof result.action_payload === "string") result.action_payload = stripEmojis(stripEmDashes(result.action_payload));
       if (typeof result.reason === "string") result.reason = stripEmDashes(result.reason);
       if (typeof result.suggested_trigger === "string") result.suggested_trigger = stripEmDashes(result.suggested_trigger);
       recordProviderSuccess(currentProvider);
