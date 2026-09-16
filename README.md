@@ -168,10 +168,11 @@ Built with **React 19**, **TypeScript**, **Vite**, **Zustand**, and **Tailwind C
 | `npm run dev` | Start the Vite frontend. |
 | `npm run lint` | Run TypeScript checking (`tsc --noEmit`). |
 | `npm run build` | Build the frontend into `dist/`. |
+| `npm test` | Run the isolated regression suites plus the channel-switch, manual-send, platform-send, rule-engine, and send-cancellation harnesses. |
 | `npm run preview` | Preview the built frontend locally. |
 | `npm run server` | Start the Express backend; in development it also serves the UI through Vite. |
 
-Run **both `npm run lint` and `npm run build`** before submitting changes. There is no configured automated test runner; these checks do not verify live OAuth, provider responses, or message delivery.
+Run **`npm run lint`, `npm test`, and `npm run build`** before submitting changes. The regression suites and harnesses replace platform delivery with local fakes, so they do not verify live OAuth, provider responses, or real message delivery.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the source map, contribution conventions, and validation expectations, and [AGENTS.md](AGENTS.md) for detailed implementation guidance.
 

@@ -1,5 +1,6 @@
 /** React adapter for the production readiness policy. */
 import { useSyncExternalStore } from "react";
+import { subscribeSecondTick } from "./useNowTick";
 import { useAppStore } from "../store";
 import { getActiveProvider, getApiKey, getKeys } from "../lib/keys";
 import { isProviderAvailable } from "../lib/providerFallback";
@@ -13,7 +14,7 @@ function getProviderSnapshot(): string {
   return JSON.stringify({ provider, keys: getKeys(), available: isProviderAvailable(provider) });
 }
 const listeners = new Set<() => void>();
-let interval: ReturnType<typeof setInterval> | undefined;
+let unsubscribeTick: (() => void) | undefined;
 let previousSnapshot = "";
 function notifyProviderChange() {
   const next = getProviderSnapshot();
@@ -24,16 +25,19 @@ function notifyProviderChange() {
 }
 function subscribeProvider(listener: () => void) {
   listeners.add(listener);
-  if (!interval) {
+  if (!unsubscribeTick) {
     previousSnapshot = getProviderSnapshot();
-    interval = setInterval(notifyProviderChange, 1000);
+    // Share the app's single 1-second clock instead of owning another interval
+    // (see useNowTick). `notifyProviderChange` is module-level, so the ticker's
+    // listener refcount stays balanced across subscribe/unsubscribe cycles.
+    unsubscribeTick = subscribeSecondTick(notifyProviderChange);
     window.addEventListener("storage", notifyProviderChange);
   }
   return () => {
     listeners.delete(listener);
     if (!listeners.size) {
-      clearInterval(interval);
-      interval = undefined;
+      unsubscribeTick?.();
+      unsubscribeTick = undefined;
       window.removeEventListener("storage", notifyProviderChange);
     }
   };

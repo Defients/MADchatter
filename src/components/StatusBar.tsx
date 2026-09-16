@@ -11,6 +11,7 @@ import { SENTIMENT_DOT_COLORS } from '../lib/sentiment';
 import type { SentimentLabel } from '../types';
 import { ThemedTooltip } from "./ui/tooltip";
 import { useStudioAvailable, useEffectiveMode } from '../hooks/useMediaQuery';
+import { useNowTick, subscribeSecondTick } from '../hooks/useNowTick';
 import {
   Wifi,
   WifiOff,
@@ -97,10 +98,12 @@ export function StatusBar() {
   const effectiveMode = useEffectiveMode();
   const isMobileCore = !studioAvailable && effectiveMode === 'core';
 
-  const [now, setNow] = useState(Date.now());
+  // Shared app clock — feeds the session-duration label (hooks/useNowTick).
+  const now = useNowTick();
   const [expanded, setExpanded] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [rateUsed, setRateUsed] = useState(0);
+  const [rateMax, setRateMax] = useState(20);
   const [dragHeight, setDragHeight] = useState<number | null>(() => {
     const saved = localStorage.getItem('forge-statusbar-log-height');
     const parsed = saved ? parseFloat(saved) : NaN;
@@ -187,13 +190,18 @@ export function StatusBar() {
     window.addEventListener('touchend', onUp);
   }, [dragHeight]);
 
+  // Local send-rate read. getRateStatus() prunes the manager's window as a
+  // side effect — it is a read-with-maintenance, not a pure getter — so it
+  // must not run during render. It rides the shared 1s clock (useNowTick)
+  // instead of owning an interval, and re-reads whenever the platform changes.
   useEffect(() => {
-    const interval = setInterval(() => {
-      setNow(Date.now());
+    const readRate = () => {
       const rateStatus = platform === 'kick' ? kickSendManager.getRateStatus() : platform === 'joystick' ? joystickSendManager.getRateStatus() : sendGuard.getRateStatus();
       setRateUsed(rateStatus.used);
-    }, 1000);
-    return () => clearInterval(interval);
+      setRateMax(rateStatus.max);
+    };
+    readRate();
+    return subscribeSecondTick(readRate);
   }, [platform]);
 
   useEffect(() => {
@@ -275,7 +283,7 @@ export function StatusBar() {
 
   const sessionDuration = now - (sessionStats?.sessionStart ?? now);
 
-  const rateMax = platform === 'kick' ? '50' : platform === 'joystick' ? '20' : '20';
+
 
   const readColor = {
     connected: 'text-green-400',

@@ -23,7 +23,7 @@ npm test
 npm run build
 ```
 
-All three commands must exit successfully. `lint` is TypeScript checking only. `npm test` discovers the TypeScript regression suites and runs them in isolated processes, plus the channel-switch, manual-send, and platform-send integration harnesses. Each suite has a two-minute timeout; failures return a nonzero exit code and include diagnostic output. Platform delivery is replaced with local fakes in the integration harnesses. Browser externalization warnings from the Anthropic SDK, mixed dynamic/static import warnings, and large-chunk warnings are known build messages documented in [AGENTS.md](AGENTS.md).
+All three commands must exit successfully. `lint` is TypeScript checking only. `npm test` discovers the TypeScript regression suites and runs them in isolated processes, plus the channel-switch, manual-send, platform-send, rule-engine, and send-cancellation integration harnesses. Each suite has a two-minute timeout; failures return a nonzero exit code and include diagnostic output. Platform delivery is replaced with local fakes in the integration harnesses. Browser externalization warnings from the Anthropic SDK, mixed dynamic/static import warnings, and large-chunk warnings are known build messages documented in [AGENTS.md](AGENTS.md).
 
 Manually verify the behavior you changed. For UI changes, check layout and interaction in the relevant desktop viewport. For platform or AutoForge changes, distinguish simulated or Dry Run behavior from authenticated delivery. Use a channel/account you are authorized to test, and state which provider/platform paths you actually exercised.
 
@@ -48,6 +48,7 @@ See [AGENTS.md](AGENTS.md) for the detailed conventions and implementation notes
 | `src/lib/ai.ts`, `src/lib/prompts.ts`, `src/lib/keys.ts` | Generation, prompt construction, and provider configuration. |
 | `src/hooks/useAutoForge.ts`, `src/hooks/useAutoForgeBot.ts` | Single-bot and per-bot autonomous loops. |
 | `src/hooks/useMultiBotOrchestrator.tsx`, `src/lib/botCoordinator.ts` | Bot-loop mounting and autonomous speaker selection. |
+| `src/hooks/useNowTick.ts` | The app's single shared 1-second clock for all relative-time labels. |
 | `src/lib/platformSend.ts` | Platform and identity-aware send routing. |
 | `src/lib/memoryEngine.ts`, `src/lib/memoryStore.ts`, `src/lib/memoryRetrieval.ts` | Memory extraction, browser storage, and retrieval. |
 | `server.ts` | Additional backend OAuth, session, and AI routes. |

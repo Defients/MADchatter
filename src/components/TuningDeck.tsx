@@ -14,6 +14,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
 import { useKickAuth } from "../hooks/useKickAuth";
 import { useJoystickAuth } from "../hooks/useJoystickAuth";
+import { subscribeSecondTick } from "../hooks/useNowTick";
 import {
   Select,
   SelectContent,
@@ -342,10 +343,11 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
       }
     };
     window.addEventListener("storage", syncProvider);
-    const interval = setInterval(syncProvider, 1000);
+    // Shared app clock (hooks/useNowTick) — no private 1s interval.
+    const unsubscribeTick = subscribeSecondTick(syncProvider);
     return () => {
       window.removeEventListener("storage", syncProvider);
-      clearInterval(interval);
+      unsubscribeTick();
     };
   }, [provider]);
 

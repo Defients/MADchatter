@@ -24,6 +24,7 @@ import { useJoystickAuth } from "../hooks/useJoystickAuth";
 import { useDeepgramTranscription } from "../hooks/useDeepgramTranscription";
 import { ensureMicPermission } from "../hooks/usePushToTalk";
 import { useAudioEnergy } from "../hooks/useAudioEnergy";
+import { subscribeSecondTick } from "../hooks/useNowTick";
 import { 
   Users, 
   Tv, 
@@ -498,14 +499,14 @@ export function ForgeLayout() {
     if (!visualAutoCapture || !windowSelected) return;
     // Use the effective interval — forced to 60s when Friend Trial is active.
     setVisualCountdown(effectiveVisualCaptureInterval);
-    const tickId = setInterval(() => {
+    const unsubTick = subscribeSecondTick(() => {
       setVisualCountdown((prev) => (prev <= 1 ? effectiveVisualCaptureInterval : prev - 1));
-    }, 1000);
+    });
     const id = setInterval(() => {
       handleCaptureWindow();
       setVisualCountdown(effectiveVisualCaptureInterval);
     }, effectiveVisualCaptureInterval * 1000);
-    return () => { clearInterval(tickId); clearInterval(id); };
+    return () => { unsubTick(); clearInterval(id); };
   }, [visualAutoCapture, effectiveVisualCaptureInterval, windowSelected, authTick, trialTick]);
 
   // One-time notice when auto-capture is paused due to Ollama
@@ -890,7 +891,7 @@ export function ForgeLayout() {
   }, [chatLog]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const updateActivity = () => {
       const now = Date.now();
       const cutoff = now - 30000;
       chatMsgTimesRef.current = chatMsgTimesRef.current.filter((t) => t > cutoff);
@@ -901,8 +902,10 @@ export function ForgeLayout() {
       else if (count >= 5) level = 2;
       else if (count >= 1) level = 1;
       setChatActivity(level);
-    }, 1000);
-    return () => clearInterval(interval);
+    };
+    updateActivity();
+    // Shared app clock (hooks/useNowTick) — no private 1s interval.
+    return subscribeSecondTick(updateActivity);
   }, []);
 
   // Dispatch chat activity level to AnimatedBackground

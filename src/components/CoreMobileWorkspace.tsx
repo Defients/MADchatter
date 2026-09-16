@@ -51,6 +51,7 @@ import {
 } from "lucide-react";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useCoreReadiness } from "../hooks/useCoreReadiness";
+import { useNowTick } from "../hooks/useNowTick";
 import { useEffectiveMode, useStudioAvailable } from "../hooks/useMediaQuery";
 import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
 import { getCoreProviderSummary } from "../lib/coreProviderSummary";
@@ -222,11 +223,8 @@ export function CoreMobileWorkspace(props: {
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
   const { decision: lastAutoForgeDecision, bot: lastDecisionBot } = useEffectiveAutoForgeDecision();
   const autoForgeNextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // Shared app clock (hooks/useNowTick).
+  const now = useNowTick();
   // On mobile devices, local Ollama is not usable (runs only on desktop localhost).
   // If activeProvider is set to Ollama, switch to a configured cloud provider if available.
   useEffect(() => {

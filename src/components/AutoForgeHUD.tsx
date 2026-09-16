@@ -12,6 +12,7 @@ import { Reorder } from 'framer-motion';
 import { ThemedTooltip } from './ui/tooltip';
 import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from './directorNoteShared';
 import { useEffectiveMode } from '../hooks/useMediaQuery';
+import { useNowTick } from '../hooks/useNowTick';
 import { ParticipationControl } from './ParticipationControl';
 
 // ─── Next Check color thresholds ───────────────────────────────────────────
@@ -38,12 +39,10 @@ function nextCheckGlow(secs: number): string {
 }
 
 function RateLimitIndicator() {
-  const [stats, setStats] = useState(() => actionRateLimiter.getStats());
-
-  useEffect(() => {
-    const interval = setInterval(() => setStats(actionRateLimiter.getStats()), 1000);
-    return () => clearInterval(interval);
-  }, []);
+  // Shared app clock — the stats are cheap synchronous local reads, so the
+  // per-second re-render is all this needs (no per-instance timer).
+  useNowTick();
+  const stats = actionRateLimiter.getStats();
 
   const hourPct = (stats.actionsLastHour / stats.maxPerHour) * 100;
   const tenMinPct = (stats.actionsLastTenMin / stats.maxPerTenMin) * 100;
@@ -139,7 +138,9 @@ export function AutoForgeHUD() {
     }
   }, [effectiveMode]);
 
-  const [now, setNow] = useState(Date.now());
+  // Shared app clock — the HUD only shows relative times while it is open, so
+  // the subscription is dropped as soon as it closes (hooks/useNowTick).
+  const now = useNowTick(isAutoForgeHUDOpen);
   const [burstKey, setBurstKey] = useState(0);
   const [burstIntensity, setBurstIntensity] = useState(0);
   const [minimized, setMinimized] = useState(true);
@@ -163,12 +164,6 @@ export function AutoForgeHUD() {
   // Send Now button state for the decision card. Declared with the other
   // hooks (before the early return) to respect the Rules of Hooks.
   const [sendingPayload, setSendingPayload] = useState(false);
-
-  useEffect(() => {
-    if (!isAutoForgeHUDOpen) return;
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [isAutoForgeHUDOpen]);
 
   // Pulse the collapse/expand button for 3s when the HUD first opens so the
   // user notices they can expand it for the full view.

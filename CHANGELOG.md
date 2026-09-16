@@ -2,6 +2,37 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
+## [Unreleased] — 2026-09-16
+
+Internal polish pass: no new features, no behaviour or API changes, no version bump.
+
+### Fixed — Shared clock subscription lifecycle
+- Joining an active clock no longer silently changes its cached snapshot; the first subscriber still refreshes a stopped clock immediately.
+- Each subscription now owns its cleanup, including repeated registrations of the same callback. A listener removed during notification is skipped; newly added listeners begin on the following tick.
+- Replaced 6.4 seconds of intentional test sleeps with seven deterministic lifecycle scenarios covering snapshot consistency, timer sharing, independent cleanup, and subscription changes during notification.
+- Timer consolidation is verified structurally. React commit counts and browser CPU savings remain unmeasured; documentation no longer promises exactly one render commit per tick.
+
+### Fixed — Flaky bot-coordinator suite
+- `src/lib/botCoordinator.test.ts` ("configure changes floor gap") failed on roughly half of all runs. The floor clock is stamped when the bid window *closes*, and that `setTimeout` fires late under a loaded machine, so a 100ms window + 100ms floor gap with a 200ms wait sat exactly on the boundary. The test now clears window + gap by a wide margin and documents why the slack is required.
+- The suite pins a short bidding window for all of its tests. Competing bids are issued synchronously and every assertion resolves through the same `resolveWindow()` path, so the window duration only affected wall-clock cost: ~26s of pure waiting down to ~3s, identical assertions.
+
+### Added — Shared app clock (`src/hooks/useNowTick.ts`)
+- Eleven independent `setInterval(() => setNow(Date.now()), 1000)` timers — AnalyticsPanel, AutoForgeHUD (decision card *and* rate-limit indicator), AutoForgeReport, AutoCheckControls, CoreWorkspace, CoreMobileWorkspace, MultiBotPanel, PerceptionStrip, StatusBar, and the `useCoreReadiness` provider-health poll — are now one refcounted interval. Browser CPU savings and React commit counts have not been profiled.
+- `useNowTick()` subscribes and re-renders once per second; `useNowTick(false)` releases the subscription entirely, so a closed panel owns no clock subscription. All active consumers read the same cached snapshot.
+- `subscribeSecondTick()` is the non-React surface. The cadence pollers that only need a 1s heartbeat ride the same interval: the `useCoreReadiness` provider-health poll, StatusBar's send-rate read (`getRateStatus()` prunes the manager's window as a side effect, so it must stay out of render), ForgeLayout's vision countdown and chat-activity level, and TuningDeck's provider sync. None owns a private timer.
+- New regression suite `src/hooks/useNowTick.test.ts`: snapshot stability, subscribe-time refresh, shared-value fan-out, and interval stop/restart refcounting.
+
+### Fixed — StatusBar send-rate ceiling
+- The status bar hardcoded the send-rate ceiling as `{used}/50` on Kick (`/20` elsewhere), but `maxPerWindow` is 20 on every platform — Kick never overrides the `rateLimiter` default, so the displayed ceiling was wrong. The bar now renders the live `max` returned by `getRateStatus()`, so the label stays honest if a limit ever changes per platform.
+
+### Removed — dead code
+- `src/components/CoreGreeting.tsx` — dropped from `App.tsx` when the CoreWorkspace hero became the first-run surface, but the file and its contributor-guide entry stayed behind. No importers existed.
+- `src/lib/corePanelAvailability.ts` and `src/lib/corePanelAvailability.test.ts` — a pure "is this CORE panel usable?" contract whose own docstring claimed *"CORE's bottom dock relies on it"* while no production module imported it. The passing suite was testing dead code, and the module's stated purpose was false. The stale cross-reference in `src/lib/normalizeChannel.ts` was corrected.
+
+### Docs
+- AGENTS.md: documented the shared clock (with a "never add a new per-second `setNow` interval" convention), replaced the stale CoreGreeting references, and added a dead-code convention.
+- README.md: the Development section claimed *"There is no configured automated test runner"*, which stopped being true when `npm test` landed (40 suites). The command table now lists `npm test`, and the pre-commit expectation is now lint + test + build. CONTRIBUTING.md's harness list was corrected to include the rule-engine and send-cancellation harnesses and now points at the shared clock module.
+
 ## [1.1.0] — 2026-09-15
 
 ### Added — Spoken Callout Priority (v29)

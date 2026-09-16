@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback } from "react";
 import { useAppStore } from "../store";
+import { useNowTick } from "../hooks/useNowTick";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import { generateAutoForgeBriefing } from "../lib/ai";
@@ -101,19 +102,15 @@ export function AutoForgeReport() {
     bots,
   } = useAppStore();
 
-  const [now, setNow] = useState(Date.now());
+  // Shared app clock — the report only renders relative times while open
+  // (hooks/useNowTick).
+  const now = useNowTick(isAutoForgeReportOpen);
   const [activeFilters, setActiveFilters] = useState<Set<AutoForgeEventType>>(new Set());
   const [severityFilter, setSeverityFilter] = useState<"all" | "high" | "medium" | "low">("all");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [briefing, setBriefing] = useState<string | null>(null);
   const [isGeneratingBriefing, setIsGeneratingBriefing] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
-
-  React.useEffect(() => {
-    if (!isAutoForgeReportOpen) return;
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [isAutoForgeReportOpen]);
 
   // Merge global autoForgeEventLog with per-bot runtime.autoForgeEvents so the
   // report shows multi-bot activity. Per-bot events go to bots[].runtime, not

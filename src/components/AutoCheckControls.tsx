@@ -22,9 +22,9 @@
  * no CORE-only copy of anything.
  */
 
-import { useEffect, useState } from "react";
 import { Activity, Clock, Sparkles, Zap } from "lucide-react";
 import { useAppStore } from "../store";
+import { useNowTick } from "../hooks/useNowTick";
 import { cn } from "../lib/utils";
 import {
   AUTO_CHECK_INTERVAL_OPTIONS,
@@ -63,13 +63,8 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
   const isInterval = normalizedMode === "interval";
   const floorMs = resolveAutoCheckFloorMs(normalizedMode, intervalMs);
 
-  // Contained 1s tick — only ticks while a real countdown is being displayed.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!isInterval || !autoCheckEnabled || !autoForgeEnabled) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [isInterval, autoCheckEnabled, autoForgeEnabled]);
+  // Shared app clock — subscribed only while a real countdown is on screen.
+  const now = useNowTick(isInterval && autoCheckEnabled && autoForgeEnabled);
 
   const window = computeAutoCheckWindow({
     mode: normalizedMode,

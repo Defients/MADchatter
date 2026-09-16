@@ -9,6 +9,14 @@
 
 import { botCoordinator, DEFAULT_FLOOR_GAP_MS, type BotCandidate } from "./botCoordinator";
 
+// The default 2.5s bidding window exists to collect competing real-world bids.
+// Every assertion below resolves through the same `resolveWindow()` path and
+// the competing bids are issued synchronously, so a short window changes
+// nothing except wall-clock cost: the default would add ~25s of pure waiting
+// to `npm test`. Tests that need different pacing configure their own values.
+const SUITE_BID_WINDOW_MS = 150;
+botCoordinator.configure({ bidWindowMs: SUITE_BID_WINDOW_MS });
+
 let passed = 0;
 let failed = 0;
 const failures: string[] = [];
@@ -133,17 +141,21 @@ await runTest("single bot wins by default", async () => {
 
 await runTest("configure changes floor gap", async () => {
   botCoordinator.reset();
-  botCoordinator.configure({ floorGapMs: 100, bidWindowMs: 100 }); // short gap + short bid
+  // Short gap + short bid so the test is fast. The floor clock is stamped when
+  // the bid window *closes*, and that timer can fire late under load, so the
+  // wait must clear (window + gap) by a wide margin. A 100ms window with a
+  // 200ms wait sat exactly on the boundary and flaked roughly half the time.
+  botCoordinator.configure({ floorGapMs: 100, bidWindowMs: 100 });
   const r1 = botCoordinator.requestFloor("bot1", makeCandidate({ confidence: 0.8 }));
-  await new Promise((res) => setTimeout(res, 200));
+  await new Promise((res) => setTimeout(res, 400)); // window closed at ~100ms
   await r1;
-  // After 100ms gap, second request should win
+  // The 100ms floor gap has long elapsed → second request should win.
   const r2 = botCoordinator.requestFloor("bot2", makeCandidate({ confidence: 0.8 }));
-  await new Promise((res) => setTimeout(res, 200));
+  await new Promise((res) => setTimeout(res, 300));
   const won2 = await r2;
   assert(won2 === true, "after short floor gap, second bot should win");
   // Reset to defaults
-  botCoordinator.configure({ floorGapMs: DEFAULT_FLOOR_GAP_MS, bidWindowMs: 2500 });
+  botCoordinator.configure({ floorGapMs: DEFAULT_FLOOR_GAP_MS, bidWindowMs: SUITE_BID_WINDOW_MS });
 });
 
 // ─── Reset ────────────────────────────────────────────────────────────────────

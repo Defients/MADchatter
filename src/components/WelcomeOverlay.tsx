@@ -121,7 +121,8 @@ export function WelcomeOverlay() {
   const activeLoggedIn = platform === 'kick' ? isKickLoggedIn : platform === 'joystick' ? isJoystickLoggedIn : isTwitchLoggedIn;
 
   useEffect(() => {
-    // Don't auto-show on first run — CoreGreeting handles that now.
+    // Don't auto-show on first run — the CORE workspace hero (brand, tagline,
+    // channel input) is the first-run surface now.
     // This overlay is retained for manual "Reopen Welcome Screen" access.
     if (localStorage.getItem(STORAGE_KEY)) return;
     // Mark as seen so it never auto-shows for new users.

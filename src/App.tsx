@@ -1045,9 +1045,8 @@ export default function App() {
       <Suspense fallback={null}><VisualHistoryOverlay /></Suspense>
       <StatusBar />
       <ShortcutHelp />
-      {/* CoreGreeting removed — the reimagined CoreWorkspace hero IS the
-          first-run welcome now (brand, tagline, channel input front and
-          center). No separate "Start" overlay needed. */}
+      {/* No separate first-run greeting: the CORE workspace hero (brand,
+          tagline, channel input front and center) is the first-run surface. */}
       <WelcomeOverlay />
       <ModeWelcomeOverlay />
       <StudioDiscoveryOverlay />

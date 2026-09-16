@@ -5,6 +5,7 @@ import { Users, X, Plus, Trash2, Bot as BotIcon, Zap, LogOut, Send, ChevronDown,
 import { cn } from "../lib/utils";
 import { useAppStore, selectMultiBotActive } from "../store";
 import { useTwitchAuth } from "../hooks/useTwitchAuth";
+import { useNowTick } from "../hooks/useNowTick";
 import { useKickAuth } from "../hooks/useKickAuth";
 import { removeTwitchSessionForBot } from "../lib/twitch";
 import { removeKickSessionForBot } from "../lib/kick";
@@ -48,13 +49,9 @@ function BotCard({
   //   30s–2m  → blue
   //   2–5m    → purple
   //   5m+     → dim gray (idle)
-  // A 1s tick keeps the fade live. We only tick when the panel is mounted
-  // (BotCard unmounts when the panel closes), so this is cheap.
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  // A 1s refresh keeps the fade live (shared app clock, hooks/useNowTick). We
+  // only subscribe while the card is mounted, so this stays cheap.
+  const now = useNowTick();
   const lastSent = sentMessages.length > 0 ? sentMessages[sentMessages.length - 1].timestamp : 0;
   const elapsedMs = lastSent ? now - lastSent : 0;
   const elapsedSec = elapsedMs / 1000;

@@ -22,9 +22,10 @@
  * stealing focus.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, Eye, MessageSquare, Mic, Zap } from "lucide-react";
 import { useAppStore } from "../store";
+import { useNowTick } from "../hooks/useNowTick";
 import {
   PERCEPTION_REASON_LABELS,
   PERCEPTION_RECOVERY_HINTS,
@@ -123,14 +124,11 @@ function StageTable({ lane }: { lane: PerceptionLiveness }) {
 export function PerceptionStrip({ variant = "core" }: { variant?: PerceptionStripVariant }) {
   const summary = useAppStore((s) => s.perceptionSummary);
   const [open, setOpen] = useState(false);
-  // Isolated 1s tick — refreshes only this leaf component's age labels,
-  // never the whole app (§35/§73). The summary itself is signature-deduped
-  // by the wiring hook; this timer only recomputes display strings.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setTick((x) => x + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+  // Age labels refresh from the shared app clock (hooks/useNowTick). This only
+  // re-renders this leaf component — never the whole app (§35/§73). The summary
+  // itself is signature-deduped by the wiring hook; this only recomputes
+  // display strings.
+  useNowTick();
 
   if (!summary) return null;
   const lanes = LANE_ORDER.map((l) => summary.lanes[l]).filter(Boolean);

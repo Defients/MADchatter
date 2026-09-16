@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useAppStore } from '../store';
+import { useNowTick } from '../hooks/useNowTick';
 import { BarChart3, X, Activity, MessageSquare, Bot, Clock, Users, Zap, Gauge, HeartPulse, Flame, Trophy, ScrollText, TrendingUp, Target, Trash2, CheckCircle2, Download, Activity as ActivityIcon, Sparkles, Eye, Brain, Coins } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { playSfx } from '../lib/sfx';
@@ -96,14 +97,14 @@ export function AnalyticsPanel() {
     streamMetadata,
   } = useAppStore();
 
-  const [now, setNow] = useState(Date.now());
+  // Shared app clock (hooks/useNowTick). Subscribed only while the panel is
+  // open, so a closed panel owns no timer at all.
+  const now = useNowTick(analyticsPanelOpen);
 
   useEffect(() => {
     if (!analyticsPanelOpen) return;
     // Refresh provider fallback history when panel opens
     useAppStore.getState().refreshProviderFallbackHistory();
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
   }, [analyticsPanelOpen]);
 
   const [leaderboardSort, setLeaderboardSort] = useState<'messages' | 'positive' | 'mentions'>('messages');

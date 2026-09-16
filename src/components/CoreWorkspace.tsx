@@ -75,6 +75,7 @@ import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProvide
 import { switchChannel } from "../lib/channelSwitch";
 import { useMediaQuery, useStudioAvailable, useEffectiveMode } from "../hooks/useMediaQuery";
 import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
+import { useNowTick } from "../hooks/useNowTick";
 import { ThemedTooltip } from "./ui/tooltip";
 import { AutoCheckControls } from "./AutoCheckControls";
 import { CoreTrialCard } from "./CoreTrialCard";
@@ -3209,12 +3210,9 @@ function CoreReadinessStrip(props: {
     ? activeBots.some((b) => b.runtime.isAutoForgeThinking)
     : isAutoForgeThinking;
 
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!props.autoForgeEnabled) return;
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [props.autoForgeEnabled]);
+  // Shared app clock — only subscribed while AutoForge is on, which is the only
+  // time the countdown renders (hooks/useNowTick).
+  const now = useNowTick(props.autoForgeEnabled);
 
   const nextCheckPaused = !autoForgeAutoCheckEnabled;
   const timeUntilNext = effectiveNextActionMs
