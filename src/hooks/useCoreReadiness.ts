@@ -50,6 +50,8 @@ export function useCoreReadiness(): ReadinessState {
   const autoForgeDryRun = useAppStore((s) => s.autoForgeDryRun);
   // Same-tab key/provider edits already emit this tick; storage handles other tabs.
   useAppStore((s) => s.authTick);
+  // Friend Trial: re-evaluate readiness when the trial session is created/cleared.
+  useAppStore((s) => s.trialTick);
   useSyncExternalStore(subscribeProvider, getProviderSnapshot);
   const provider = getActiveProvider();
   return deriveCoreReadiness({

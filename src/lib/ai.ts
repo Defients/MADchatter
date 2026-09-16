@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey, getKeys, openAiCompatEndpoint, isOpenAICompatibleProvider } from "./keys";
+import { getApiKey, getKeys, openAiCompatEndpoint, isOpenAICompatibleProvider, TRIAL_PROVIDER } from "./keys";
 import { getTwitchSession } from "./twitch";
 import {
   resolveVisionConfig,
@@ -45,6 +45,19 @@ import {
   isQueueTimeout,
   type AIRequestPriority,
 } from "./aiScheduler";
+import { createTrialFetch } from "./trial";
+
+/**
+ * Resolve the custom `fetch` override for a provider, if one is needed.
+ * - Ollama: rewrites to the native /api/chat endpoint (existing behavior).
+ * - Trial: rewrites to the Worker's POST /trial/chat with the session token.
+ * - Other OpenAI-compatible providers: no override (direct SDK fetch).
+ */
+function providerFetchOverride(provider: string): typeof fetch | undefined {
+  if (provider === "ollama") return createOllamaFetch() as typeof fetch;
+  if (provider === TRIAL_PROVIDER) return createTrialFetch() as typeof fetch;
+  return undefined;
+}
 
 // ─── AI Request Timeout & Cancellation ────────────────────────────────────────
 // The scheduler owns AbortControllers and enforces real cancellation on timeout
@@ -378,6 +391,11 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
   if (isIndependentVisionActive()) {
     screenshotForRequest = undefined;
   }
+  // Friend Trial is text-only: strip the screenshot so no image leaves the
+  // browser. The trial fetch also strips image parts as defense-in-depth.
+  if (rawProvider === TRIAL_PROVIDER) {
+    screenshotForRequest = undefined;
+  }
   if (screenshotForRequest && (!params.visualContext || params.visualContext.length < 50)) {
     try {
       const visionResult = await generateVisionContext(rawProvider, apiKey, screenshotForRequest);
@@ -495,7 +513,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
     const ollamaOpts = buildProviderRequestOptions(provider);
     // Text-only requests send `content` as a plain string (strict endpoints
@@ -794,7 +812,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
@@ -953,7 +971,7 @@ Custom Instruction: ${params.customInstruction || "None"}
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
@@ -1178,7 +1196,7 @@ Write it like a friend catching you up — casual but informative. Don't just li
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
@@ -1317,7 +1335,7 @@ Output ONLY valid JSON, exactly this schema:
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
@@ -1502,7 +1520,7 @@ Output ONLY valid JSON, exactly this schema:
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
     const ollamaOpts = buildProviderRequestOptions(provider);
     const response = await aiScheduler.execute(
@@ -1703,7 +1721,7 @@ DECIDE NOW.`;
       apiKey,
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
-      ...(provider === "ollama" ? { fetch: createOllamaFetch() as typeof fetch } : {}),
+      ...(providerFetchOverride(provider) ? { fetch: providerFetchOverride(provider) as typeof fetch } : {}),
     });
         const ollamaOpts = buildProviderRequestOptions(provider);
         const response = await aiScheduler.execute(

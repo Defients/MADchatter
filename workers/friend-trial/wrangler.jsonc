@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "friend-trial",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Public, non-secret configuration. Secret VALUES are injected via
+  // `wrangler secret put` and never appear here.
+  "vars": {
+    "TRIAL_ENABLED": "true",
+    "TRIAL_END_AT": "2026-09-17T03:59:59Z",
+    "TRIAL_MODEL": "llama-3.3-70b-versatile",
+    "TRIAL_MAX_OUTPUT_TOKENS": "2048",
+    "TRIAL_SESSION_TTL_SECONDS": "10800",
+    "TRIAL_REQUIRE_INVITE": "false",
+    "ALLOWED_ORIGINS": "https://madchatter.fun",
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAE3U5sOYTB12_lcL",
+    "TURNSTILE_EXPECTED_HOSTNAME": "madchatter.fun"
+  },
+
+  // Secrets (GROQ_API_KEY, TURNSTILE_SECRET_KEY, TRIAL_SESSION_SECRET,
+  // TRIAL_INVITE_CODE) are set via `wrangler secret put` — never declared here.
+
+  // Dedicated rate-limit namespaces (not shared with other Workers).
+  "ratelimits": [
+    {
+      "name": "TRIAL_SESSION_BOOTSTRAP",
+      "namespace_id": "9001",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "TRIAL_INFERENCE_SESSION",
+      "namespace_id": "9002",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "TRIAL_INFERENCE_IP",
+      "namespace_id": "9003",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

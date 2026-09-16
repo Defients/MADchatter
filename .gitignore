@@ -19,3 +19,8 @@ MADchatter-rc.zip
 audit-output/
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# Cloudflare Worker — Friend Trial
+workers/friend-trial/.dev.vars
+workers/friend-trial/.wrangler/
+workers/friend-trial/node_modules/

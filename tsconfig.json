@@ -23,5 +23,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["deno", "cloudflare-worker", "node_modules"]
+  "exclude": ["deno", "cloudflare-worker", "workers", "node_modules"]
 }

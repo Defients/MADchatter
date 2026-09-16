@@ -1,0 +1,21 @@
+{
+  "name": "friend-trial-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "types": "wrangler types",
+    "test": "node --import tsx tests/worker.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260915.1",
+    "@types/node": "^22.14.0",
+    "tsx": "^4.22.4",
+    "typescript": "~5.8.2",
+    "wrangler": "^4.36.0"
+  }
+}

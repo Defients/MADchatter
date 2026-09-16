@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { ForgeConfig, TwitchUser } from "../types";
 import {
   Terminal,
@@ -17,10 +17,17 @@ import {
   RefreshCw,
   Zap,
   ScanEye,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { getKeys, saveKeys, getActiveProvider, setActiveProvider, getProviderWithKey, getApiKey, CUSTOM_OPENAI_PROVIDER } from "../lib/keys";
+import { getKeys, saveKeys, getActiveProvider, setActiveProvider, getProviderWithKey, getApiKey, CUSTOM_OPENAI_PROVIDER, TRIAL_PROVIDER } from "../lib/keys";
 import { fetchAvailableModels, testProviderConnection, suggestBaseUrlFromLabel, isPresetOrDefaultUrl, type ConnectionTestResult } from "../lib/customProvider";
+import {
+  getTrialWorkerUrl, setTrialWorkerUrl, getTrialTurnstileSiteKey, setTrialTurnstileSiteKey,
+  isTrialSessionValid, clearTrialSession, setTrialSession,
+  fetchTrialStatus, createTrialSession, loadTurnstileScript, renderTurnstile, removeTurnstile,
+  TURNSTILE_TEST_SITE_KEY, type TrialStatus,
+} from "../lib/trial";
 import { getTwitchClientId, setTwitchClientId } from "../lib/twitch";
 import { getKickClientId, setKickClientId } from "../lib/kick";
 import { getJoystickClientId, setJoystickClientId, getJoystickClientSecret, setJoystickClientSecret, getJoystickBotUsername, setJoystickBotUsername } from "../lib/joystick";
@@ -54,7 +61,7 @@ export function SettingsPanel({
   const setEpisodicEnabled = useAppStore((s) => s.setEpisodicMemoryEnabled);
 
   const [activeProvider, setActiveProviderState] = useState<
-    "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai"
+    "gemini" | "gemini-pro" | "gemini-env" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai" | "trial"
   >("gemini");
   const [keys, setKeys] = useState({
     geminiKey: "",
@@ -93,6 +100,19 @@ export function SettingsPanel({
   const [devUsername, setDevUsername] = useState("");
   const [devToken, setDevToken] = useState("");
 
+  // Friend Trial state.
+  const trialTick = useAppStore((s) => s.trialTick);
+  const bumpTrialTick = useAppStore((s) => s.bumpTrialTick);
+  const trialStatus = useAppStore((s) => s.trialStatus);
+  const setTrialStatusState = useAppStore((s) => s.setTrialStatus);
+  const [trialWorkerUrl, setTrialWorkerUrlState] = useState(getTrialWorkerUrl());
+  const [trialSiteKey, setTrialSiteKeyState] = useState(getTrialTurnstileSiteKey());
+  const [trialInviteCode, setTrialInviteCode] = useState("");
+  const [trialActivating, setTrialActivating] = useState(false);
+  const [trialError, setTrialError] = useState<string | null>(null);
+  const turnstileRef = useRef<HTMLDivElement>(null);
+  const trialSessionValid = isTrialSessionValid();
+
   const [twitchClientId, setTwitchClientIdState] = useState("");
   const [kickClientId, setKickClientIdState] = useState("");
   const [joystickClientId, setJoystickClientIdState] = useState("");
@@ -103,7 +123,7 @@ export function SettingsPanel({
     const savedProvider = getActiveProvider();
     if (
       savedProvider &&
-      ["gemini", "gemini-pro", "gemini-env", "openai", "claude", "openrouter", "ollama", "custom-openai"].includes(savedProvider)
+      ["gemini", "gemini-pro", "gemini-env", "openai", "claude", "openrouter", "ollama", "custom-openai", "trial"].includes(savedProvider)
     ) {
       setActiveProviderState(savedProvider as any);
     }
@@ -129,7 +149,7 @@ export function SettingsPanel({
     setJoystickBotUsernameState(getJoystickBotUsername());
   }, [user]);
 
-  const handleProviderSelect = (p: "gemini" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai") => {
+  const handleProviderSelect = (p: "gemini" | "openai" | "claude" | "openrouter" | "ollama" | "custom-openai" | "trial") => {
     setActiveProviderState(p);
     setActiveProvider(p);
     // Selecting Ollama pre-fills the local endpoint + a default model tag so the
@@ -276,6 +296,85 @@ export function SettingsPanel({
     setTimeout(() => setKeysSavedState(false), 2000);
   };
 
+  // ── Friend Trial activation ───────────────────────────────────────────────
+  const handleTrialActivate = async () => {
+    setTrialError(null);
+    const workerUrl = trialWorkerUrl.trim().replace(/\/+$/, "");
+    if (!workerUrl) {
+      setTrialError("Set the Friend Trial Worker URL first.");
+      return;
+    }
+    setTrialWorkerUrl(workerUrl);
+    setTrialActivating(true);
+    try {
+      // Check trial availability.
+      const status = await fetchTrialStatus(workerUrl);
+      setTrialStatusState(status);
+      if (!status.enabled) {
+        setTrialError(status.reason === "ENDED" ? "Friend Trial has ended." : "Friend Trial is currently unavailable.");
+        setTrialActivating(false);
+        return;
+      }
+      // Render Turnstile and wait for token.
+      const siteKey = trialSiteKey.trim() || TURNSTILE_TEST_SITE_KEY;
+      setTrialTurnstileSiteKey(siteKey);
+      loadTurnstileScript();
+      // Wait for the script to load (it may already be loaded).
+      let attempts = 0;
+      while (!(window as any).turnstile && attempts < 50) {
+        await new Promise((r) => setTimeout(r, 100));
+        attempts++;
+      }
+      if (!(window as any).turnstile || !turnstileRef.current) {
+        setTrialError("Could not load human verification. Check your connection and try again.");
+        setTrialActivating(false);
+        return;
+      }
+      removeTurnstile(turnstileRef.current);
+      const turnstileToken = await renderTurnstile(turnstileRef.current, siteKey);
+      // Create session.
+      const result = await createTrialSession(workerUrl, turnstileToken, status.requiresInviteCode ? trialInviteCode.trim() : undefined);
+      if (!result.ok || !result.token || !result.expiresAt) {
+        setTrialError(result.error || "Failed to start Friend Trial.");
+        removeTurnstile(turnstileRef.current);
+        setTrialActivating(false);
+        return;
+      }
+      setTrialSession(result.token, result.expiresAt);
+      setActiveProvider(TRIAL_PROVIDER);
+      setActiveProviderState(TRIAL_PROVIDER as any);
+      bumpTrialTick();
+      addToast("Friend Trial active — no API key required.", "success");
+      removeTurnstile(turnstileRef.current);
+    } catch (e) {
+      setTrialError((e as Error).message || "Failed to start Friend Trial.");
+      if (turnstileRef.current) removeTurnstile(turnstileRef.current);
+    } finally {
+      setTrialActivating(false);
+    }
+  };
+
+  const handleTrialDeactivate = () => {
+    clearTrialSession();
+    bumpTrialTick();
+    // Fall back to a BYOK provider if one has a key.
+    const providerWithKey = getProviderWithKey();
+    if (providerWithKey && providerWithKey !== TRIAL_PROVIDER) {
+      setActiveProviderState(providerWithKey as any);
+      setActiveProvider(providerWithKey);
+    }
+    addToast("Friend Trial deactivated.", "success");
+  };
+
+  const handleTrialRefreshStatus = async () => {
+    const workerUrl = trialWorkerUrl.trim().replace(/\/+$/, "");
+    if (!workerUrl) return;
+    try {
+      const status = await fetchTrialStatus(workerUrl);
+      setTrialStatusState(status);
+    } catch {}
+  };
+
   const handleDevTokenLogin = () => {
     if (!devUsername || !devToken) return;
     loginWithDevToken(devToken, devUsername);
@@ -286,7 +385,7 @@ export function SettingsPanel({
       {showKeys && (
         <section className="flex flex-col min-h-0 flex-1 gap-4">
           <div className="flex gap-2 flex-wrap shrink-0">
-            {(["openrouter", "ollama", "gemini", "openai", "claude", "custom-openai"] as const).map((p) => (
+            {(["openrouter", "ollama", "gemini", "openai", "claude", "custom-openai", "trial"] as const).map((p) => (
               <button
                 key={p}
                 onClick={() => handleProviderSelect(p)}
@@ -316,14 +415,17 @@ export function SettingsPanel({
                           // Custom OpenAI-compatible: configured when base URL + model
                           // are set (key optional for local/no-auth endpoints).
                           ? (keys.customOpenAIBaseUrl && keys.customOpenAIModel ? "bg-green-500" : "bg-gray-700")
-                          : keys[
-                              `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
-                            ]
+                          : p === "trial"
+                            // Friend Trial: green when a valid session exists.
+                            ? (trialSessionValid ? "bg-green-500" : "bg-gray-700")
+                            : keys[
+                                `${p === "openai" ? "chatGpt" : p}Key` as keyof typeof keys
+                              ]
                               ? "bg-green-500"
                               : "bg-gray-700",
                   )}
                 />
-                {p === "openai" ? "GPT" : (p === "openrouter" ? "OpenRouter" : p === "ollama" ? "Ollama" : p === "custom-openai" ? "Custom" : p)}
+                {p === "openai" ? "GPT" : (p === "openrouter" ? "OpenRouter" : p === "ollama" ? "Ollama" : p === "custom-openai" ? "Custom" : p === "trial" ? "Friend Trial" : p)}
               </button>
             ))}
           </div>
@@ -468,6 +570,128 @@ export function SettingsPanel({
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* ─── Friend Trial (Worker-held Groq key, no BYOK needed) ─────────── */}
+            {activeProvider === "trial" && (
+              <div className="bg-amber-500/[0.06] border border-amber-500/25 rounded-lg p-2.5 space-y-2.5">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 text-amber-400" />
+                    Friend Trial — API provided temporarily by MADchatter
+                  </span>
+                  <p className="text-[10px] text-gray-400 leading-relaxed">
+                    No API key required. A small owner-funded Groq allowance powers a temporary trial. Human verification (Cloudflare Turnstile) is required to start. Your own provider keys are never touched.
+                  </p>
+                </div>
+
+                {/* Worker URL */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Worker URL</span>
+                  <input
+                    type="text"
+                    value={trialWorkerUrl}
+                    onChange={(e) => { setTrialWorkerUrlState(e.target.value); setTrialWorkerUrl(e.target.value); }}
+                    className="w-full bg-black/30 border border-amber-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-amber-500/50 text-white placeholder-gray-700 font-mono"
+                    placeholder="https://friend-trial.<account>.workers.dev"
+                  />
+                </div>
+
+                {/* Turnstile site key */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Turnstile Site Key (public)</span>
+                  <input
+                    type="text"
+                    value={trialSiteKey}
+                    onChange={(e) => { setTrialSiteKeyState(e.target.value); setTrialTurnstileSiteKey(e.target.value); }}
+                    className="w-full bg-black/30 border border-amber-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-amber-500/50 text-white placeholder-gray-700 font-mono"
+                    placeholder="0x4AAAAAAA... (public site key)"
+                  />
+                </div>
+
+                {/* Trial status */}
+                {trialStatus && (
+                  <div className={cn(
+                    "flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10px] leading-relaxed",
+                    trialStatus.enabled
+                      ? "bg-green-500/10 border border-green-500/25 text-green-300"
+                      : "bg-red-500/10 border border-red-500/25 text-red-300",
+                  )}>
+                    {trialStatus.enabled
+                      ? <Check className="w-3 h-3 mt-0.5 shrink-0" />
+                      : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />}
+                    <span>
+                      {trialStatus.enabled
+                        ? `Trial active${trialStatus.endsAt ? ` until ${new Date(trialStatus.endsAt).toLocaleString()}` : ""}${trialStatus.requiresInviteCode ? " · invite code required" : ""}`
+                        : trialStatus.reason === "ENDED"
+                          ? "Trial has ended. Add your own API key to continue."
+                          : "Trial is currently unavailable."}
+                    </span>
+                  </div>
+                )}
+
+                {/* Active session indicator */}
+                {trialSessionValid && (
+                  <div className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] bg-green-500/10 border border-green-500/25 text-green-300">
+                    <Check className="w-3 h-3 shrink-0" />
+                    <span className="flex-1">Trial Active — no API key required</span>
+                    <button
+                      type="button"
+                      onClick={handleTrialDeactivate}
+                      className="px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/25 text-red-300 hover:bg-red-500/25 text-[9px] font-bold uppercase"
+                    >
+                      Deactivate
+                    </button>
+                  </div>
+                )}
+
+                {/* Invite code (if required) */}
+                {trialStatus?.requiresInviteCode && !trialSessionValid && (
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">Invite Code</span>
+                    <input
+                      type="text"
+                      value={trialInviteCode}
+                      onChange={(e) => setTrialInviteCode(e.target.value)}
+                      className="w-full bg-black/30 border border-amber-500/20 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-amber-500/50 text-white placeholder-gray-700 font-mono"
+                      placeholder="Enter invite code"
+                    />
+                  </div>
+                )}
+
+                {/* Turnstile widget container */}
+                <div ref={turnstileRef} className="min-h-[65px]" />
+
+                {/* Activate / Refresh buttons */}
+                <div className="flex gap-1.5 pt-1 border-t border-amber-500/15">
+                  {!trialSessionValid && (
+                    <button
+                      type="button"
+                      onClick={handleTrialActivate}
+                      disabled={trialActivating || !trialWorkerUrl.trim()}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-[10px] font-bold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20 hover:border-amber-400/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {trialActivating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      {trialActivating ? "Starting…" : "Start Friend Trial"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleTrialRefreshStatus}
+                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-md bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:bg-white/10 transition-colors"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    Check
+                  </button>
+                </div>
+
+                {trialError && (
+                  <div className="flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10px] leading-relaxed bg-red-500/10 border border-red-500/25 text-red-300">
+                    <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
+                    <span>{trialError}</span>
+                  </div>
+                )}
               </div>
             )}
 

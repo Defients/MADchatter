@@ -26,7 +26,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 29 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 30 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
@@ -366,3 +366,66 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/components/SettingsPanel.tsx` | Provider picker, API keys, platform config |
 | `src/components/WelcomeOverlay.tsx` | Onboarding, patch notes, setup warnings |
 | `server.ts` | Express backend, server-side AI generation |
+| `src/lib/trial.ts` | Friend Trial frontend client (session mgmt, fetch override, Turnstile integration) |
+| `src/lib/trial.test.ts` | Friend Trial frontend tests (run: `npx tsx src/lib/trial.test.ts`) |
+| `workers/friend-trial/` | Cloudflare Worker for Friend Trial (server-held Groq key, Turnstile, rate limits) |
+
+## Friend Trial (v30 — Worker-backed trial access)
+
+A Cloudflare Worker (`workers/friend-trial/`) gives invited users temporary
+MADchatter access through a server-held Groq API key, without requiring them to
+bring their own key. The Groq credential never leaves Worker secret storage.
+
+### Architecture
+```
+MADchatter (Neocities) ──HTTPS──▶ Cloudflare Worker ──GROQ_API_KEY──▶ Groq
+```
+
+### Provider integration
+- `TRIAL_PROVIDER = "trial"` is added to `OPENAI_COMPATIBLE_PROVIDERS` in
+  `keys.ts`, so it flows through every existing OpenAI-compatible call site in
+  `ai.ts` (Forge, AutoForge, smart replies, memory, briefings, etc.) via the
+  `providerFetchOverride()` helper — no parallel AI stack.
+- `createTrialFetch()` (in `trial.ts`) intercepts `/chat/completions` requests
+  and rewrites them to the Worker's `POST /trial/chat` with the trial session
+  token as `Authorization: Bearer <token>`. The Worker returns an
+  OpenAI-compatible response, so the existing pipeline parses it unchanged.
+- The trial session token (a disposable HMAC credential, NOT the Groq key)
+  lives in `sessionStorage`. `getApiKey("trial")` returns it when valid.
+- Trial is text-only: `createTrialFetch()` strips image parts from multimodal
+  content; `generateChat` also strips the screenshot when `rawProvider ===
+  TRIAL_PROVIDER`. The Worker rejects multimodal content as defense-in-depth.
+
+### BYOK preservation
+- Trial never reads or overwrites the user's own provider keys.
+- `hasAnyApiKey()` / `getProviderWithKey()` include trial only when a valid
+  session exists; BYOK providers are unaffected.
+- Disabling trial (kill switch / expiry) clears the session and falls back to
+  BYOK if a key is configured.
+
+### Worker security model
+- `GROQ_API_KEY`, `TURNSTILE_SECRET_KEY`, `TRIAL_SESSION_SECRET` are Worker
+  secret bindings only — never in source, config, frontend, or git.
+- The Worker constructs the upstream payload from an explicit input allowlist;
+  the client cannot control upstream URL, model, Authorization header, or
+  token ceiling.
+- Turnstile is validated server-side via Cloudflare's siteverify flow.
+- Stateless HMAC-signed session tokens (Web Crypto), short-lived, verified on
+  every inference request.
+- Rate limiting via Cloudflare native bindings (per-IP bootstrap, per-session
+  + per-IP inference).
+- Upstream errors are sanitized — raw provider bodies never relayed.
+- Strict CORS (exact origin, `Vary: Origin`, no `*`) — not the primary boundary.
+
+### Store integration
+- `trialTick` (runtime-only, not persisted) bumps on session create/clear/expire
+  so `useCoreReadiness` and `SettingsPanel` re-evaluate trial readiness.
+- `trialStatus` (runtime-only) caches the Worker's `/trial/status` response.
+
+### Tests
+- Worker: `cd workers/friend-trial && npm test` (39 tests, mocked upstream).
+- Frontend: `npx tsx src/lib/trial.test.ts` (22 tests, mocked fetch).
+- Both use placeholder values only — no real secrets.
+
+### Deployment
+See `workers/friend-trial/README.md` for full deployment instructions.

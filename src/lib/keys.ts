@@ -20,6 +20,33 @@ export interface ApiKeys {
 /** Internal provider id for the generic OpenAI-compatible escape hatch. */
 export const CUSTOM_OPENAI_PROVIDER = "custom-openai";
 
+/** Internal provider id for the Friend Trial transport (Worker-held Groq key).
+ *  Routed through createTrialFetch() to POST /trial/chat; the user never sees
+ *  the Groq credential. See src/lib/trial.ts. */
+export const TRIAL_PROVIDER = "trial";
+
+// Synchronous trial session check (called in hot paths). Reads sessionStorage
+// directly to avoid an async import on every readiness check.
+function trialSessionActiveSync(): boolean {
+  try {
+    const token = sessionStorage.getItem("madchatter_trial_token");
+    if (!token) return false;
+    const exp = parseInt(sessionStorage.getItem("madchatter_trial_expiry") || "0", 10);
+    if (exp && Date.now() >= exp * 1000) return false;
+    const workerUrl = (localStorage.getItem("madchatter_trial_worker_url") || ((import.meta as any).env?.VITE_TRIAL_WORKER_URL || "")).trim();
+    return workerUrl.length > 0;
+  } catch {
+    return false;
+  }
+}
+function trialTokenSync(): string | null {
+  try {
+    return sessionStorage.getItem("madchatter_trial_token");
+  } catch {
+    return null;
+  }
+}
+
 /** Providers that speak the OpenAI chat-completions schema. Adding a new
  *  OpenAI-compatible preset here automatically wires it through every
  *  generation path (Forge, AutoForge, smart replies, memory, vision). */
@@ -28,6 +55,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS = [
   "openrouter",
   "ollama",
   CUSTOM_OPENAI_PROVIDER,
+  TRIAL_PROVIDER,
 ] as const;
 
 /** True for any provider that dispatches through the OpenAI-compatible
@@ -124,6 +152,14 @@ export function getApiKey(provider: string): string | null {
     if (!k.customOpenAIBaseUrl || !k.customOpenAIModel) return null;
     return k.customOpenAIKey || NO_KEY_SENTINEL;
   }
+  if (normProvider === TRIAL_PROVIDER) {
+    // Friend Trial: the "API key" is the disposable HMAC session token (NOT the
+    // Groq credential). Return it when a valid session exists so the OpenAI SDK
+    // constructs; return null when unconfigured so readiness guards treat
+    // trial as unavailable. The Groq key never exists in the browser.
+    if (!trialSessionActiveSync()) return null;
+    return trialTokenSync() || NO_KEY_SENTINEL;
+  }
   return null;
 }
 
@@ -135,6 +171,8 @@ export function hasAnyApiKey(): boolean {
   if (getActiveProvider() === "ollama" && !!keys.customBaseUrl && !!keys.customModel) return true;
   // Custom OpenAI-compatible: needs base URL + model; key optional.
   if (getActiveProvider() === CUSTOM_OPENAI_PROVIDER && !!keys.customOpenAIBaseUrl && !!keys.customOpenAIModel) return true;
+  // Friend Trial: counts as configured when a valid session exists.
+  if (getActiveProvider() === TRIAL_PROVIDER && trialSessionActiveSync()) return true;
   return false;
 }
 
@@ -149,6 +187,8 @@ export function getProviderWithKey(): string | null {
   // No cloud keys configured — fall back to Ollama if it's the active provider
   // AND has a base URL + model set.
   if (getActiveProvider() === "ollama" && keys.customBaseUrl && keys.customModel) return "ollama";
+  // Friend Trial: valid session counts as having a provider with key.
+  if (getActiveProvider() === TRIAL_PROVIDER && trialSessionActiveSync()) return TRIAL_PROVIDER;
   return null;
 }
 
@@ -185,6 +225,16 @@ export function openAiCompatEndpoint(
     return {
       baseUrl: keys.customOpenAIBaseUrl,
       model: keys.customOpenAIModel,
+    };
+  }
+  if (provider === TRIAL_PROVIDER) {
+    // Friend Trial: base URL is the Worker URL; model is a placeholder (the
+    // Worker ignores the client model and uses the server-controlled
+    // TRIAL_MODEL). createTrialFetch() rewrites the request to /trial/chat.
+    const workerUrl = (localStorage.getItem("madchatter_trial_worker_url") || ((import.meta as any).env?.VITE_TRIAL_WORKER_URL || "")).trim().replace(/\/+$/, "");
+    return {
+      baseUrl: workerUrl || "https://friend-trial.placeholder.workers.dev",
+      model: "trial",
     };
   }
   // plain OpenAI

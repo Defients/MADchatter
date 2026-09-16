@@ -1,11 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Tv, Volume2, VolumeX, ExternalLink, Camera, MonitorUp, StopCircle, MessageCircle, EyeOff, Eye, Lock, Unlock, Send, Mic } from "lucide-react";
+import { Tv, Volume2, VolumeX, ExternalLink, Camera, MonitorUp, StopCircle, MessageCircle, EyeOff, Eye, Lock, Unlock, Send, Mic, Radio } from "lucide-react";
 import { useAppStore } from "../store";
 import { useEffectiveMode } from "../hooks/useMediaQuery";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
+import { LocalBridgePanel } from "./LocalBridgePanel";
 import chanceImg from "../../assets/chance.jpg";
 import mustardVideo from "../../assets/mustardfite.mp4";
 import waterVideo from "../../assets/waterfite.mp4";
@@ -72,6 +73,8 @@ export function StreamOverlay({
   const [lockResolution, setLockResolution] = useState(() => {
     return localStorage.getItem("forge-stream-lock-res") === "true";
   });
+  const localBridgeEnabled = useAppStore((s) => s.localBridgeEnabled);
+  const [showLocalBridge, setShowLocalBridge] = useState(false);
 
   const parent = typeof window !== "undefined" ? window.location.hostname : "localhost";
 
@@ -550,6 +553,31 @@ export function StreamOverlay({
           </Tooltip>
         )}
 
+        {/* Local Bridge — local transcription companion toggle */}
+        {channel && (
+          <Tooltip>
+            <TooltipTrigger render={(props) => (
+              <button
+                {...props}
+                type="button"
+                onClick={() => setShowLocalBridge((v) => !v)}
+                className={cn(
+                  "h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all border touch-target",
+                  showLocalBridge || localBridgeEnabled
+                    ? "text-purple-300 bg-purple-500/20 border-purple-500/40 hover:bg-purple-500/30"
+                    : "text-purple-400 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/20"
+                )}
+              >
+                <Radio className="w-3 h-3" />
+                Local
+              </button>
+            )} />
+            <TooltipContent side="top" className="bg-[#1a1a1f] border border-purple-500/20 text-purple-300 text-[10px] font-semibold rounded-lg px-2.5 py-1 shadow-xl">
+              Local Bridge transcription
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         {/* Toggle Chat Input — hidden when embedded in sidebar (handled externally) */}
         {channel && !embedded && (
           <Tooltip>
@@ -643,6 +671,13 @@ export function StreamOverlay({
         </Tooltip>
         )}
       </div>
+
+      {/* Local Bridge panel — shown when the user toggles it */}
+      {showLocalBridge && (
+        <div className="shrink-0 px-2 pb-2">
+          <LocalBridgePanel />
+        </div>
+      )}
     </div>
   );
 }

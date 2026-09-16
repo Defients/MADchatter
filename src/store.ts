@@ -42,7 +42,7 @@ import {
 } from "./lib/coreAutoCheck";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 29;
+const SETTINGS_VERSION = 30;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -316,6 +316,14 @@ interface AppState {
 
   authTick: number;
   bumpAuthTick: () => void;
+
+  /** Friend Trial: reactive tick that bumps when the trial session is
+   *  created/cleared/expired, so components re-evaluate trial readiness. */
+  trialTick: number;
+  bumpTrialTick: () => void;
+  /** Cached Friend Trial status from the Worker (runtime-only, not persisted). */
+  trialStatus: import("./lib/trial").TrialStatus | null;
+  setTrialStatus: (status: import("./lib/trial").TrialStatus | null) => void;
 
   streamMetadata: {
     channelName: string;
@@ -967,6 +975,26 @@ interface AppState {
   // current cohort (armed or sending)?
   isBotFirstMessagePending: (botId: string) => boolean;
 
+  // ─── Local Bridge (v30) ────────────────────────────────────────
+  // User preferences for the local transcription companion (local-bridge/).
+  // The Bridge is a separate Python process; these are the connection prefs
+  // that persist across reloads. Runtime connection/transcription state is
+  // ephemeral (owned by useLocalBridge hook, never persisted).
+  localBridgeEnabled: boolean;
+  setLocalBridgeEnabled: (enabled: boolean) => void;
+  localBridgeBaseUrl: string;
+  setLocalBridgeBaseUrl: (url: string) => void;
+  localBridgeToken: string;
+  setLocalBridgeToken: (token: string) => void;
+  localBridgeModel: string;
+  setLocalBridgeModel: (model: string) => void;
+  localBridgeDevice: "auto" | "cuda" | "cpu";
+  setLocalBridgeDevice: (device: "auto" | "cuda" | "cpu") => void;
+  localBridgeSource: "stream" | "system";
+  setLocalBridgeSource: (source: "stream" | "system") => void;
+  localBridgeLanguage: string;
+  setLocalBridgeLanguage: (lang: string) => void;
+
   exportSettings: () => string;
   importSettings: (json: string) => boolean;
 }
@@ -1074,6 +1102,16 @@ export const partializeAppState = (state: AppState) => ({
   participationManualMode: state.participationManualMode,
   participationAwarenessEnabled: state.participationAwarenessEnabled,
   botsGlobalStop: state.botsGlobalStop,
+  // Local Bridge (v30): user preferences persist. The token is a local-only
+  // secret — same localStorage risk profile as other API keys in the store.
+  // Runtime connection/transcription state is ephemeral (never persisted).
+  localBridgeEnabled: state.localBridgeEnabled,
+  localBridgeBaseUrl: state.localBridgeBaseUrl,
+  localBridgeToken: state.localBridgeToken,
+  localBridgeModel: state.localBridgeModel,
+  localBridgeDevice: state.localBridgeDevice,
+  localBridgeSource: state.localBridgeSource,
+  localBridgeLanguage: state.localBridgeLanguage,
 });
 
 /** Reset intelligence synchronously, before any subscriber can read a new session. */
@@ -1105,6 +1143,11 @@ export const useAppStore = create<AppState>()(
 
       authTick: 0,
       bumpAuthTick: () => set((state) => ({ authTick: state.authTick + 1 })),
+
+      trialTick: 0,
+      bumpTrialTick: () => set((state) => ({ trialTick: state.trialTick + 1 })),
+      trialStatus: null,
+      setTrialStatus: (status) => set({ trialStatus: status }),
 
       streamMetadata: {
         channelName: "",
@@ -1348,6 +1391,23 @@ export const useAppStore = create<AppState>()(
 
       audioTranscript: "",
       setAudioTranscript: (transcript) => set({ audioTranscript: transcript }),
+
+      // ─── Local Bridge (v30) ────────────────────────────────────────
+      localBridgeEnabled: false,
+      setLocalBridgeEnabled: (enabled) => set({ localBridgeEnabled: enabled }),
+      localBridgeBaseUrl: "http://127.0.0.1:8765",
+      setLocalBridgeBaseUrl: (url) => set({ localBridgeBaseUrl: url }),
+      localBridgeToken: "",
+      setLocalBridgeToken: (token) => set({ localBridgeToken: token }),
+      localBridgeModel: "small.en",
+      setLocalBridgeModel: (model) => set({ localBridgeModel: model }),
+      localBridgeDevice: "auto",
+      setLocalBridgeDevice: (device) => set({ localBridgeDevice: device }),
+      localBridgeSource: "stream",
+      setLocalBridgeSource: (source) => set({ localBridgeSource: source }),
+      localBridgeLanguage: "en",
+      setLocalBridgeLanguage: (lang) => set({ localBridgeLanguage: lang }),
+
       audioSetupActive: false,
       setAudioSetupActive: (active) => set({ audioSetupActive: active }),
       whisperDownloadProgress: null,
@@ -3278,6 +3338,14 @@ export const useAppStore = create<AppState>()(
           botsGlobalStop: state.botsGlobalStop,
           roomModelSynthesisEnabled: state.roomModelSynthesisEnabled,
           episodicMemoryEnabled: state.episodicMemoryEnabled,
+          // Local Bridge (v30): export preferences but NOT the token (local
+          // secret — same treatment as bot sessions, never leaves the machine).
+          localBridgeEnabled: state.localBridgeEnabled,
+          localBridgeBaseUrl: state.localBridgeBaseUrl,
+          localBridgeModel: state.localBridgeModel,
+          localBridgeDevice: state.localBridgeDevice,
+          localBridgeSource: state.localBridgeSource,
+          localBridgeLanguage: state.localBridgeLanguage,
           exportedAt: new Date().toISOString(),
           version: SETTINGS_VERSION,
         };
@@ -3362,6 +3430,13 @@ export const useAppStore = create<AppState>()(
           if (data.botsGlobalStop !== undefined) set({ botsGlobalStop: data.botsGlobalStop === true });
           if (typeof data.roomModelSynthesisEnabled === "boolean") get().setRoomModelSynthesisEnabled(data.roomModelSynthesisEnabled);
           if (typeof data.episodicMemoryEnabled === "boolean") get().setEpisodicMemoryEnabled(data.episodicMemoryEnabled);
+          // Local Bridge (v30): restore preferences only (token never exported).
+          if (data.localBridgeEnabled !== undefined) set({ localBridgeEnabled: data.localBridgeEnabled === true });
+          if (typeof data.localBridgeBaseUrl === "string") set({ localBridgeBaseUrl: data.localBridgeBaseUrl });
+          if (typeof data.localBridgeModel === "string") set({ localBridgeModel: data.localBridgeModel });
+          if (data.localBridgeDevice === "auto" || data.localBridgeDevice === "cuda" || data.localBridgeDevice === "cpu") set({ localBridgeDevice: data.localBridgeDevice });
+          if (data.localBridgeSource === "stream" || data.localBridgeSource === "system") set({ localBridgeSource: data.localBridgeSource });
+          if (typeof data.localBridgeLanguage === "string") set({ localBridgeLanguage: data.localBridgeLanguage });
           return true;
         } catch (e) {
           console.warn("[store] importSettings failed:", e);
@@ -3703,6 +3778,18 @@ export const useAppStore = create<AppState>()(
         if (version < 29 && persistedState) {
           if (typeof persistedState.episodicMemoryEnabled !== "boolean") persistedState.episodicMemoryEnabled = true;
           if (typeof persistedState.roomModelSynthesisEnabled !== "boolean") persistedState.roomModelSynthesisEnabled = true;
+        }
+        // v29 -> v30: Local Bridge preferences. Existing users get the safe
+        // defaults (disabled, loopback URL, no token). The token is blank
+        // until the user copies it from the Bridge console.
+        if (version < 30 && persistedState) {
+          if (typeof persistedState.localBridgeEnabled !== "boolean") persistedState.localBridgeEnabled = false;
+          if (typeof persistedState.localBridgeBaseUrl !== "string") persistedState.localBridgeBaseUrl = "http://127.0.0.1:8765";
+          if (typeof persistedState.localBridgeToken !== "string") persistedState.localBridgeToken = "";
+          if (typeof persistedState.localBridgeModel !== "string") persistedState.localBridgeModel = "small.en";
+          if (typeof persistedState.localBridgeDevice !== "string") persistedState.localBridgeDevice = "auto";
+          if (typeof persistedState.localBridgeSource !== "string") persistedState.localBridgeSource = "stream";
+          if (typeof persistedState.localBridgeLanguage !== "string") persistedState.localBridgeLanguage = "en";
         }
         return persistedState;
       },

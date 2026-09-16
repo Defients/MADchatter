@@ -1,0 +1,22 @@
+# Friend Trial Worker — local development secrets.
+# Copy to `.dev.vars` and fill with placeholder/local-only values.
+# NEVER commit `.dev.vars`. It is gitignored.
+#
+# For production, use: npx wrangler secret put <NAME>
+
+# Groq API key (local dev only — use a disposable key, never a production key)
+GROQ_API_KEY=replace-me
+
+# Turnstile server-side siteverify secret.
+# For local/automated testing use Cloudflare's official test keys:
+#   https://developers.cloudflare.com/turnstile/troubleshooting/testing/
+# Always-pass secret:  1x0000000000000000000000000000000AA
+# Always-fail secret: 2x0000000000000000000000000000000AA
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+
+# HMAC secret for signing trial session tokens. Use a long random string.
+# Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+TRIAL_SESSION_SECRET=replace-me-with-a-long-random-string
+
+# Optional: only required when TRIAL_REQUIRE_INVITE=true
+TRIAL_INVITE_CODE=replace-me

@@ -1,4 +1,4 @@
-import { getApiKey, CUSTOM_OPENAI_PROVIDER } from "./keys";
+import { getApiKey, CUSTOM_OPENAI_PROVIDER, TRIAL_PROVIDER } from "./keys";
 
 export interface FallbackResult {
   provider: string;
@@ -18,7 +18,7 @@ export function getFallbackChain(primaryProvider: string): string[] {
 }
 
 export function getNextAvailableProvider(exclude: string[]): string | null {
-  const all = ["gemini", "openai", "claude", "openrouter", "ollama", CUSTOM_OPENAI_PROVIDER];
+  const all = ["gemini", "openai", "claude", "openrouter", "ollama", CUSTOM_OPENAI_PROVIDER, TRIAL_PROVIDER];
   for (const p of all) {
     if (!exclude.includes(p) && getApiKey(p)) {
       return p;
@@ -85,7 +85,7 @@ export function getHealthyFallbackChain(primaryProvider: string): string[] {
 }
 
 export function getProviderHealthStatus(): ProviderHealth[] {
-  const all = ["gemini", "openai", "claude", "openrouter", "ollama", CUSTOM_OPENAI_PROVIDER];
+  const all = ["gemini", "openai", "claude", "openrouter", "ollama", CUSTOM_OPENAI_PROVIDER, TRIAL_PROVIDER];
   return all.map(getHealth);
 }
 
