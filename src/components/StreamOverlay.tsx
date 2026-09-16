@@ -27,6 +27,8 @@ interface StreamOverlayProps {
   onManualSnapshot: () => void;
   isVisualCapturing: boolean;
   visualCooldown: boolean;
+  /** When true, the manual snapshot (SNAP) button is disabled (e.g. Friend Trial). */
+  snapDisabled?: boolean;
   tabCaptureMode: boolean;
   onChatModeChange?: (active: boolean) => void;
   embedded?: boolean;
@@ -54,6 +56,7 @@ export function StreamOverlay({
   onManualSnapshot,
   isVisualCapturing,
   visualCooldown,
+  snapDisabled = false,
   tabCaptureMode,
   onChatModeChange,
   embedded = false,
@@ -287,11 +290,11 @@ export function StreamOverlay({
                       <button
                         type="button"
                         onClick={onManualSnapshot}
-                        disabled={visualCooldown}
+                        disabled={visualCooldown || snapDisabled}
                         className="h-12 px-6 flex items-center gap-2 rounded-xl text-sm font-bold uppercase tracking-wider transition-all disabled:opacity-50 text-blue-400 bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/30"
                       >
                         <Camera className="w-5 h-5" />
-                        {visualCooldown ? "Cooldown..." : "Take Snapshot"}
+                        {snapDisabled ? "Trial Mode" : visualCooldown ? "Cooldown..." : "Take Snapshot"}
                       </button>
                       )}
                       <div className="flex items-center gap-3">
@@ -540,7 +543,7 @@ export function StreamOverlay({
                 {...props}
                 type="button"
                 onClick={onManualSnapshot}
-                disabled={visualCooldown}
+                disabled={visualCooldown || snapDisabled}
                 className="h-7 sm:h-6 px-2.5 sm:px-2 flex items-center gap-1 rounded text-[10px] sm:text-[9px] font-bold uppercase tracking-wider transition-all disabled:opacity-50 text-blue-400 bg-blue-500/15 hover:bg-blue-500/25 border border-blue-500/20 touch-target"
               >
                 <Camera className="w-3 h-3" />
@@ -548,7 +551,7 @@ export function StreamOverlay({
               </button>
             )} />
             <TooltipContent side="top" className="bg-[#1a1a1f] border border-blue-500/20 text-blue-300 text-[10px] font-semibold rounded-lg px-2.5 py-1 shadow-xl">
-              {visualCooldown ? "Cooldown active..." : "Capture snapshot now"}
+              {snapDisabled ? "Disabled in Friend Trial (60s auto-loop)" : visualCooldown ? "Cooldown active..." : "Capture snapshot now"}
             </TooltipContent>
           </Tooltip>
         )}

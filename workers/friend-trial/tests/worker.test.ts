@@ -74,7 +74,7 @@ function makeEnv(overrides: Record<string, any> = {}): any {
     TRIAL_INVITE_CODE: "",
     TRIAL_ENABLED: "true",
     TRIAL_END_AT: "2099-12-31T23:59:59Z",
-    TRIAL_MODEL: "llama-3.3-70b-versatile",
+    TRIAL_MODEL: "openai/gpt-oss-120b",
     TRIAL_MAX_OUTPUT_TOKENS: "2048",
     TRIAL_SESSION_TTL_SECONDS: "3600",
     TRIAL_REQUIRE_INVITE: "false",
@@ -349,7 +349,8 @@ async function main() {
   await test("oversized body → 413", async () => {
     const env = makeEnv();
     const token = await makeValidToken(env);
-    const big = "x".repeat(70 * 1024);
+    // Above the 256 KB body ceiling (images inflate payloads).
+    const big = "x".repeat(300 * 1024);
     const res = await callWorker(env, makeRequest("POST", "/trial/chat", {
       body: { messages: [{ role: "user", content: big }] },
       headers: { Authorization: `Bearer ${token}` },
@@ -389,6 +390,129 @@ async function main() {
     assert.strictEqual(res.body.error.code, "INVALID_REQUEST");
   });
 
+  // ── Vision-capable trial (TRIAL_VISION_MODEL configured) ──────────────
+  await test("status includes supportsVision when TRIAL_VISION_MODEL set", async () => {
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const res = await callWorker(env, makeRequest("GET", "/trial/status"));
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.trial.supportsVision, true);
+    assert.strictEqual(res.body.trial.visionModelLabel, "qwen/qwen3.6-27b");
+  });
+
+  await test("status omits supportsVision when TRIAL_VISION_MODEL unset", async () => {
+    const env = makeEnv();
+    const res = await callWorker(env, makeRequest("GET", "/trial/status"));
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.trial.supportsVision, undefined);
+  });
+
+  await test("vision trial accepts multimodal content → 200", async () => {
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "I see a game" } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } };
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeValidToken(env);
+    const res = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: [
+        { type: "text", text: "What's on screen?" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" } },
+      ] }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.choices[0].message.content, "I see a game");
+  });
+
+  await test("vision trial routes image-bearing request to vision model", async () => {
+    let capturedModel: string | null = null;
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } };
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = ((input: any, init?: any) => {
+      const url = typeof input === "string" ? input : input?.url;
+      if (url?.includes("api.groq.com")) {
+        const body = JSON.parse(init.body);
+        capturedModel = body.model;
+        return Promise.resolve(new Response(JSON.stringify(groqResponse.body), { status: 200, headers: { "Content-Type": "application/json" } })) as any;
+      }
+      return (origFetch as any)(input, init);
+    }) as any;
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeValidToken(env);
+    await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: [
+        { type: "text", text: "describe" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" } },
+      ] }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    globalThis.fetch = origFetch;
+    assert.strictEqual(capturedModel, "qwen/qwen3.6-27b");
+  });
+
+  await test("vision trial routes text-only request to text model", async () => {
+    let capturedModel: string | null = null;
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } } };
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = ((input: any, init?: any) => {
+      const url = typeof input === "string" ? input : input?.url;
+      if (url?.includes("api.groq.com")) {
+        const body = JSON.parse(init.body);
+        capturedModel = body.model;
+        return Promise.resolve(new Response(JSON.stringify(groqResponse.body), { status: 200, headers: { "Content-Type": "application/json" } })) as any;
+      }
+      return (origFetch as any)(input, init);
+    }) as any;
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeValidToken(env);
+    await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: "hello" }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    globalThis.fetch = origFetch;
+    assert.strictEqual(capturedModel, "openai/gpt-oss-120b");
+  });
+
+  await test("vision trial rejects non-user image content", async () => {
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeValidToken(env);
+    const res = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "system", content: [
+        { type: "text", text: "sys" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" } },
+      ] }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.error.code, "INVALID_REQUEST");
+  });
+
+  await test("vision trial rejects remote image URLs", async () => {
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeValidToken(env);
+    const res = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: [
+        { type: "text", text: "look" },
+        { type: "image_url", image_url: { url: "https://evil.com/img.jpg" } },
+      ] }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.error.code, "INVALID_REQUEST");
+  });
+
+  await test("vision trial rejects oversized image", async () => {
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeValidToken(env);
+    const big = "data:image/jpeg;base64," + "x".repeat(600 * 1024);
+    const res = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: [
+        { type: "text", text: "look" },
+        { type: "image_url", image_url: { url: big } },
+      ] }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(res.status, 413);
+    assert.strictEqual(res.body.error.code, "PAYLOAD_TOO_LARGE");
+  });
+
   // Chat — model override impossible
   await test("client model override → ignored (server controls model)", async () => {
     let capturedBody: any = null;
@@ -409,7 +533,7 @@ async function main() {
       headers: { Authorization: `Bearer ${token}` },
     }));
     globalThis.fetch = origFetch as any;
-    assert.strictEqual(capturedBody.model, "llama-3.3-70b-versatile", "server model must override client model");
+    assert.strictEqual(capturedBody.model, "openai/gpt-oss-120b", "server model must override client model");
     assert.ok(capturedBody.max_completion_tokens <= 2048, "token ceiling must be enforced");
   });
 

@@ -10,6 +10,8 @@ export interface ParsedConfig {
   endsAt: number | null; // epoch ms; null = no expiry configured (fails closed in prod)
   endsAtIso: string | null;
   model: string;
+  /** Optional vision-capable model id; empty when vision is not configured. */
+  visionModel: string;
   maxOutputTokens: number;
   sessionTtlSeconds: number;
   requireInvite: boolean;
@@ -71,6 +73,7 @@ export function parseConfig(env: TrialEnv): ConfigValidation {
   const expired = endsAt !== null && now >= endsAt;
 
   const model = (env.TRIAL_MODEL ?? "").trim();
+  const visionModel = (env.TRIAL_VISION_MODEL ?? "").trim();
   const allowedOrigins = parseOrigins(env.ALLOWED_ORIGINS);
 
   // Security-sensitive missing settings → unavailable.
@@ -86,6 +89,7 @@ export function parseConfig(env: TrialEnv): ConfigValidation {
     endsAt,
     endsAtIso,
     model,
+    visionModel,
     maxOutputTokens: parseMaxTokens(env.TRIAL_MAX_OUTPUT_TOKENS),
     sessionTtlSeconds: parseTtl(env.TRIAL_SESSION_TTL_SECONDS),
     requireInvite: parseBool(env.TRIAL_REQUIRE_INVITE),
@@ -124,6 +128,7 @@ export function buildStatusBody(c: ParsedConfig, available: boolean, reason: str
       requiresTurnstile: true,
       requiresInviteCode: c.requireInvite,
       ...(c.model && available ? { modelLabel: c.model } : {}),
+      ...(c.visionModel && available ? { supportsVision: true, visionModelLabel: c.visionModel } : {}),
     },
   };
 }

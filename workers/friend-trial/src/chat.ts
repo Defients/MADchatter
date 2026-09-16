@@ -13,11 +13,13 @@ import type { ParsedConfig } from "./config";
 import type { TrialEnv, TrialErrorCode } from "./types";
 
 // ── Input limits ─────────────────────────────────────────────────────────────
-const MAX_BODY_BYTES = 64 * 1024; // 64 KB
+const MAX_BODY_BYTES = 256 * 1024; // 256 KB (images inflate payloads)
 const MAX_MESSAGES = 24;
 const MAX_TOTAL_CHARS = 32_000;
 const MAX_MESSAGE_CHARS = 16_000;
-const ALLOWED_ROLES = new Set(["system", "user", "assistant"]);
+const MAX_IMAGE_BYTES = 512 * 1024; // 512 KB per inline image (base64 payload)
+const MAX_IMAGES_PER_MESSAGE = 1;
+const ALLOWED_ROLES = new Set(["system", "assistant", "user"]);
 const UPSTREAM_TIMEOUT_MS = 30_000;
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -25,9 +27,14 @@ export type ChatValidation =
   | { ok: true; payload: UpstreamPayload }
   | { ok: false; code: TrialErrorCode; status: number };
 
+/** A validated content part — either text or an inline image_url. */
+type ValidatedContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 interface ValidatedMessage {
   role: string;
-  content: string;
+  content: string | ValidatedContentPart[];
 }
 
 interface UpstreamPayload {
@@ -87,6 +94,8 @@ export async function validateChatRequest(
 
   const validated: ValidatedMessage[] = [];
   let totalChars = 0;
+  let hasImage = false;
+  const allowVision = config.visionModel.length > 0;
   for (const msg of messages) {
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
       return { ok: false, code: "INVALID_REQUEST", status: 400 };
@@ -96,19 +105,81 @@ export async function validateChatRequest(
     if (typeof role !== "string" || !ALLOWED_ROLES.has(role)) {
       return { ok: false, code: "INVALID_REQUEST", status: 400 };
     }
-    // Text-only: content must be a string. Reject multimodal arrays.
     const content = m.content;
-    if (typeof content !== "string") {
+
+    // Text-only content: must be a string.
+    if (typeof content === "string") {
+      if (content.length > MAX_MESSAGE_CHARS) {
+        return { ok: false, code: "INVALID_REQUEST", status: 400 };
+      }
+      totalChars += content.length;
+      if (totalChars > MAX_TOTAL_CHARS) {
+        return { ok: false, code: "INVALID_REQUEST", status: 400 };
+      }
+      validated.push({ role, content });
+      continue;
+    }
+
+    // Multimodal content: array of parts. Only accepted when vision is
+    // configured. System/assistant roles must stay text-only.
+    if (!Array.isArray(content)) {
       return { ok: false, code: "INVALID_REQUEST", status: 400 };
     }
-    if (content.length > MAX_MESSAGE_CHARS) {
+    if (!allowVision) {
+      // Vision not configured — reject image arrays (text-only trial).
       return { ok: false, code: "INVALID_REQUEST", status: 400 };
     }
-    totalChars += content.length;
+    if (role !== "user") {
+      // Only user messages may carry images.
+      return { ok: false, code: "INVALID_REQUEST", status: 400 };
+    }
+
+    const parts: ValidatedContentPart[] = [];
+    let imageCount = 0;
+    let textChars = 0;
+    for (const part of content as Array<Record<string, unknown>>) {
+      if (!part || typeof part !== "object") {
+        return { ok: false, code: "INVALID_REQUEST", status: 400 };
+      }
+      if (part.type === "text") {
+        if (typeof part.text !== "string") {
+          return { ok: false, code: "INVALID_REQUEST", status: 400 };
+        }
+        if (part.text.length > MAX_MESSAGE_CHARS) {
+          return { ok: false, code: "INVALID_REQUEST", status: 400 };
+        }
+        textChars += part.text.length;
+        parts.push({ type: "text", text: part.text });
+      } else if (part.type === "image_url") {
+        const url = (part.image_url as Record<string, unknown> | undefined)?.url;
+        if (typeof url !== "string") {
+          return { ok: false, code: "INVALID_REQUEST", status: 400 };
+        }
+        // Only inline base64 data URLs are accepted — no remote URLs.
+        if (!url.startsWith("data:image/")) {
+          return { ok: false, code: "INVALID_REQUEST", status: 400 };
+        }
+        if (url.length > MAX_IMAGE_BYTES) {
+          return { ok: false, code: "PAYLOAD_TOO_LARGE", status: 413 };
+        }
+        imageCount += 1;
+        if (imageCount > MAX_IMAGES_PER_MESSAGE) {
+          return { ok: false, code: "INVALID_REQUEST", status: 400 };
+        }
+        hasImage = true;
+        parts.push({ type: "image_url", image_url: { url } });
+      } else {
+        return { ok: false, code: "INVALID_REQUEST", status: 400 };
+      }
+    }
+    if (parts.length === 0) {
+      return { ok: false, code: "INVALID_REQUEST", status: 400 };
+    }
+    totalChars += textChars;
     if (totalChars > MAX_TOTAL_CHARS) {
       return { ok: false, code: "INVALID_REQUEST", status: 400 };
     }
-    validated.push({ role, content });
+    validated.push({ role, content: parts });
   }
 
   // temperature: optional, bounded [0, 2]
@@ -142,8 +213,10 @@ export async function validateChatRequest(
   }
 
   // Construct the upstream payload — server controls model + token ceiling.
+  // When the request contains images and a vision model is configured, route
+  // to the vision model; otherwise use the text model.
   const payload: UpstreamPayload = {
-    model: config.model,
+    model: hasImage && config.visionModel ? config.visionModel : config.model,
     messages: validated,
     temperature,
     max_completion_tokens: requestedTokens,

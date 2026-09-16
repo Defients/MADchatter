@@ -57,6 +57,7 @@ import {
   captureAutoCheckSignal,
   evaluateAutoCheckCadence,
   hasMeaningfulContextChange,
+  resolveEffectiveCheckFloorMs,
   type AutoCheckSignal,
 } from "../lib/coreAutoCheck";
 import {
@@ -216,7 +217,12 @@ export function useAutoForge() {
 
     isAutoForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
-    setIsAutoForgeThinking(true);
+    // NOTE: setIsAutoForgeThinking(true) is deferred until the cadence gate
+    // passes (just before the model call). The cheap pre-gates (rate limit,
+    // vibe, participation, cadence) return early without an AI round-trip, so
+    // showing "Processing…" for them made the 15s heartbeat flash the thinking
+    // indicator every tick while the floor withheld the check — which read as
+    // "spamming" even though no model call ran.
     // Execution guard: invalidates in-flight work if the session context
     // changes mid-check (channel switch incl. A→B→A round-trips, platform
     // switch, AutoForge toggle, dry-run flip, multi-bot mode flip). The
@@ -605,12 +611,12 @@ export function useAutoForge() {
           lastCheckAt: state.autoForgeLastCheckMs,
           signalsChanged: hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
           urgent: isMentioned || activitySpike,
+          minCooldownMs: state.rateLimitConfig?.minCooldownMs,
         });
         if (!cadence.run) {
-          // Cheap heartbeat return — no model call, no reschedule. The tick
-          // re-evaluates in 15s and runs as soon as the gate opens. Record
-          // the skip (no history append, never overwrites a real decision) so
-          // Last Cycle shows the loop is alive instead of looking frozen.
+          // Cheap heartbeat return — no model call. Record the skip (no
+          // history append, never overwrites a real decision) so Last Cycle
+          // shows the loop is alive instead of looking frozen.
           const prevDecision = useAppStore.getState().lastAutoForgeDecision;
           if (!prevDecision || prevDecision.gateSkipped) {
             setLastAutoForgeDecision({
@@ -624,11 +630,33 @@ export function useAutoForge() {
             }, false);
           }
           setAutoForgeCheckArmed(cadence.armed);
+          // Time-based floor block: reschedule the pacing gate to the next
+          // eligible moment so the 15s heartbeat stops waking the loop,
+          // flashing "Processing…", and re-evaluating every tick while the
+          // floor withholds. Without this, the model's short
+          // estimated_next_action_minutes keeps the pacing gate open and the
+          // loop spins every 15s doing nothing — which reads as "spamming".
+          // Context-based blocks (smart mode, no change) leave the pacing
+          // gate alone so the check runs as soon as context changes.
+          if (cadence.nextEligibleMs > 0) {
+            const nowMs = Date.now();
+            if (state.autoForgeNextActionMs < cadence.nextEligibleMs) {
+              setAutoForgeNextActionMs(Math.max(nowMs + 1000, cadence.nextEligibleMs));
+            }
+          }
           return;
         }
         autoCheckSignalRef.current = signal;
         setAutoForgeCheckArmed(false);
         setAutoForgeLastCheckMs(Date.now());
+        // Now that the cadence gate has passed, a real model call is about to
+        // run — flip the thinking flag on (deferred from the top of the loop
+        // so cheap gate blocks never flash "Processing…").
+        setIsAutoForgeThinking(true);
+      } else {
+        // Force / supercharge bypass the cadence gate — a model call is
+        // imminent, so show the thinking state.
+        setIsAutoForgeThinking(true);
       }
 
       const decisionStartTime = Date.now();
@@ -830,9 +858,16 @@ export function useAutoForge() {
         // In dry-run nothing is actually sent, so the model's self-pacing
         // serves no protective purpose — clamp the next check to the user's
         // cadence so decisions visibly cycle at 30s/1m/2m/5m instead of
-        // hiding for 3-5 min and looking stuck.
+        // hiding for 3-5 min and looking stuck. Also floor at the effective
+        // check floor so the pacing gate stays honest (no sub-floor spin).
         const cadenceMinutes = (state.autoForgeAutoCheckIntervalMs || 30000) / 60000;
+        const floorMs = resolveEffectiveCheckFloorMs(
+          state.autoForgeAutoCheckMode,
+          state.autoForgeAutoCheckIntervalMs,
+          state.rateLimitConfig?.minCooldownMs ?? 0,
+        );
         nextMinutes = Math.min(nextMinutes, cadenceMinutes);
+        nextMinutes = Math.max(nextMinutes, floorMs / 60000);
         setAutoForgeNextActionMs(Date.now() + nextMinutes * 60 * 1000);
         return;
       }
@@ -1353,6 +1388,23 @@ export function useAutoForge() {
       // lengthen the gap when the user asked for maximum engagement).
       if (supercharged) {
         nextMinutes = Math.min(nextMinutes, 1.5);
+      } else {
+        // Floor the model-driven next-check interval at the effective check
+        // floor (cadence floor + send min cooldown, whichever is wider). The
+        // model can return a tiny estimated_next_action_minutes (e.g. 0.1 min)
+        // which would set autoForgeNextActionMs 6s out — the cadence gate then
+        // blocks the actual check, but the pacing gate stays open and the 15s
+        // heartbeat spins (flashing "Processing…" every tick). Flooring here
+        // keeps the pacing gate honest so the NEXT CHECK countdown reflects
+        // the real cadence. Mentions/spikes already bypassed the cadence gate
+        // upstream; this only restrains non-urgent pacing. Supercharge is
+        // exempt (the user asked for maximum engagement).
+        const floorMs = resolveEffectiveCheckFloorMs(
+          state.autoForgeAutoCheckMode,
+          state.autoForgeAutoCheckIntervalMs,
+          state.rateLimitConfig?.minCooldownMs ?? 0,
+        );
+        nextMinutes = Math.max(nextMinutes, floorMs / 60000);
       }
 
       // A8: Manual activity awareness — delay next AutoForge action if user recently acted or is typing

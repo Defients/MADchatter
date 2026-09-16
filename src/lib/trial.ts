@@ -18,6 +18,12 @@
  * Text-only: trial strips image parts from multimodal message content before
  * forwarding, so no image ever leaves the browser in trial mode. The Worker
  * also rejects multimodal content as defense-in-depth.
+ *
+ * Vision support: when the Worker reports `supportsVision: true` (a
+ * `TRIAL_VISION_MODEL` is configured server-side), the trial stops stripping
+ * images and forwards multimodal content to the Worker, which routes
+ * image-bearing requests to the vision model. The vision capability is
+ * cached per-Worker-URL and refreshed on each status fetch.
  */
 
 /** Provider id for the Friend Trial transport. */
@@ -112,12 +118,20 @@ export interface TrialStatus {
   requiresTurnstile: boolean;
   requiresInviteCode: boolean;
   modelLabel?: string;
+  supportsVision?: boolean;
+  visionModelLabel?: string;
 }
 
 export async function fetchTrialStatus(workerUrl: string): Promise<TrialStatus> {
   const resp = await fetch(`${workerUrl}/trial/status`, { method: "GET" });
   const data = await resp.json().catch(() => ({ ok: false }));
-  if (data.ok && data.trial) return data.trial as TrialStatus;
+  if (data.ok && data.trial) {
+    const trial = data.trial as TrialStatus;
+    // Cache the vision capability so createTrialFetch can decide whether to
+    // strip images without an async status lookup on every request.
+    cacheTrialVisionCapability(workerUrl, !!trial.supportsVision);
+    return trial;
+  }
   return { enabled: false, requiresTurnstile: true, requiresInviteCode: false };
 }
 
@@ -152,12 +166,36 @@ export async function createTrialSession(
 // ── Trial fetch override ──────────────────────────────────────────────────────
 
 /**
+ * Cached vision capability per Worker URL. Updated by `fetchTrialStatus`.
+ * When true, `createTrialFetch` forwards multimodal content unchanged; when
+ * false/unknown, it strips image parts (text-only trial).
+ */
+let cachedVisionCapability: { url: string; supportsVision: boolean } | null = null;
+
+function cacheTrialVisionCapability(workerUrl: string, supportsVision: boolean): void {
+  cachedVisionCapability = { url: workerUrl, supportsVision };
+}
+
+/** Reset the cached vision capability (for tests). */
+export function resetTrialVisionCapability(): void {
+  cachedVisionCapability = null;
+}
+
+/** Returns true if the configured Worker supports vision (multimodal) requests. */
+export function trialSupportsVision(): boolean {
+  const workerUrl = getTrialWorkerUrl();
+  if (!workerUrl) return false;
+  return cachedVisionCapability?.url === workerUrl && cachedVisionCapability.supportsVision;
+}
+
+/**
  * Create a custom `fetch` for the OpenAI client when the provider is trial.
  *
- * Intercepts chat-completions requests, strips image parts (text-only trial),
- * and forwards to the Worker's POST /trial/chat with the trial session token.
- * The Worker returns an OpenAI-compatible response so the SDK parses it
- * unchanged.
+ * Intercepts chat-completions requests and forwards them to the Worker's
+ * POST /trial/chat endpoint with the trial session token. When the Worker
+ * supports vision (TRIAL_VISION_MODEL configured), multimodal content is
+ * forwarded unchanged. When vision is not supported, image parts are stripped
+ * (text-only trial) so no image leaves the browser.
  *
  * On 401 (expired/invalid session), clears the stale session so the UI can
  * offer reactivation.
@@ -181,9 +219,12 @@ export function createTrialFetch(): typeof fetch {
       throw new Error("Friend Trial session expired. Please reactivate Friend Trial.");
     }
 
-    // Parse the OpenAI-format body, strip images (text-only trial), and forward.
+    // Parse the OpenAI-format body. Forward multimodal content unchanged when
+    // the Worker supports vision; otherwise strip images (text-only trial).
     const rawBody = init?.body ? JSON.parse(init.body as string) : {};
-    const strippedBody = stripImagesFromMessages(rawBody);
+    const forwardedBody = trialSupportsVision()
+      ? rawBody
+      : stripImagesFromMessages(rawBody);
 
     const resp = await fetch(`${workerUrl}/trial/chat`, {
       method: "POST",
@@ -191,7 +232,7 @@ export function createTrialFetch(): typeof fetch {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(strippedBody),
+      body: JSON.stringify(forwardedBody),
     });
 
     // On 401, clear the stale session so the UI can offer reactivation.

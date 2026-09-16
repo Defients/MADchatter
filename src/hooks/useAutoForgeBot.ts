@@ -44,6 +44,7 @@ import {
   captureAutoCheckSignal,
   evaluateAutoCheckCadence,
   hasMeaningfulContextChange,
+  resolveEffectiveCheckFloorMs,
   type AutoCheckSignal,
 } from "../lib/coreAutoCheck";
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
@@ -170,7 +171,12 @@ export function useAutoForgeBot(botId: string) {
 
     isForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
-    store.setBotIsAutoForgeThinking(botId, true);
+    // NOTE: setBotIsAutoForgeThinking(true) is deferred until the cadence gate
+    // passes (just before the model call). The cheap pre-gates (rate limit,
+    // vibe, participation, cadence) return early without an AI round-trip, so
+    // showing "Processing…" for them made the 15s heartbeat flash the thinking
+    // indicator every tick while the floor withheld the check — which read as
+    // "spamming" even though no model call ran.
     // Execution guard: invalidates in-flight work if the session context
     // changes mid-check (channel switch incl. A→B→A round-trips, platform
     // switch, AutoForge toggle, dry-run flip, multi-bot mode flip) OR if
@@ -580,6 +586,7 @@ export function useAutoForgeBot(botId: string) {
           lastCheckAt: store.autoForgeLastCheckMs,
           signalsChanged: hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
           urgent: isMentioned || activitySpike,
+          minCooldownMs: store.rateLimitConfig?.minCooldownMs,
         });
         if (!cadence.run) {
           // Cheap heartbeat return — no model call. Record the skip (no
@@ -599,11 +606,33 @@ export function useAutoForgeBot(botId: string) {
             }, false);
           }
           store.setAutoForgeCheckArmed(cadence.armed);
+          // Time-based floor block: reschedule the pacing gate to the next
+          // eligible moment so the 15s heartbeat stops waking this bot's loop,
+          // flashing "Processing…", and re-evaluating every tick while the
+          // floor withholds. Without this, the model's short
+          // estimated_next_action_minutes keeps the pacing gate open and the
+          // loop spins every 15s doing nothing — which reads as "spamming".
+          // Context-based blocks (smart mode, no change) leave the pacing
+          // gate alone so the check runs as soon as context changes.
+          if (cadence.nextEligibleMs > 0) {
+            const nowMs = Date.now();
+            if (bot.runtime.autoForgeNextActionMs < cadence.nextEligibleMs) {
+              store.setBotAutoForgeNextActionMs(botId, Math.max(nowMs + 1000, cadence.nextEligibleMs));
+            }
+          }
           return;
         }
         autoCheckSignalRef.current = signal;
         store.setAutoForgeCheckArmed(false);
         store.setAutoForgeLastCheckMs(Date.now());
+        // Now that the cadence gate has passed, a real model call is about
+        // to run — flip the thinking flag on (deferred from the top of the
+        // loop so cheap gate blocks never flash "Processing…").
+        store.setBotIsAutoForgeThinking(botId, true);
+      } else {
+        // Force / supercharge bypass the cadence gate — a model call is
+        // imminent, so show the thinking state.
+        store.setBotIsAutoForgeThinking(botId, true);
       }
 
       // ── Decide ───────────────────────────────────────────────────────────
@@ -828,9 +857,17 @@ export function useAutoForgeBot(botId: string) {
         let nextMin = decision.estimated_next_action_minutes || 1.5;
         if (!Number.isFinite(nextMin) || nextMin < 0) nextMin = 1.5;
         // Dry-run: clamp to the user's cadence — nothing is really sent, so
-        // the model's self-pacing only hides decisions and looks stuck.
+        // the model's self-pacing only hides decisions and looks stuck. Also
+        // floor at the effective check floor so the pacing gate stays honest
+        // (no sub-floor spin).
         const cadenceMin = (store.autoForgeAutoCheckIntervalMs || 30000) / 60000;
+        const floorMs = resolveEffectiveCheckFloorMs(
+          store.autoForgeAutoCheckMode,
+          store.autoForgeAutoCheckIntervalMs,
+          store.rateLimitConfig?.minCooldownMs ?? 0,
+        );
         nextMin = Math.min(nextMin, cadenceMin);
+        nextMin = Math.max(nextMin, floorMs / 60000);
         store.setBotAutoForgeNextActionMs(botId, Date.now() + nextMin * 60 * 1000);
         releaseFM();
         return;
@@ -1504,6 +1541,23 @@ export function useAutoForgeBot(botId: string) {
       // when the user asked for maximum engagement).
       if (supercharged) {
         nextMin = Math.min(nextMin, 1.5);
+      } else {
+        // Floor the model-driven next-check interval at the effective check
+        // floor (cadence floor + send min cooldown, whichever is wider). The
+        // model can return a tiny estimated_next_action_minutes (e.g. 0.1 min)
+        // which would set autoForgeNextActionMs 6s out — the cadence gate then
+        // blocks the actual check, but the pacing gate stays open and the 15s
+        // heartbeat spins (flashing "Processing…" every tick). Flooring here
+        // keeps the pacing gate honest so the NEXT CHECK countdown reflects
+        // the real cadence. Mentions/spikes already bypassed the cadence gate
+        // upstream; this only restrains non-urgent pacing. Supercharge is
+        // exempt (the user asked for maximum engagement).
+        const floorMs = resolveEffectiveCheckFloorMs(
+          store.autoForgeAutoCheckMode,
+          store.autoForgeAutoCheckIntervalMs,
+          store.rateLimitConfig?.minCooldownMs ?? 0,
+        );
+        nextMin = Math.max(nextMin, floorMs / 60000);
       }
 
       // A8: Manual activity awareness — delay next AutoForge action if user

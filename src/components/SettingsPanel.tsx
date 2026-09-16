@@ -623,7 +623,7 @@ export function SettingsPanel({
                       : <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />}
                     <span>
                       {trialStatus.enabled
-                        ? `Trial active${trialStatus.endsAt ? ` until ${new Date(trialStatus.endsAt).toLocaleString()}` : ""}${trialStatus.requiresInviteCode ? " · invite code required" : ""}`
+                        ? `Trial active${trialStatus.requiresInviteCode ? " · invite code required" : ""}`
                         : trialStatus.reason === "ENDED"
                           ? "Trial has ended. Add your own API key to continue."
                           : "Trial is currently unavailable."}

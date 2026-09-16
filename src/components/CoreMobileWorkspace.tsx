@@ -100,6 +100,7 @@ export interface CoreMobileWorkspaceProps {
   onManualSnapshot: () => void;
   isVisualCapturing: boolean;
   visualCooldown: boolean;
+  snapDisabled?: boolean;
   smartLevel: number;
   onCycleSmartLevel: () => void;
   visualCaptureInterval: number;
@@ -118,6 +119,7 @@ export function CoreMobileWorkspace(props: {
   onManualSnapshot: () => void;
   isVisualCapturing: boolean;
   visualCooldown: boolean;
+  snapDisabled?: boolean;
   smartLevel: number;
   onCycleSmartLevel: () => void;
   visualCaptureInterval: number;
@@ -349,6 +351,7 @@ export function CoreMobileWorkspace(props: {
           onManualSnapshot={props.onManualSnapshot}
           isVisualCapturing={props.isVisualCapturing}
           visualCooldown={props.visualCooldown}
+          snapDisabled={props.snapDisabled}
         />
         </div>
 
@@ -686,6 +689,7 @@ function MobileContextTab(props: {
   onManualSnapshot: () => void;
   isVisualCapturing: boolean;
   visualCooldown: boolean;
+  snapDisabled?: boolean;
 }) {
   const [streamMinimized, setStreamMinimized] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
@@ -960,21 +964,23 @@ function MobileContextTab(props: {
                     <button
                       type="button"
                       onClick={props.isVisualCapturing ? props.onManualSnapshot : props.onVisualCapture}
-                      disabled={props.isVisualCapturing && props.visualCooldown}
-                      title={props.isVisualCapturing
-                        ? "Analyze the current stream frame"
-                        : "Start capture, then tap SNAP again"}
+                      disabled={props.isVisualCapturing && (props.visualCooldown || props.snapDisabled)}
+                      title={props.snapDisabled
+                        ? "Disabled in Friend Trial (60s auto-loop)"
+                        : props.isVisualCapturing
+                          ? "Analyze the current stream frame"
+                          : "Start capture, then tap SNAP again"}
                       aria-label="Capture a stream snapshot (manual)"
                       className={cn(
                         "h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
-                        props.isVisualCapturing
+                        props.isVisualCapturing && !props.visualCooldown && !props.snapDisabled
                           ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
                           : "bg-white/5 text-gray-400 border-white/10 hover:text-gray-200"
                       )}
                     >
                       <Camera className="w-3 h-3 shrink-0" />
                       <span>Snap</span>
-                      {props.isVisualCapturing && !props.visualCooldown && (
+                      {props.isVisualCapturing && !props.visualCooldown && !props.snapDisabled && (
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
                       )}
                     </button>

@@ -10,7 +10,11 @@
   "vars": {
     "TRIAL_ENABLED": "true",
     "TRIAL_END_AT": "2026-09-17T03:59:59Z",
-    "TRIAL_MODEL": "llama-3.3-70b-versatile",
+    "TRIAL_MODEL": "openai/gpt-oss-120b",
+    // Optional vision-capable Groq model. When set, the Worker accepts
+    // multimodal content (text + image_url) and routes image-bearing
+    // requests to this model. Leave empty to keep the trial text-only.
+    "TRIAL_VISION_MODEL": "qwen/qwen3.6-27b",
     "TRIAL_MAX_OUTPUT_TOKENS": "2048",
     "TRIAL_SESSION_TTL_SECONDS": "10800",
     "TRIAL_REQUIRE_INVITE": "false",

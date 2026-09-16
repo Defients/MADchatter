@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey, getKeys, openAiCompatEndpoint, isOpenAICompatibleProvider, TRIAL_PROVIDER } from "./keys";
+import { trialSupportsVision } from "./trial";
 import { getTwitchSession } from "./twitch";
 import {
   resolveVisionConfig,
@@ -391,9 +392,11 @@ export async function generateChat(params: GenerateChatParams): Promise<any> {
   if (isIndependentVisionActive()) {
     screenshotForRequest = undefined;
   }
-  // Friend Trial is text-only: strip the screenshot so no image leaves the
-  // browser. The trial fetch also strips image parts as defense-in-depth.
-  if (rawProvider === TRIAL_PROVIDER) {
+  // Friend Trial: strip the screenshot only when the Worker does NOT support
+  // vision. When the Worker has a TRIAL_VISION_MODEL configured, the screenshot
+  // is forwarded to the Worker (which routes image-bearing requests to the
+  // vision model). The trial fetch also forwards/strip images as appropriate.
+  if (rawProvider === TRIAL_PROVIDER && !trialSupportsVision()) {
     screenshotForRequest = undefined;
   }
   if (screenshotForRequest && (!params.visualContext || params.visualContext.length < 50)) {

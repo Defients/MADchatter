@@ -35,6 +35,7 @@ const {
   hasMeaningfulContextChange,
   normalizeAutoCheckMode,
   resolveAutoCheckFloorMs,
+  resolveEffectiveCheckFloorMs,
 } = await import("./coreAutoCheck");
 
 let passed = 0;
@@ -203,6 +204,118 @@ testSignal();
 testIntervalCadence();
 testSmartCadence();
 testStatusHelpers();
+
+// ─── Test 6: effective check floor (min cooldown widens the floor) ──────────
+function testEffectiveFloor() {
+  // Smart floor is 30s; a smaller cooldown does not shrink it.
+  assertEq(
+    resolveEffectiveCheckFloorMs("smart", 60_000, 5_000),
+    AUTO_CHECK_SMART_FLOOR_MS,
+    "effective floor never goes below the cadence floor (smart)",
+  );
+  // A larger cooldown widens the floor.
+  assertEq(
+    resolveEffectiveCheckFloorMs("smart", 60_000, 90_000),
+    90_000,
+    "effective floor widens to a larger min cooldown (smart)",
+  );
+  // Interval mode: the cadence floor is the interval; cooldown can widen it.
+  assertEq(
+    resolveEffectiveCheckFloorMs("interval", 30_000, 25_000),
+    30_000,
+    "effective floor uses the cadence interval when cooldown is smaller (interval)",
+  );
+  assertEq(
+    resolveEffectiveCheckFloorMs("interval", 30_000, 120_000),
+    120_000,
+    "effective floor widens to a larger min cooldown (interval)",
+  );
+  // Invalid / missing cooldown falls back to the cadence floor.
+  assertEq(
+    resolveEffectiveCheckFloorMs("smart", 60_000, 0),
+    AUTO_CHECK_SMART_FLOOR_MS,
+    "zero cooldown falls back to the cadence floor",
+  );
+  assertEq(
+    resolveEffectiveCheckFloorMs("smart", 60_000, NaN),
+    AUTO_CHECK_SMART_FLOOR_MS,
+    "NaN cooldown falls back to the cadence floor",
+  );
+}
+
+// ─── Test 7: cadence decision honors min cooldown + nextEligibleMs ──────────
+function testCadenceWithCooldown() {
+  const now = 3_000_000;
+  const lastCheck = now - 10_000; // 10s ago — below the 30s smart floor
+
+  // Without minCooldownMs: smart floor (30s) applies, blocks, nextEligibleMs
+  // is lastCheck + 30s.
+  const blocked = evaluateAutoCheckCadence({
+    mode: "smart", intervalMs: 60_000, now, lastCheckAt: lastCheck,
+    signalsChanged: true,
+  });
+  assertEq(blocked.run, false, "smart mode blocks before the floor");
+  assertEq(blocked.nextEligibleMs, lastCheck + AUTO_CHECK_SMART_FLOOR_MS, "nextEligibleMs = lastCheck + floor");
+
+  // With a 90s min cooldown: the floor widens to 90s, so 10s elapsed still
+  // blocks, and nextEligibleMs is lastCheck + 90s.
+  const wideFloor = evaluateAutoCheckCadence({
+    mode: "smart", intervalMs: 60_000, now, lastCheckAt: lastCheck,
+    signalsChanged: true, minCooldownMs: 90_000,
+  });
+  assertEq(wideFloor.run, false, "min cooldown widens the floor — still blocked at 10s");
+  assertEq(wideFloor.nextEligibleMs, lastCheck + 90_000, "nextEligibleMs reflects the widened floor");
+
+  // Urgent bypasses even the widened floor.
+  const urgent = evaluateAutoCheckCadence({
+    mode: "smart", intervalMs: 60_000, now, lastCheckAt: lastCheck,
+    signalsChanged: true, minCooldownMs: 90_000, urgent: true,
+  });
+  assertEq(urgent.run, true, "urgent bypasses the widened floor");
+  assertEq(urgent.nextEligibleMs, 0, "urgent does not schedule a floor reschedule");
+
+  // Context-based block (smart, no change) has nextEligibleMs = 0 (no time
+  // reschedule — the check should run as soon as context changes).
+  const noChange = evaluateAutoCheckCadence({
+    mode: "smart", intervalMs: 60_000, now: now + 60_000, lastCheckAt: lastCheck,
+    signalsChanged: false,
+  });
+  assertEq(noChange.run, false, "smart mode blocks with no context change");
+  assertEq(noChange.nextEligibleMs, 0, "context-based block does not reschedule the pacing gate");
+
+  // Run case: nextEligibleMs = 0 (no reschedule needed).
+  const run = evaluateAutoCheckCadence({
+    mode: "smart", intervalMs: 60_000, now: now + 60_000, lastCheckAt: lastCheck,
+    signalsChanged: true,
+  });
+  assertEq(run.run, true, "smart mode runs after the floor with a change");
+  assertEq(run.nextEligibleMs, 0, "run case does not populate nextEligibleMs");
+}
+
+// ─── Test 8: computeAutoCheckWindow honors min cooldown ─────────────────────
+function testWindowWithCooldown() {
+  const now = 4_000_000;
+  const lastCheck = now - 10_000;
+
+  // Without minCooldownMs: dueInMs counts down to the 30s smart floor.
+  const base = computeAutoCheckWindow({ mode: "smart", intervalMs: 60_000, lastCheckAt: lastCheck, now });
+  assertEq(base.dueInMs, 20_000, "base window counts down to the smart floor");
+
+  // With a 90s min cooldown: dueInMs counts down to 90s (80s remaining).
+  const wide = computeAutoCheckWindow({ mode: "smart", intervalMs: 60_000, lastCheckAt: lastCheck, now, minCooldownMs: 90_000 });
+  assertEq(wide.dueInMs, 80_000, "widened floor pushes the due time out");
+
+  // Model pacing later than the floor still wins.
+  const modelLater = computeAutoCheckWindow({
+    mode: "smart", intervalMs: 60_000, lastCheckAt: lastCheck, now,
+    nextActionMs: now + 120_000, minCooldownMs: 90_000,
+  });
+  assertEq(modelLater.dueInMs, 120_000, "model pacing later than the floor wins");
+}
+
+testEffectiveFloor();
+testCadenceWithCooldown();
+testWindowWithCooldown();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

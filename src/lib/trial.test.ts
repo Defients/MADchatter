@@ -55,7 +55,8 @@ const {
   TRIAL_PROVIDER, getTrialToken, setTrialSession, clearTrialSession,
   isTrialSessionValid, getTrialWorkerUrl, setTrialWorkerUrl,
   getTrialTurnstileSiteKey, setTrialTurnstileSiteKey, isTrialConfigured,
-  fetchTrialStatus, createTrialSession, createTrialFetch,
+  fetchTrialStatus, createTrialSession, createTrialFetch, trialSupportsVision,
+  resetTrialVisionCapability,
 } = await import("./trial.ts");
 
 // ── Test runner ──────────────────────────────────────────────────────────────
@@ -80,6 +81,7 @@ function reset() {
   mockFetchResponse = { status: 200, body: {} };
   capturedFetchUrl = "";
   capturedFetchInit = null;
+  resetTrialVisionCapability();
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -256,6 +258,69 @@ async function main() {
     });
     const forwarded = JSON.parse(capturedFetchInit.body);
     assert.strictEqual(forwarded.messages[0].content, "plain text");
+  });
+
+  // createTrialFetch — vision-capable (forwards multimodal content)
+  await test("fetchTrialStatus caches supportsVision capability", async () => {
+    reset();
+    setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+    mockFetchResponse = { status: 200, body: { ok: true, trial: { enabled: true, requiresTurnstile: true, requiresInviteCode: false, supportsVision: true } } };
+    assert.strictEqual(trialSupportsVision(), false, "not cached yet");
+    await fetchTrialStatus(getTrialWorkerUrl());
+    assert.strictEqual(trialSupportsVision(), true, "cached after fetch");
+  });
+
+  await test("createTrialFetch forwards multimodal content when vision supported", async () => {
+    reset();
+    setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+    setTrialSession("test-token", Math.floor(Date.now() / 1000) + 3600);
+    // First fetch the status to cache the vision capability.
+    mockFetchResponse = { status: 200, body: { ok: true, trial: { enabled: true, requiresTurnstile: true, requiresInviteCode: false, supportsVision: true } } };
+    await fetchTrialStatus(getTrialWorkerUrl());
+    // Now the chat request should forward images unchanged.
+    mockFetchResponse = { status: 200, body: { choices: [{ message: { content: "I see it" } }] } };
+    const trialFetch = createTrialFetch();
+    await trialFetch("https://friend-trial.placeholder.workers.dev/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: "describe this" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+          ] },
+        ],
+      }),
+    });
+    const forwarded = JSON.parse(capturedFetchInit.body);
+    assert.ok(Array.isArray(forwarded.messages[0].content), "content must remain array when vision supported");
+    assert.strictEqual(forwarded.messages[0].content[0].type, "text");
+    assert.strictEqual(forwarded.messages[0].content[1].type, "image_url");
+    assert.ok(JSON.stringify(forwarded).includes("image_url"), "image data should be forwarded");
+  });
+
+  await test("createTrialFetch strips images when vision not supported", async () => {
+    reset();
+    setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+    setTrialSession("test-token", Math.floor(Date.now() / 1000) + 3600);
+    // No status fetch — vision capability not cached, defaults to false.
+    mockFetchResponse = { status: 200, body: { choices: [{ message: { content: "hi" } }] } };
+    const trialFetch = createTrialFetch();
+    await trialFetch("https://friend-trial.placeholder.workers.dev/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: "describe this" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+          ] },
+        ],
+      }),
+    });
+    const forwarded = JSON.parse(capturedFetchInit.body);
+    assert.strictEqual(typeof forwarded.messages[0].content, "string", "content must be string after stripping");
+    assert.ok(!JSON.stringify(forwarded).includes("image_url"), "no image data should be forwarded");
   });
 
   // createTrialFetch — error handling

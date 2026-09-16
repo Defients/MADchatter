@@ -64,7 +64,8 @@ import { TheForge } from "./TheForge";
 import { VersionBadge } from "./VersionBadge";
 import { PersonaPortrait } from "./PersonaPortrait";
 import { UserAvatar, userDisplayName } from "./UserAvatar";
-import { getActiveProvider, getKeys, getProviderWithKey, setActiveProvider, saveKeys, CUSTOM_OPENAI_PROVIDER } from "../lib/keys";
+import { getActiveProvider, getKeys, getProviderWithKey, setActiveProvider, saveKeys, CUSTOM_OPENAI_PROVIDER, TRIAL_PROVIDER } from "../lib/keys";
+import { isTrialSessionValid as checkTrialSessionValid, fetchTrialStatus, getTrialWorkerUrl } from "../lib/trial";
 import { fetchAvailableModels, testProviderConnection, suggestBaseUrlFromLabel, isPresetOrDefaultUrl, type ConnectionTestResult } from "../lib/customProvider";
 import { checkOllamaHealth, getCachedOllamaHealth, invalidateOllamaHealthCache } from "../lib/ollamaHealth";
 import { toast } from "sonner";
@@ -76,6 +77,7 @@ import { useMediaQuery, useStudioAvailable, useEffectiveMode } from "../hooks/us
 import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
 import { ThemedTooltip } from "./ui/tooltip";
 import { AutoCheckControls } from "./AutoCheckControls";
+import { CoreTrialCard } from "./CoreTrialCard";
 import { fireConfetti } from "../lib/confetti";
 import logoUrl from "../../madchatter-logo1.png";
 
@@ -100,6 +102,8 @@ interface CoreWorkspaceProps {
   onManualSnapshot: () => void;
   isVisualCapturing: boolean;
   visualCooldown: boolean;
+  /** When true, the manual snapshot (SNAP) button is disabled (e.g. Friend Trial). */
+  snapDisabled?: boolean;
   // Visual auto-capture mode controls
   smartLevel: number;
   onCycleSmartLevel: () => void;
@@ -592,14 +596,14 @@ export function CoreWorkspace(props: CoreWorkspaceProps) {
                               Visual
                             </span>
                             <span className="flex items-center gap-1">
-                              <ThemedTooltip content={!readiness.aiReady ? "Set up an AI provider first (Step 3) — vision needs a model to analyze frames" : props.isVisualCapturing ? (props.visualCooldown ? "Cooldown active…" : "Snapshot the current stream frame") : "Start capture from the stream panel first"}>
+                              <ThemedTooltip content={!readiness.aiReady ? "Set up an AI provider first (Step 3) — vision needs a model to analyze frames" : props.snapDisabled ? "Disabled in Friend Trial (60s auto-loop)" : props.isVisualCapturing ? (props.visualCooldown ? "Cooldown active…" : "Snapshot the current stream frame") : "Start capture from the stream panel first"}>
                                 <button
                                   type="button"
                                   onClick={() => props.onManualSnapshot()}
-                                  disabled={!readiness.aiReady || !props.isVisualCapturing || props.visualCooldown}
+                                  disabled={!readiness.aiReady || !props.isVisualCapturing || props.visualCooldown || props.snapDisabled}
                                   className={cn(
                                     "h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all",
-                                    readiness.aiReady && props.isVisualCapturing && !props.visualCooldown
+                                    readiness.aiReady && props.isVisualCapturing && !props.visualCooldown && !props.snapDisabled
                                       ? "text-blue-400 bg-blue-500/15 hover:bg-blue-500/25"
                                       : "text-gray-600 bg-white/5 cursor-not-allowed",
                                   )}
@@ -1505,6 +1509,9 @@ function CoreLaunchpadHero(props: {
   const setPersonaChosen = useAppStore((s) => s.setPersonaChosen);
   const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const authTick = useAppStore((s) => s.authTick);
+  // Friend Trial: re-evaluate when the trial session is created/cleared
+  // (same tab or another tab via the storage listener).
+  const trialTick = useAppStore((s) => s.trialTick);
   // getActiveProvider() reads localStorage — authTick re-runs this after
   // saveKeys/setActiveProvider so provider UI stays fresh.
   const activeProvider = getActiveProvider();
@@ -1520,6 +1527,44 @@ function CoreLaunchpadHero(props: {
   const [autoForgeStepDone, setAutoForgeStepDone] = useState(false);
   // Audio step (optional): user can skip or complete audio capture to advance
   const [audioStepDone, setAudioStepDone] = useState(false);
+
+  // ── Friend Trial auto-select ──────────────────────────────────────────
+  // When a valid trial session exists, auto-select the trial as the active
+  // provider so the AI step is skipped (the trial counts as a configured
+  // provider via getApiKey("trial")). This persists until the user
+  // explicitly deactivates the trial — the session lives in sessionStorage,
+  // so it survives page reloads within the same tab. If the user has a BYOK
+  // provider already active AND configured, we don't override their choice
+  // unless the trial was previously selected (saved as active provider).
+  useEffect(() => {
+    if (!checkTrialSessionValid()) return;
+    const current = getActiveProvider();
+    // Already on trial — nothing to do.
+    if (current === TRIAL_PROVIDER) return;
+    // If the saved provider is trial (user previously chose it) but the
+    // active provider drifted (e.g. a BYOK auto-select on another mount),
+    // restore it.
+    // If no BYOK provider has a key, auto-select the trial so the user
+    // isn't stuck on an unconfigured provider.
+    const byok = getProviderWithKey();
+    if (!byok || byok === TRIAL_PROVIDER) {
+      setActiveProvider(TRIAL_PROVIDER);
+      useAppStore.getState().bumpAuthTick();
+    }
+  }, [trialTick, authTick]);
+
+  // ── Friend Trial vision capability cache ──────────────────────────────
+  // Fetch the trial status on mount/activation so trialSupportsVision() is
+  // populated before the first vision request. Without this, the first
+  // 60s vision capture might strip images (text-only fallback) because the
+  // capability cache is empty.
+  useEffect(() => {
+    if (!checkTrialSessionValid()) return;
+    const url = getTrialWorkerUrl();
+    if (!url) return;
+    fetchTrialStatus(url).catch(() => {});
+  }, [trialTick, authTick]);
+
   // Forge step (skippable): user can forge OR explicitly skip to AutoForge
   const [forgeStepDone, setForgeStepDone] = useState(false);
 
@@ -1981,6 +2026,9 @@ function CoreLaunchpadHero(props: {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* Friend Trial — no API key needed, server-held Groq key */}
+              <CoreTrialCard isActive={activeProvider === TRIAL_PROVIDER} />
 
               {/* Cloud providers */}
               <div className="p-4 rounded-xl border border-white/5 bg-[#0a0a0f]">

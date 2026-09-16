@@ -71,7 +71,8 @@ import type { SentimentLabel } from "../types";
 import { visionRequest } from "../lib/ai";
 import { isQueueTimeout, isSchedulerCancellation } from "../lib/aiScheduler";
 import { switchChannel } from "../lib/channelSwitch";
-import { getActiveProvider } from "../lib/keys";
+import { getActiveProvider, TRIAL_PROVIDER } from "../lib/keys";
+import { trialSupportsVision } from "../lib/trial";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
@@ -275,6 +276,11 @@ export function ForgeLayout() {
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
+  // Reactive ticks so the component re-evaluates the active provider when it
+  // changes (setActiveProvider bumps authTick; trial session changes bump
+  // trialTick). Without these, getActiveProvider() would be a stale closure.
+  const authTick = useAppStore((s) => s.authTick);
+  const trialTick = useAppStore((s) => s.trialTick);
   // effectiveMode is the mode that actually renders (preferred mode clamped
   // to CORE when STUDIO is unavailable on the current viewport). Using this
   // instead of the raw preferred `interfaceMode` ensures a narrow viewport
@@ -389,6 +395,19 @@ export function ForgeLayout() {
   const [visualCooldown, setVisualCooldown] = useState(false);
   const visualCooldownRef = useRef<number | null>(null);
   const handleManualCaptureRef = useRef<(forceStreamCrop?: boolean) => void>(() => {});
+
+  // Friend Trial detection (reactive via authTick/trialTick). When the trial
+  // is the active provider, Vision Snapshot is forced to a 60s loop and the
+  // Stream Embed SNAP (manual snapshot) is disabled — the trial's vision
+  // cadence is fixed, not user-controlled.
+  const isTrialActive = getActiveProvider() === TRIAL_PROVIDER;
+  // When the trial is active, the effective interval is always 60s regardless
+  // of the user's saved preference. The saved preference is preserved so it
+  // restores when the user switches away from the trial.
+  const effectiveVisualCaptureInterval = isTrialActive ? 60 : visualCaptureInterval;
+  // Manual snapshot is disabled in trial mode — the trial's vision runs on the
+  // fixed 60s auto-loop only.
+  const trialSnapDisabled = isTrialActive;
   // Refs updated by CoreWorkspace when the inline Visual panel is hidden/shown.
   // When hidden, auto-capture pauses (no point capturing for a hidden panel).
   const visualInlineHiddenRef = useRef(false);
@@ -477,16 +496,17 @@ export function ForgeLayout() {
     }
     if (visualInlineHiddenRef.current) return;
     if (!visualAutoCapture || !windowSelected) return;
-    setVisualCountdown(visualCaptureInterval);
+    // Use the effective interval — forced to 60s when Friend Trial is active.
+    setVisualCountdown(effectiveVisualCaptureInterval);
     const tickId = setInterval(() => {
-      setVisualCountdown((prev) => (prev <= 1 ? visualCaptureInterval : prev - 1));
+      setVisualCountdown((prev) => (prev <= 1 ? effectiveVisualCaptureInterval : prev - 1));
     }, 1000);
     const id = setInterval(() => {
       handleCaptureWindow();
-      setVisualCountdown(visualCaptureInterval);
-    }, visualCaptureInterval * 1000);
+      setVisualCountdown(effectiveVisualCaptureInterval);
+    }, effectiveVisualCaptureInterval * 1000);
     return () => { clearInterval(tickId); clearInterval(id); };
-  }, [visualAutoCapture, visualCaptureInterval, windowSelected]);
+  }, [visualAutoCapture, effectiveVisualCaptureInterval, windowSelected, authTick, trialTick]);
 
   // One-time notice when auto-capture is paused due to Ollama
   const ollamaVisualNoticeRef = useRef(false);
@@ -502,6 +522,15 @@ export function ForgeLayout() {
   }, [visualAutoCapture, windowSelected]);
 
   const handleManualCapture = (forceStreamCrop = false) => {
+    // Friend Trial: manual snapshot (Stream Embed SNAP) is disabled — the
+    // trial's vision runs on the fixed 60s auto-loop only.
+    if (trialSnapDisabled) {
+      toast.info("Manual snapshot unavailable in Friend Trial", {
+        description: "Vision Snapshot runs on a fixed 60s loop in Friend Trial mode.",
+        duration: 4000,
+      });
+      return;
+    }
     if (visualCooldown) return;
     if (!windowSelected) {
       setVisualFlashRed(true);
@@ -1935,8 +1964,10 @@ export function ForgeLayout() {
       const { delta, imageData, isFirstFrame } = computeFrameDelta(canvas, prevFrameDataRef.current);
       prevFrameDataRef.current = imageData;
 
-      // Smart capture: dynamically adjust interval based on scene change rate
-      if (smartCapture && !isManual) {
+      // Smart capture: dynamically adjust interval based on scene change rate.
+      // Skip when Friend Trial is active — the trial's vision cadence is fixed
+      // at 60s and must not be adjusted by smart capture.
+      if (smartCapture && !isManual && !isTrialActive) {
         const cfg = SMART_LEVELS[smartLevel];
         let nextInterval = visualCaptureInterval;
         if (delta > cfg.highDelta) {
@@ -2547,6 +2578,7 @@ export function ForgeLayout() {
           onManualSnapshot={handleManualCapture}
           isVisualCapturing={windowSelected}
           visualCooldown={visualCooldown}
+          snapDisabled={trialSnapDisabled}
           tabCaptureMode={tabCaptureMode}
           onChatModeChange={setStreamChatActive}
           embedded={embedded}
@@ -2573,9 +2605,10 @@ export function ForgeLayout() {
             onManualSnapshot={handleManualCapture}
             isVisualCapturing={windowSelected}
             visualCooldown={visualCooldown}
+            snapDisabled={trialSnapDisabled}
             smartLevel={smartLevel}
             onCycleSmartLevel={cycleSmartLevel}
-            visualCaptureInterval={visualCaptureInterval}
+            visualCaptureInterval={effectiveVisualCaptureInterval}
             setVisualCaptureInterval={setVisualCaptureInterval}
           />
         ) : (
@@ -2596,9 +2629,10 @@ export function ForgeLayout() {
             onManualSnapshot={handleManualCapture}
             isVisualCapturing={windowSelected}
             visualCooldown={visualCooldown}
+            snapDisabled={trialSnapDisabled}
             smartLevel={smartLevel}
             onCycleSmartLevel={cycleSmartLevel}
-            visualCaptureInterval={visualCaptureInterval}
+            visualCaptureInterval={effectiveVisualCaptureInterval}
             setVisualCaptureInterval={setVisualCaptureInterval}
             onVisualInlineHiddenChange={(hidden) => { visualInlineHiddenRef.current = hidden; }}
           />
@@ -3871,12 +3905,12 @@ export function ForgeLayout() {
                       </button>
                     </ThemedTooltip>
                     {windowSelected && (
-                      <ThemedTooltip content={visualCooldown ? "Cooldown active…" : "Snapshot now"}>
+                      <ThemedTooltip content={trialSnapDisabled ? "Disabled in Friend Trial (60s auto-loop)" : visualCooldown ? "Cooldown active…" : "Snapshot now"}>
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); handleManualCapture(); }}
                           onMouseDown={(e) => e.stopPropagation()}
-                          disabled={visualCooldown}
+                          disabled={visualCooldown || trialSnapDisabled}
                           className="h-5 px-1.5 flex items-center gap-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all disabled:opacity-50 text-blue-400 bg-blue-500/15 hover:bg-blue-500/25"
                           aria-label="Take snapshot now"
                         >

@@ -27,6 +27,13 @@ export interface TrialVars {
   TRIAL_END_AT: string;
   /** Server-controlled Groq model id (e.g. "llama-3.3-70b-versatile"). */
   TRIAL_MODEL: string;
+  /**
+   * Optional server-controlled Groq vision model id (e.g.
+   * "llama-3.2-90b-vision-preview"). When set, the Worker accepts multimodal
+   * content (text + image_url parts) and routes image-bearing requests to this
+   * model. When unset, the Worker remains text-only and rejects image arrays.
+   */
+  TRIAL_VISION_MODEL: string;
   /** Hard ceiling on completion tokens the Worker will forward upstream. */
   TRIAL_MAX_OUTPUT_TOKENS: string;
   /** Trial session lifetime in seconds. */
@@ -92,6 +99,10 @@ export interface TrialStatusResponse {
     requiresInviteCode: boolean;
     /** Optional user-facing model/provider label. */
     modelLabel?: string;
+    /** True when the Worker is configured with a vision-capable model. */
+    supportsVision?: boolean;
+    /** Optional user-facing vision model label. */
+    visionModelLabel?: string;
   };
 }
 

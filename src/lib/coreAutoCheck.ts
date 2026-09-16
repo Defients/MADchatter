@@ -142,6 +142,31 @@ export function resolveAutoCheckFloorMs(mode: AutoCheckMode, intervalMs: number)
   return mode === "interval" ? clampAutoCheckIntervalMs(intervalMs) : AUTO_CHECK_SMART_FLOOR_MS;
 }
 
+/**
+ * The effective minimum gap between two *non-urgent* AutoForge evaluations.
+ *
+ * Combines the user's Auto-Check cadence floor with their send rate-limit min
+ * cooldown. Rationale: if the bot cannot send more often than every N seconds,
+ * evaluating more often than that only burns tokens/GPU on checks that can't
+ * act anyway (mentions and activity spikes bypass this — they always proceed).
+ *
+ * This is the single source of truth the loops use to (a) floor the
+ * model-driven next-check schedule, and (b) reschedule the pacing gate when
+ * the cadence gate withholds a check — so the 15s heartbeat can no longer spin
+ * the loop (flashing "Processing…" every tick) while the floor holds.
+ */
+export function resolveEffectiveCheckFloorMs(
+  mode: AutoCheckMode,
+  intervalMs: number,
+  minCooldownMs: number,
+): number {
+  const cadenceFloor = resolveAutoCheckFloorMs(mode, intervalMs);
+  const cooldown = typeof minCooldownMs === "number" && Number.isFinite(minCooldownMs) && minCooldownMs > 0
+    ? minCooldownMs
+    : 0;
+  return Math.max(cadenceFloor, cooldown);
+}
+
 export interface AutoCheckCadenceDecision {
   /** True when the loop may spend a model evaluation now. */
   run: boolean;
@@ -149,6 +174,13 @@ export interface AutoCheckCadenceDecision {
    *  check — the UI can honestly say "new context queued". */
   armed: boolean;
   reason: string;
+  /** Timestamp of the next time a non-urgent evaluation becomes eligible
+   *  (`lastCheckAt + effectiveFloorMs`). Populated only for the time-based
+   *  floor block — the loops use it to reschedule the pacing gate so the
+   *  15s heartbeat doesn't spin (flashing "Processing…" every tick) while
+   *  the floor withholds. `0` when the block is context-based (smart mode,
+   *  no change) or when the check is allowed to run. */
+  nextEligibleMs: number;
 }
 
 export interface AutoCheckCadenceArgs {
@@ -162,14 +194,22 @@ export interface AutoCheckCadenceArgs {
   signalsChanged: boolean;
   /** Mention or activity spike — always takes priority over pacing. */
   urgent?: boolean;
+  /** Send rate-limit min cooldown (ms). When greater than the cadence floor,
+   *  the effective floor widens to it: there's no value evaluating faster
+   *  than the bot is allowed to act. Urgent checks bypass this. Optional for
+   *  backward compatibility (callers/tests that omit it get the cadence-only
+   *  floor, preserving existing behavior). */
+  minCooldownMs?: number;
 }
 
 export function evaluateAutoCheckCadence(args: AutoCheckCadenceArgs): AutoCheckCadenceDecision {
   const mode = normalizeAutoCheckMode(args.mode);
-  const floorMs = resolveAutoCheckFloorMs(mode, args.intervalMs);
+  const floorMs = args.minCooldownMs && args.minCooldownMs > 0
+    ? resolveEffectiveCheckFloorMs(mode, args.intervalMs, args.minCooldownMs)
+    : resolveAutoCheckFloorMs(mode, args.intervalMs);
 
   if (args.urgent) {
-    return { run: true, armed: false, reason: "mention or activity spike" };
+    return { run: true, armed: false, reason: "mention or activity spike", nextEligibleMs: 0 };
   }
 
   const last = args.lastCheckAt;
@@ -178,21 +218,30 @@ export function evaluateAutoCheckCadence(args: AutoCheckCadenceArgs): AutoCheckC
     : Infinity;
 
   if (elapsed < floorMs) {
+    // Time-based floor block: the next eligible moment is deterministic
+    // (lastCheck + floor). Return it so the loop can reschedule the pacing
+    // gate and stop the 15s heartbeat from spinning while the floor holds.
+    const base = typeof last === "number" && last > 0 ? last : args.now;
     return {
       run: false,
       armed: args.signalsChanged,
       reason: `cadence floor (${formatAutoCheckInterval(floorMs)}) not reached`,
+      nextEligibleMs: base + floorMs,
     };
   }
 
   if (mode === "smart" && !args.signalsChanged) {
-    return { run: false, armed: false, reason: "smart mode: no new context" };
+    // Context-based block (no time floor): the check should run as soon as
+    // context changes, so do NOT reschedule the pacing gate forward — leave
+    // nextEligibleMs at 0 and let the next heartbeat re-evaluate cheaply.
+    return { run: false, armed: false, reason: "smart mode: no new context", nextEligibleMs: 0 };
   }
 
   return {
     run: true,
     armed: false,
     reason: mode === "smart" ? "smart mode: new context detected" : "interval elapsed",
+    nextEligibleMs: 0,
   };
 }
 
@@ -245,9 +294,11 @@ export interface AutoCheckWindow {
  * running.
  */
 export function computeAutoCheckWindow(
-  args: { mode: AutoCheckMode; intervalMs: number; lastCheckAt: number; now: number; nextActionMs?: number },
+  args: { mode: AutoCheckMode; intervalMs: number; lastCheckAt: number; now: number; nextActionMs?: number; minCooldownMs?: number },
 ): AutoCheckWindow {
-  const floorMs = resolveAutoCheckFloorMs(args.mode, args.intervalMs);
+  const floorMs = args.minCooldownMs && args.minCooldownMs > 0
+    ? resolveEffectiveCheckFloorMs(args.mode, args.intervalMs, args.minCooldownMs)
+    : resolveAutoCheckFloorMs(args.mode, args.intervalMs);
   const last = args.lastCheckAt;
   const elapsed = typeof last === "number" && Number.isFinite(last) && last > 0 && last <= args.now
     ? args.now - last
