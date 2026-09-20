@@ -1002,6 +1002,8 @@ export default function App() {
                   </CommandItem>
                 </CommandGroup>
                 <CommandGroup heading="Help" className="text-gray-400 border-t border-white/[0.04] pt-2">
+                  {!isMobile && (
+                  <>
                   <CommandItem onSelect={() => { useAppStore.getState().setInterfaceMode('core'); setOpenCommand(false); playSfx('palette_select'); toast.success('Switched to Core Mode'); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
                     Switch to Core Mode
                   </CommandItem>
@@ -1014,6 +1016,8 @@ export default function App() {
                   >
                     Switch to Studio Mode
                   </CommandItem>
+                  </>
+                  )}
                   <CommandItem onSelect={() => { setOpenCommand(false); playSfx('palette_select'); window.dispatchEvent(new CustomEvent('welcome-open')); }} className="text-white aria-selected:bg-white/10 aria-selected:text-white cursor-pointer py-2.5">
                     Reopen Welcome Screen
                   </CommandItem>
@@ -1086,9 +1090,9 @@ export default function App() {
       {/* No separate first-run greeting: the CORE workspace hero (brand,
           tagline, channel input front and center) is the first-run surface. */}
       <WelcomeOverlay />
-      <ModeWelcomeOverlay />
-      <StudioDiscoveryOverlay />
-      <StudioGateOverlay />
+      {!isMobile && <ModeWelcomeOverlay />}
+      {!isMobile && <StudioDiscoveryOverlay />}
+      {!isMobile && <StudioGateOverlay />}
       <CoreActivationCelebration />
       {!isMobile && <Suspense fallback={null}><TutorialWalkthrough /></Suspense>}
       {!isMobileOrTouch && cursorTrailEnabled && <RageCursor />}

@@ -38,6 +38,16 @@ assert.equal(shouldShowMobileFriendTrial({
   sessionValid: false,
 }), true, "configured and authoritatively enabled trial is visible");
 
+// BYOK selection is intentionally absent from the visibility contract. An
+// enabled Friend Trial stays first in the list whether another provider is
+// configured, selected, or neither.
+assert.equal(shouldShowMobileFriendTrial({
+  workerConfigured: true,
+  turnstileConfigured: true,
+  status: enabled,
+  sessionValid: false,
+}), true, "enabled trial visibility is independent of BYOK provider state");
+
 assert.equal(shouldShowMobileFriendTrial({
   workerConfigured: true,
   turnstileConfigured: true,

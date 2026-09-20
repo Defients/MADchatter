@@ -41,6 +41,7 @@ export function MobileFriendTrialCard() {
   const siteKey = getTrialTurnstileSiteKey();
   const sessionValid = isTrialSessionValid();
   const isActive = sessionValid && getActiveProvider() === TRIAL_PROVIDER;
+  const recommendedForNewUser = !sessionValid && !getProviderWithKey();
 
   useEffect(() => {
     if (!workerUrl || trialStatus) return;
@@ -193,8 +194,16 @@ export function MobileFriendTrialCard() {
         sessionValid
           ? "border-amber-400/35 bg-gradient-to-br from-amber-500/[0.10] to-purple-500/[0.05]"
           : "border-amber-500/25 bg-gradient-to-br from-amber-500/[0.07] to-cyan-500/[0.03]",
+        recommendedForNewUser && "border-amber-300/50 ring-1 ring-amber-400/20 shadow-[0_0_24px_rgba(251,191,36,0.10)]",
       )}
     >
+      {recommendedForNewUser && (
+        <div className="mb-2 flex justify-end">
+          <span className="rounded-full border border-cyan-400/25 bg-cyan-400/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.14em] text-cyan-200">
+            Recommended first step
+          </span>
+        </div>
+      )}
       <div className="flex items-start gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-300">
           {sessionValid ? <Check className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}

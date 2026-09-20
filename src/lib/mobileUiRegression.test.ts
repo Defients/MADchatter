@@ -6,11 +6,13 @@ const mobilePath = fileURLToPath(new URL("../components/CoreMobileWorkspace.tsx"
 const visionPath = fileURLToPath(new URL("../components/VisualHistoryOverlay.tsx", import.meta.url));
 const welcomePath = fileURLToPath(new URL("../components/MobileWelcomeOverlay.tsx", import.meta.url));
 const trialPath = fileURLToPath(new URL("../components/MobileFriendTrialCard.tsx", import.meta.url));
+const appPath = fileURLToPath(new URL("../App.tsx", import.meta.url));
 const forgeLayoutPath = fileURLToPath(new URL("../components/ForgeLayout.tsx", import.meta.url));
 const mobile = readFileSync(mobilePath, "utf8");
 const vision = readFileSync(visionPath, "utf8");
 const welcome = readFileSync(welcomePath, "utf8");
 const trial = readFileSync(trialPath, "utf8");
+const app = readFileSync(appPath, "utf8");
 const forgeLayout = readFileSync(forgeLayoutPath, "utf8");
 
 assert.match(mobile, /R34lInlineDetails showDesktopShortcutHint=\{false\}/, "mobile suppresses desktop R34L shortcut hint");
@@ -23,6 +25,9 @@ assert.match(mobile, /<MobileWelcomeOverlay onDismissToTuning=\{dismissWelcomeTo
 assert.match(forgeLayout, /interfaceMode === "core"[\s\S]*isMobile \?[\s\S]*<CoreMobileWorkspace/, "mobile onboarding remains scoped to mobile CORE");
 assert.match(mobile, /acknowledgeMobileWelcome\(\)[\s\S]*setMobileTab\("tuning"\)[\s\S]*scrollTop = 0/, "both welcome actions share the persisted Tuning-at-top handoff");
 assert.doesNotMatch(mobile, />\s*Welcome\s*</, "Welcome is not added to the mobile tab navigation");
+assert.match(app, /!isMobile && <ModeWelcomeOverlay \/>/, "mobile enters its dedicated workspace without the CORE/STUDIO picker");
+assert.match(app, /!isMobile && <StudioDiscoveryOverlay \/>/, "mobile never receives the later Studio promotion");
+assert.match(app, /!isMobile && <StudioGateOverlay \/>/, "mobile never receives the Studio gate");
 assert.ok(
   mobile.indexOf("<MobileFriendTrialCard />") < mobile.indexOf("USABLE_CLOUD_PROVIDERS.map"),
   "Friend Trial is rendered before normal mobile providers",
@@ -39,6 +44,8 @@ assert.match(trial, /setTrialSession\(result\.token, result\.expiresAt\)/, "mobi
 assert.match(trial, /setActiveProvider\(TRIAL_PROVIDER\)/, "mobile trial activates the canonical provider");
 assert.match(trial, /bumpTrialTick\(\)/, "mobile trial invalidates readiness through trialTick");
 assert.match(trial, /activatingRef\.current/, "mobile trial guards against duplicate activation taps");
+assert.match(trial, /recommendedForNewUser[\s\S]*Recommended first step/, "Friend Trial is visibly highlighted for new provider users");
+assert.match(trial, /const visible = shouldShowMobileFriendTrial\(\{[\s\S]*workerConfigured:[\s\S]*turnstileConfigured:[\s\S]*status:[\s\S]*sessionValid,[\s\S]*\}\)/, "Friend Trial visibility does not depend on the selected BYOK provider");
 assert.match(trial, /trialStatus\?\.requiresInviteCode/, "invite input follows authoritative status");
 assert.doesNotMatch(trial, /Worker URL|Turnstile Site Key|setTrialWorkerUrl|setTrialTurnstileSiteKey/, "compact card exposes no infrastructure controls");
 assert.doesNotMatch(trial, /saveKeys\(/, "trial activation and deactivation never mutate BYOK credentials");
