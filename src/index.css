@@ -346,13 +346,18 @@
 
   /* Mobile slider touch ergonomics — large hit area and comfortable thumb */
   input[type="range"].mobile-slider {
-    height: 40px;
+    height: 44px;
     -webkit-appearance: none;
     appearance: none;
     background: transparent;
     cursor: pointer;
     touch-action: pan-y;
     width: 100%;
+  }
+  input[type="range"].mobile-slider:focus-visible {
+    outline: 2px solid rgba(34, 211, 238, 0.75);
+    outline-offset: 2px;
+    border-radius: 9999px;
   }
   input[type="range"].mobile-slider::-webkit-slider-runnable-track {
     height: 6px;
@@ -376,6 +381,27 @@
     box-shadow: 0 0 10px rgba(192, 132, 252, 0.6);
   }
   input[type="range"].mobile-slider-amber::-webkit-slider-thumb {
+    background: #fbbf24;
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
+  }
+  input[type="range"].mobile-slider::-moz-range-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  input[type="range"].mobile-slider::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #f97316;
+    box-shadow: 0 0 10px rgba(249, 115, 22, 0.6);
+    border: 2px solid #ffffff;
+  }
+  input[type="range"].mobile-slider-purple::-moz-range-thumb {
+    background: #c084fc;
+    box-shadow: 0 0 10px rgba(192, 132, 252, 0.6);
+  }
+  input[type="range"].mobile-slider-amber::-moz-range-thumb {
     background: #fbbf24;
     box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
   }

@@ -15,6 +15,7 @@ import { useEffectiveMode } from '../hooks/useMediaQuery';
 import { isDecisionPayloadSent } from '../lib/autoForgeCore';
 import { useNowTick } from '../hooks/useNowTick';
 import { ParticipationControl } from './ParticipationControl';
+import { mergeAutoForgeDecisionHistory } from '../lib/autoForgeHistory';
 
 // ─── Next Check color thresholds ───────────────────────────────────────────
 // Short = hot/green (about to fire), long = cool/red (calm wait).
@@ -211,7 +212,10 @@ export function AutoForgeHUD() {
   // chronological list so Q/E can page across all bots.
   let effectiveDecision = lastAutoForgeDecision;
   let decisionBot: Bot | null = null;
-  let mergedHistory: { decision: NonNullable<typeof lastAutoForgeDecision>; bot: Bot | null }[] = [];
+  const mergedHistory = mergeAutoForgeDecisionHistory(
+    autoForgeDecisionHistory ?? [],
+    multiBotActive ? activeBots : [],
+  );
   if (multiBotActive && activeBots.length > 0) {
     let bestTs = -1;
     for (const b of activeBots) {
@@ -222,13 +226,7 @@ export function AutoForgeHUD() {
         effectiveDecision = d;
         decisionBot = b;
       }
-      for (const hd of b.runtime.autoForgeDecisionHistory) {
-        if (hd) mergedHistory.push({ decision: hd, bot: b });
-      }
     }
-    mergedHistory.sort((a, b) => (a.decision.timestamp ?? 0) - (b.decision.timestamp ?? 0));
-  } else {
-    mergedHistory = (autoForgeDecisionHistory ?? []).map((d) => ({ decision: d, bot: null }));
   }
 
   // Apply the pagination offset. Offset 0 = most recent; higher = older.

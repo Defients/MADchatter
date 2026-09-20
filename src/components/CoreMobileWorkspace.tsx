@@ -32,6 +32,8 @@ import {
   LogIn,
   LogOut,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   MonitorUp,
   StopCircle,
@@ -68,6 +70,7 @@ import { getPlatformSendFn } from "../lib/platformSend";
 import { refineSuggestion, visionRequest } from "../lib/ai";
 import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import { R34lInlineDetails } from "./R34lReadout";
+import { MobileIntentRange } from "./MobileIntentRange";
 import { perception, classifyVisionError } from "../lib/perceptionLiveness";
 import { fetchStreamThumbnailDataUrl } from "../lib/streamThumbnail";
 import { cn } from "../lib/utils";
@@ -81,6 +84,14 @@ import { AutoCheckControls } from "./AutoCheckControls";
 import { UserAvatar, userDisplayName } from "./UserAvatar";
 import { TheForge } from "./TheForge";
 import { RoomReadCard } from "./RoomReadCard";
+import { mergeAutoForgeDecisionHistory, navigateAutoForgeHistory, resolveAutoForgeHistorySelection } from "../lib/autoForgeHistory";
+import {
+  collapseMobileProviderDisclosure,
+  isAdaptiveLengthPreference,
+  isMobileLengthOptionActive,
+  toggleMobileLengthPreference,
+  type MobileLengthOption,
+} from "../lib/mobileControls";
 import logoUrl from "../../madchatter-logo1.png";
 
 // Color maps for sentiment
@@ -134,6 +145,10 @@ export function CoreMobileWorkspace(props: {
   const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
   const [chatDraft, setChatDraft] = useState("");
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
+  // null follows the newest entry. A key pins the page the operator chose, so
+  // a new decision cannot yank an intentional historical view back to latest.
+  const [selectedTelemetryHistoryKey, setSelectedTelemetryHistoryKey] = useState<string | null>(null);
+  const [sendingDecisionKeys, setSendingDecisionKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   // ─── Collapsible telemetry strip ───────────────────────────────────────────
   // The strip sits directly above the tab bar, so its height is the most
@@ -227,6 +242,7 @@ export function CoreMobileWorkspace(props: {
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
   const { decision: lastAutoForgeDecision, bot: lastDecisionBot } = useEffectiveAutoForgeDecision();
+  const autoForgeDecisionHistory = useAppStore((s) => s.autoForgeDecisionHistory);
   const autoForgeNextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
   // Shared app clock (hooks/useNowTick).
   const now = useNowTick();
@@ -263,6 +279,31 @@ export function CoreMobileWorkspace(props: {
     () => (multiBotEnabled ? bots.filter((b) => b.active && b.session) : []),
     [multiBotEnabled, bots]
   );
+  const mergedDecisionHistory = useMemo(
+    () => mergeAutoForgeDecisionHistory(
+      autoForgeDecisionHistory,
+      multiBotActive ? activeBots : [],
+    ),
+    [autoForgeDecisionHistory, multiBotActive, activeBots],
+  );
+  const telemetryHistorySelection = resolveAutoForgeHistorySelection(
+    mergedDecisionHistory,
+    selectedTelemetryHistoryKey,
+  );
+  const selectedTelemetryEntry = telemetryHistorySelection.entry;
+  const telemetryDecision = selectedTelemetryEntry?.decision ?? lastAutoForgeDecision;
+  const telemetryDecisionBot = selectedTelemetryEntry?.bot ?? lastDecisionBot;
+  const telemetryDecisionKey = selectedTelemetryEntry?.key
+    ?? `effective:${telemetryDecisionBot?.id ?? "legacy"}:${telemetryDecision?.timestamp ?? 0}:${telemetryDecision?.decision ?? "none"}`;
+
+  const setDecisionSending = useCallback((key: string, sending: boolean) => {
+    setSendingDecisionKeys((current) => {
+      const next = new Set(current);
+      if (sending) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
 
   return (
     <div className="flex flex-col h-dvh w-full bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-10 select-text">
@@ -462,7 +503,10 @@ export function CoreMobileWorkspace(props: {
           </button>
           <button
             type="button"
-            onClick={() => setTelemetryExpanded((v) => !v)}
+            onClick={() => {
+              if (!telemetryExpanded) setSelectedTelemetryHistoryKey(null);
+              setTelemetryExpanded(!telemetryExpanded);
+            }}
             className="flex-1 h-8 px-1.5 flex items-center justify-between text-[11px] hover:bg-white/[0.02] transition-colors min-w-0"
             aria-expanded={telemetryExpanded}
             aria-label="Toggle system telemetry"
@@ -542,34 +586,74 @@ export function CoreMobileWorkspace(props: {
                 </span>
               </div>
 
-              {/* Last decision if available */}
-              {lastAutoForgeDecision ? (
-                <div className="bg-black/40 rounded-lg p-2 border border-white/5 space-y-1">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="text-orange-400 font-bold uppercase">
-                      Decision: {lastAutoForgeDecision.decision}
-                      {lastDecisionBot && (
-                        <span className="text-purple-300 font-mono normal-case"> @{lastDecisionBot.session?.username ?? lastDecisionBot.label}</span>
+              {/* Chronological decision history shared with the desktop HUD. */}
+              {telemetryDecision ? (
+                <div className="bg-black/40 rounded-lg p-2 border border-white/5 space-y-1.5 min-w-0">
+                  {mergedDecisionHistory.length > 0 && (
+                    <div className="grid grid-cols-[44px_1fr_44px] items-center gap-1 border-b border-white/5 pb-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTelemetryHistoryKey(navigateAutoForgeHistory(
+                          mergedDecisionHistory,
+                          telemetryHistorySelection.index,
+                          "previous",
+                        ))}
+                        disabled={telemetryHistorySelection.index <= 0}
+                        aria-label="Previous AutoForge decision"
+                        className="touch-target inline-flex items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/70"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-center text-[10px] text-gray-400 font-mono" aria-live="polite">
+                        {telemetryHistorySelection.index + 1} / {mergedDecisionHistory.length}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTelemetryHistoryKey(navigateAutoForgeHistory(
+                          mergedDecisionHistory,
+                          telemetryHistorySelection.index,
+                          "next",
+                        ))}
+                        disabled={telemetryHistorySelection.index >= mergedDecisionHistory.length - 1}
+                        aria-label="Next AutoForge decision"
+                        className="touch-target inline-flex items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400/70"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] min-w-0">
+                    <span className="text-orange-400 font-bold uppercase break-words min-w-0">
+                      Decision: {telemetryDecision.decision}
+                      {telemetryDecisionBot && (
+                        <span className="text-purple-300 font-mono normal-case"> @{telemetryDecisionBot.session?.username ?? telemetryDecisionBot.label}</span>
                       )}
                     </span>
-                    <span className="text-gray-400 font-mono">
-                      {(lastAutoForgeDecision.confidence * 100).toFixed(0)}% conf
+                    <span className="text-gray-400 font-mono shrink-0">
+                      {(telemetryDecision.confidence * 100).toFixed(0)}% conf
                     </span>
                   </div>
-                  <div className="text-[11px] text-gray-300 font-sans line-clamp-2">
-                    {lastAutoForgeDecision.reason}
+                  <div className="text-[11px] text-gray-300 font-sans leading-snug break-words">
+                    {typeof telemetryDecision.reason === "string" ? telemetryDecision.reason : "No reason recorded."}
                   </div>
-                  {lastAutoForgeDecision.action_payload && (
+                  {typeof telemetryDecision.action_payload === "string" && telemetryDecision.action_payload.trim() ? (
                     <DecisionSendButton
-                      payload={lastAutoForgeDecision.action_payload}
-                      botId={lastDecisionBot?.id}
-                      botSentMessages={lastDecisionBot?.runtime.sentMessages}
+                      decisionKey={telemetryDecisionKey}
+                      payload={telemetryDecision.action_payload}
+                      botId={telemetryDecisionBot?.id}
+                      botSentMessages={telemetryDecisionBot?.runtime.sentMessages}
+                      sending={sendingDecisionKeys.has(telemetryDecisionKey)}
+                      onSendingChange={(sending) => setDecisionSending(telemetryDecisionKey, sending)}
                       onSent={(text) => {
                         // TTS after successful delivery only — a failed send
                         // never speaks. speakMessage owns its own enable check.
                         speakMessage(text);
                       }}
                     />
+                  ) : (
+                    <div className="text-[10px] text-gray-500 font-sans italic rounded border border-white/5 bg-white/[0.02] px-2 py-1.5">
+                      No message to deliver for this decision.
+                    </div>
                   )}
                 </div>
               ) : (
@@ -1672,15 +1756,13 @@ function MobileForgeTab(props: {
               {config.humorLevel === 100 ? "🔥 100%" : `${config.humorLevel}%`}
             </span>
           </div>
-          <input
-            type="range"
+          <MobileIntentRange
             min={0}
             max={100}
             step={1}
             value={config.humorLevel}
-            onChange={(e) => updateConfig({ humorLevel: parseInt(e.target.value) })}
-            className="mobile-slider"
-            aria-label="Humor level"
+            onValueChange={(value) => updateConfig({ humorLevel: value })}
+            ariaLabel="Humor level"
           />
         </div>
 
@@ -1699,15 +1781,14 @@ function MobileForgeTab(props: {
               {config.chaosLevel === 100 ? "🌀 100%" : `${config.chaosLevel}%`}
             </span>
           </div>
-          <input
-            type="range"
+          <MobileIntentRange
             min={0}
             max={100}
             step={1}
             value={config.chaosLevel}
-            onChange={(e) => updateConfig({ chaosLevel: parseInt(e.target.value) })}
-            className="mobile-slider mobile-slider-purple"
-            aria-label="Chaos level"
+            onValueChange={(value) => updateConfig({ chaosLevel: value })}
+            className="mobile-slider-purple"
+            ariaLabel="Chaos level"
           />
         </div>
       </div>
@@ -1992,6 +2073,51 @@ const USABLE_CLOUD_PROVIDERS = [
   },
 ] as const;
 
+const MOBILE_EMOTE_STYLE = {
+  minimal: {
+    base: "bg-pink-500/[0.04] border-pink-500/15 text-pink-200/55",
+    active: "bg-pink-500/20 border-pink-300/70 text-pink-100 ring-1 ring-pink-400/35",
+  },
+  moderate: {
+    base: "bg-pink-500/[0.09] border-pink-500/25 text-pink-200/70",
+    active: "bg-pink-500/25 border-pink-300/80 text-pink-100 ring-1 ring-pink-400/45 shadow-[0_0_10px_rgba(236,72,153,0.15)]",
+  },
+  heavy: {
+    base: "bg-fuchsia-500/[0.15] border-fuchsia-500/35 text-fuchsia-200/90 shadow-[0_0_8px_rgba(217,70,239,0.08)]",
+    active: "bg-fuchsia-500/30 border-fuchsia-200/90 text-white ring-1 ring-fuchsia-300/60 shadow-[0_0_14px_rgba(217,70,239,0.28)]",
+  },
+} as const;
+
+const MOBILE_LENGTH_STYLE = {
+  short: {
+    base: "bg-rose-500/[0.04] border-rose-500/15 text-rose-200/55",
+    active: "bg-rose-500/20 border-rose-300/70 text-rose-100 ring-1 ring-rose-400/35",
+  },
+  medium: {
+    base: "bg-rose-500/[0.09] border-rose-500/25 text-rose-200/70",
+    active: "bg-rose-500/25 border-rose-300/80 text-rose-100 ring-1 ring-rose-400/45 shadow-[0_0_10px_rgba(244,63,94,0.15)]",
+  },
+  long: {
+    base: "bg-pink-500/[0.15] border-pink-500/35 text-pink-200/90 shadow-[0_0_8px_rgba(236,72,153,0.08)]",
+    active: "bg-pink-500/30 border-pink-200/90 text-white ring-1 ring-pink-300/60 shadow-[0_0_14px_rgba(236,72,153,0.28)]",
+  },
+} as const;
+
+const MOBILE_FILTER_STYLE = {
+  family: {
+    base: "bg-emerald-500/[0.06] border-emerald-500/20 text-emerald-300/70",
+    active: "bg-emerald-500/22 border-emerald-300/80 text-emerald-100 ring-1 ring-emerald-400/45",
+  },
+  standard: {
+    base: "bg-amber-500/[0.10] border-amber-500/28 text-amber-300/80",
+    active: "bg-amber-500/25 border-amber-300/80 text-amber-100 ring-1 ring-amber-400/50 shadow-[0_0_10px_rgba(245,158,11,0.15)]",
+  },
+  unfiltered: {
+    base: "bg-red-500/[0.15] border-red-500/35 text-red-300/90 shadow-[0_0_8px_rgba(239,68,68,0.08)]",
+    active: "bg-red-500/30 border-red-300/90 text-white ring-1 ring-red-400/60 shadow-[0_0_14px_rgba(239,68,68,0.25)]",
+  },
+} as const;
+
 /**
  * Mobile CORE decision Send button — Send → Sending… → ✓ Sent.
  *
@@ -2003,19 +2129,24 @@ const USABLE_CLOUD_PROVIDERS = [
  * so the Sent state survives remounts and reflects desktop-sent payloads too.
  */
 function DecisionSendButton({
+  decisionKey,
   payload,
   botId,
   botSentMessages,
+  sending,
+  onSendingChange,
   onSent,
 }: {
+  decisionKey: string;
   payload: string;
   botId?: string;
   botSentMessages?: ReadonlyArray<{ message: string }>;
+  sending: boolean;
+  onSendingChange: (sending: boolean) => void;
   onSent?: (text: string) => void;
 }) {
   const channel = useAppStore((s) => s.streamMetadata.channelName);
   const legacySentMessages = useAppStore((s) => s.sentMessages);
-  const [sendState, setSendState] = useState<"idle" | "sending" | "sent">("idle");
   const alreadySent = isDecisionPayloadSent(
     payload,
     botId ? (botSentMessages ?? []) : legacySentMessages,
@@ -2026,30 +2157,31 @@ function DecisionSendButton({
     if (!text || !channel) return;
     // In-flight + already-delivered protection: UI-level enforcement on top
     // of sendManualMessage's own pending-send defense.
-    if (sendState !== "idle" || alreadySent) return;
-    setSendState("sending");
+    if (sending || alreadySent) return;
+    onSendingChange(true);
     try {
       await sendManualMessage({ message: text, channel, source: "manual", botId });
-      setSendState("sent");
       toast.success("Decision sent to chat!");
       playSfx("send_message");
       onSent?.(text);
     } catch (e: any) {
       // Failed delivery — re-arm the button, never speak.
-      setSendState("idle");
       toast.error(e.message || "Failed to send");
+    } finally {
+      onSendingChange(false);
     }
   };
 
-  const disabled = alreadySent || sendState !== "idle";
-  const label = sendState === "sending" ? "Sending…"
-    : (sendState === "sent" || alreadySent) ? "✓ Sent"
+  const disabled = alreadySent || sending;
+  const label = sending ? "Sending…"
+    : alreadySent ? "✓ Sent"
     : "Send";
 
   return (
     <div className="text-[10px] text-emerald-300 font-sans italic bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20 flex items-center justify-between gap-2">
       <span className="line-clamp-2">"{payload}"</span>
       <button
+        key={decisionKey}
         type="button"
         onClick={handleSend}
         disabled={disabled}
@@ -2057,8 +2189,8 @@ function DecisionSendButton({
           ? (alreadySent ? "This decision was already delivered" : "Sending…")
           : "Send this decision's message to chat (bypasses Dry Run)"}
         aria-label={
-          sendState === "sending" ? "Sending decision message"
-          : (sendState === "sent" || alreadySent) ? "Decision message sent"
+          sending ? "Sending decision message"
+          : alreadySent ? "Decision message sent"
           : "Send decision message to chat"
         }
         className={cn(
@@ -2068,9 +2200,9 @@ function DecisionSendButton({
             : "bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30",
         )}
       >
-        {sendState === "sending" ? (
+        {sending ? (
           <Loader2 className="w-3 h-3 animate-spin" />
-        ) : (sendState === "sent" || alreadySent) ? (
+        ) : alreadySent ? (
           <CheckCircle2 className="w-3 h-3" />
         ) : (
           <Send className="w-3 h-3" />
@@ -2291,10 +2423,31 @@ function MobileTuningTab(props: {
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [providerSectionExpanded, setProviderSectionExpanded] = useState(() => {
+    try { return sessionStorage.getItem("core-mobile-provider-collapsed") !== "1"; }
+    catch { return true; }
+  });
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   const authTick = useAppStore((s) => s.authTick);
   const activeProvider = getActiveProvider();
   const keys = getKeys();
+
+  useEffect(() => {
+    try { sessionStorage.setItem("core-mobile-provider-collapsed", providerSectionExpanded ? "0" : "1"); }
+    catch { /* private mode */ }
+  }, [providerSectionExpanded]);
+
+  const toggleProviderSection = () => {
+    if (providerSectionExpanded) {
+      const collapsed = collapseMobileProviderDisclosure();
+      setProviderSectionExpanded(collapsed.expanded);
+      setExpandedProvider(collapsed.expandedProvider);
+      setApiKeyInput(collapsed.apiKeyDraft);
+    } else {
+      setProviderSectionExpanded(true);
+    }
+    playSfx("panel_collapse");
+  };
 
   const handleSaveKey = (providerId: string, label: string, keyField: keyof ReturnType<typeof getKeys>) => {
     const trimmed = apiKeyInput.trim();
@@ -2379,25 +2532,45 @@ function MobileTuningTab(props: {
 
       {/* ─── 2. AI Engine & Provider ─── */}
       <div className="p-3 rounded-xl bg-[#121218] border border-white/5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
-            <Cpu className="w-3.5 h-3.5" />
-            AI Provider & Keys
+        <button
+          type="button"
+          onClick={toggleProviderSection}
+          aria-expanded={providerSectionExpanded}
+          aria-label={`${providerSectionExpanded ? "Collapse" : "Expand"} AI Provider and Keys configuration`}
+          className="w-full min-h-[44px] flex items-center justify-between gap-2 text-left rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+        >
+          <div className="min-w-0">
+            <div className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+              <Cpu className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">AI Provider & Keys</span>
+            </div>
+            <div className="mt-0.5 pl-5 text-[10px] text-gray-500 font-mono truncate">
+              {props.providerSummary.label}
+              {props.providerSummary.model ? ` · ${props.providerSummary.model}` : ""}
+              {` · ${props.providerSummary.configured ? "configured" : "not configured"}`}
+            </div>
           </div>
-          <span
-            className={cn(
-              "text-[10px] px-2 py-0.5 rounded border font-mono font-bold",
-              props.readiness.aiReady
-                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
-                : "bg-red-500/10 border-red-500/30 text-red-300"
-            )}
-          >
-            {props.readiness.aiReady ? "Ready" : "No Key Set"}
+          <span className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={cn(
+                "text-[10px] px-2 py-0.5 rounded border font-mono font-bold",
+                props.readiness.aiReady
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                  : "bg-red-500/10 border-red-500/30 text-red-300"
+              )}
+            >
+              {props.readiness.aiReady ? "Ready" : "No Key Set"}
+            </span>
+            {providerSectionExpanded
+              ? <ChevronUp className="w-4 h-4 text-cyan-400" />
+              : <ChevronDown className="w-4 h-4 text-gray-500" />}
           </span>
-        </div>
+        </button>
 
-        {/* Notice if Ollama was active from desktop */}
-        {activeProvider === "ollama" && (
+        {providerSectionExpanded && (
+          <div className="space-y-3">
+          {/* Notice if Ollama was active from desktop */}
+          {activeProvider === "ollama" && (
           <div className="p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 flex items-start gap-2 text-xs">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <div>
@@ -2407,9 +2580,9 @@ function MobileTuningTab(props: {
               </p>
             </div>
           </div>
-        )}
+          )}
 
-        <div className="space-y-1.5">
+          <div className="space-y-1.5">
           {USABLE_CLOUD_PROVIDERS.map((p) => {
             const isCustom = p.id === "custom-openai";
             const savedKey = keys[p.keyField];
@@ -2591,7 +2764,9 @@ function MobileTuningTab(props: {
               </div>
             );
           })}
-        </div>
+          </div>
+          </div>
+        )}
       </div>
 
       {/* ─── 3. Behavior & Voice Options ─── */}
@@ -2708,7 +2883,7 @@ function MobileTuningTab(props: {
               {r34lLearningFrozen ? "❄ FROZEN" : r34lEnabled ? "ON" : "OFF"}
             </button>
           </div>
-          <R34lInlineDetails />
+          <R34lInlineDetails showDesktopShortcutHint={false} />
 
           {/* Smart Replies — generates click-to-send reply suggestions when
               the bot is mentioned. Works with AutoForge off (mention-only
@@ -2749,43 +2924,57 @@ function MobileTuningTab(props: {
         <div className="space-y-1">
           <span className="text-[11px] text-gray-400 font-bold">Emote Density</span>
           <div className="grid grid-cols-3 gap-1">
-            {(["minimal", "moderate", "heavy"] as const).map((lvl) => (
-              <button
-                key={lvl}
-                type="button"
-                onClick={() => updateConfig({ emoteDensity: lvl })}
-                className={cn(
-                  "py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target",
-                  (config.emoteDensity || "moderate") === lvl
-                    ? "bg-pink-500/20 border-pink-500/50 text-pink-300"
-                    : "bg-black/30 border-white/5 text-gray-500"
-                )}
-              >
-                {lvl}
-              </button>
-            ))}
+            {(["minimal", "moderate", "heavy"] as const).map((lvl) => {
+              const active = config.emoteDensity === lvl;
+              return (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => updateConfig({ emoteDensity: lvl })}
+                  aria-pressed={active}
+                  className={cn(
+                    "relative py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-300/80",
+                    active ? MOBILE_EMOTE_STYLE[lvl].active : MOBILE_EMOTE_STYLE[lvl].base,
+                  )}
+                >
+                  {lvl}
+                  {active && <span aria-hidden="true" className="absolute top-1 right-1 w-1 h-1 rounded-full bg-current" />}
+                </button>
+              );
+            })}
           </div>
         </div>
 
         {/* Message Length */}
         <div className="space-y-1">
-          <span className="text-[11px] text-gray-400 font-bold">Message Length</span>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-400 font-bold">Message Length</span>
+            {isAdaptiveLengthPreference(config.lengthPreference) && (
+              <span className="text-[9px] uppercase font-mono font-bold tracking-wider text-cyan-300 bg-cyan-500/10 border border-cyan-500/25 rounded px-1.5 py-0.5">
+                Adaptable
+              </span>
+            )}
+          </div>
           <div className="grid grid-cols-3 gap-1">
-            {(["short", "medium", "long"] as const).map((lvl) => (
-              <button
-                key={lvl}
-                type="button"
-                onClick={() => updateConfig({ lengthPreference: lvl })}
-                className={cn(
-                  "py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target",
-                  (config.lengthPreference || "short") === lvl
-                    ? "bg-pink-500/20 border-pink-500/50 text-pink-300"
-                    : "bg-black/30 border-white/5 text-gray-500"
-                )}
-              >
-                {lvl}
-              </button>
-            ))}
+            {(["short", "medium", "long"] as const).map((lvl: MobileLengthOption) => {
+              const active = isMobileLengthOptionActive(config.lengthPreference, lvl);
+              return (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => updateConfig({ lengthPreference: toggleMobileLengthPreference(config.lengthPreference, lvl) })}
+                  aria-pressed={active}
+                  aria-label={`${lvl} message length${active ? "; tap again for adaptable length" : ""}`}
+                  className={cn(
+                    "relative py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/80",
+                    active ? MOBILE_LENGTH_STYLE[lvl].active : MOBILE_LENGTH_STYLE[lvl].base,
+                  )}
+                >
+                  {lvl}
+                  {active && <span aria-hidden="true" className="absolute top-1 right-1 w-1 h-1 rounded-full bg-current" />}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -2793,25 +2982,24 @@ function MobileTuningTab(props: {
         <div className="space-y-1 pt-1 border-t border-white/5">
           <span className="text-[11px] text-gray-400 font-bold">Content Filter</span>
           <div className="grid grid-cols-3 gap-1">
-            {(["family", "standard", "unfiltered"] as const).map((lvl) => (
-              <button
-                key={lvl}
-                type="button"
-                onClick={() => updateConfig({ toxicityFilter: lvl })}
-                className={cn(
-                  "py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target",
-                  (config.toxicityFilter || "standard") === lvl
-                    ? lvl === "family"
-                      ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300"
-                      : lvl === "unfiltered"
-                        ? "bg-red-500/20 border-red-500/50 text-red-300"
-                        : "bg-amber-500/20 border-amber-500/50 text-amber-300"
-                    : "bg-black/30 border-white/5 text-gray-500"
-                )}
-              >
-                {lvl}
-              </button>
-            ))}
+            {(["family", "standard", "unfiltered"] as const).map((lvl) => {
+              const active = config.toxicityFilter === lvl;
+              return (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => updateConfig({ toxicityFilter: lvl })}
+                  aria-pressed={active}
+                  className={cn(
+                    "relative py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70",
+                    active ? MOBILE_FILTER_STYLE[lvl].active : MOBILE_FILTER_STYLE[lvl].base,
+                  )}
+                >
+                  {lvl}
+                  {active && <span aria-hidden="true" className="absolute top-1 right-1 w-1 h-1 rounded-full bg-current" />}
+                </button>
+              );
+            })}
           </div>
           <div className="text-[10px] text-gray-500">
             {config.toxicityFilter === "family"
@@ -2863,15 +3051,14 @@ function MobileTuningTab(props: {
               {(autoForgeConfidenceThreshold * 100).toFixed(0)}%
             </span>
           </div>
-          <input
-            type="range"
+          <MobileIntentRange
             min={0}
             max={1}
             step={0.05}
             value={autoForgeConfidenceThreshold}
-            onChange={(e) => setAutoForgeConfidenceThreshold(parseFloat(e.target.value))}
-            className="mobile-slider mobile-slider-amber"
-            aria-label="Confidence threshold"
+            onValueChange={setAutoForgeConfidenceThreshold}
+            className="mobile-slider-amber"
+            ariaLabel="Confidence threshold"
           />
         </div>
       </div>

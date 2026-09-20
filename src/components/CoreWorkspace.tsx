@@ -74,6 +74,7 @@ import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
 import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
 import { switchChannel } from "../lib/channelSwitch";
+import { isSupportedChannelUrlInput, sanitizeChannelInput } from "../lib/channelInput";
 import { useMediaQuery, useStudioAvailable, useEffectiveMode } from "../hooks/useMediaQuery";
 import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
 import { useNowTick } from "../hooks/useNowTick";
@@ -2858,16 +2859,17 @@ export function ChannelEditRow(props: {
   useEffect(() => setValue(props.channelName), [props.channelName]);
   const save = async () => {
     if (savingRef.current) return;
-    const trimmed = value.trim().replace(/^#/, "");
-    if (!trimmed) {
-      toast.error("Enter a channel name");
+    const sanitized = sanitizeChannelInput(value);
+    setValue(sanitized);
+    if (!sanitized) {
+      toast.error("Enter a valid Twitch or Kick channel name");
       return;
     }
-    if (trimmed === props.channelName) return;
+    if (sanitized === props.channelName) return;
     savingRef.current = true;
     setSaving(true);
     try {
-      await props.onSave(trimmed);
+      await props.onSave(sanitized);
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -2876,12 +2878,24 @@ export function ChannelEditRow(props: {
   return (
     <div className="flex gap-1">
       <div className="relative flex-1">
-        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-600 font-mono text-[11px]">#</span>
+        <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-gray-600 font-mono text-[11px]" aria-hidden="true">#</span>
         <input
           type="text"
           value={value}
           disabled={saving}
           onChange={(e) => setValue(e.target.value)}
+          onPaste={(e) => {
+            const pasted = e.clipboardData.getData("text");
+            const sanitized = sanitizeChannelInput(pasted);
+            if (sanitized && sanitized !== pasted.trim()) {
+              e.preventDefault();
+              setValue(sanitized);
+            } else if (isSupportedChannelUrlInput(pasted) && !sanitized) {
+              e.preventDefault();
+              setValue("");
+            }
+          }}
+          onBlur={() => setValue(sanitizeChannelInput(value))}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
           placeholder="channel name"
           className="w-full pl-5 pr-2 py-1.5 rounded bg-[#0a0a0f] border border-white/10 text-[11px] text-gray-200 placeholder-gray-700 focus:outline-none focus:border-orange-500/50 transition-colors"

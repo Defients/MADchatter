@@ -25,6 +25,7 @@ import { cn } from "../lib/utils";
 import { useNowTick } from "../hooks/useNowTick";
 import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import type { R34lView, R34lLearningState } from "../lib/r34lLearning";
+import { r34lDesktopShortcutHint, r34lStateLabel } from "../lib/r34lCopy";
 import { playSfx } from "../lib/sfx";
 
 // ─── Shared derivation ───────────────────────────────────────────────────────
@@ -55,22 +56,7 @@ function formatAge(ms: number): string {
   return `${d}d ago`;
 }
 
-export function r34lStateLabel(state: R34lLearningState, enabled: boolean, connected: boolean, frozen = false): string {
-  if (!connected) return "No channel connected — nothing is being learned";
-  if (frozen) {
-    if (state === "unlearned") return "Frozen — no learning yet for this channel; nothing is collected";
-    return enabled
-      ? "Frozen — learned style still applies; nothing new is collected or changed"
-      : "Frozen — learned style preserved (not applied while R34L is off); nothing new is collected";
-  }
-  if (state === "unlearned") return "No learning yet for this channel";
-  if (state === "collecting") return "Still learning — too little evidence to adapt confidently";
-  if (state === "aging") return enabled
-    ? "Using saved channel style (evidence is aging)"
-    : "Saved channel style kept (aging) — not applied while R34L is off";
-  if (!enabled) return "R34L off — learned style preserved, not applied";
-  return state === "established" ? "Established profile active" : "Learned profile active";
-}
+export { r34lStateLabel } from "../lib/r34lCopy";
 
 const STATE_COLORS: Record<R34lLearningState, string> = {
   unlearned: "text-gray-500 bg-white/5 border-white/10",
@@ -100,7 +86,7 @@ function BandTag({ band, applied }: { band: "collecting" | "emerging" | "establi
 /** The complete learning readout: identity, state, evidence, traits, emotes,
  *  uncertainty, and the confirm-gated reset. Used by both the Studio popover
  *  and the Core/mobile inline expansion. */
-export function R34lLearningDetails() {
+export function R34lLearningDetails({ showDesktopShortcutHint = true }: { showDesktopShortcutHint?: boolean } = {}) {
   const { view, enabled, connected, frozen } = useR34lView(true);
   const [confirmReset, setConfirmReset] = useState(false);
   const applied = view.statements.filter((s) => s.applied);
@@ -133,11 +119,8 @@ export function R34lLearningDetails() {
       </div>
       <p className="text-[11px] leading-relaxed text-gray-300">
         {r34lStateLabel(view.state, enabled, connected, frozen)}
-        {connected && !enabled && !frozen && view.state !== "unlearned" && (
-          <span className="text-gray-500"> Passive learning continues from chat this app already receives; turning R34L on applies it again instantly.</span>
-        )}
-        {connected && frozen && (
-          <span className="text-yellow-300/80"> Ctrl+click the R34L button to resume learning.</span>
+        {connected && r34lDesktopShortcutHint(frozen, showDesktopShortcutHint) && (
+          <span className="text-yellow-300/80"> {r34lDesktopShortcutHint(frozen, showDesktopShortcutHint)}</span>
         )}
       </p>
 
@@ -372,7 +355,7 @@ export function R34lInfoPopover({ className }: { className?: string }) {
  * Expandable inline details for Core settings + mobile (no absolute
  * positioning inside scroll containers — expands under the control).
  */
-export function R34lInlineDetails() {
+export function R34lInlineDetails({ showDesktopShortcutHint = true }: { showDesktopShortcutHint?: boolean } = {}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="w-full">
@@ -387,7 +370,7 @@ export function R34lInlineDetails() {
       </button>
       {open && (
         <div className="mt-1.5 rounded-lg bg-black/30 border border-emerald-500/15 p-2.5">
-          <R34lLearningDetails />
+          <R34lLearningDetails showDesktopShortcutHint={showDesktopShortcutHint} />
         </div>
       )}
     </div>

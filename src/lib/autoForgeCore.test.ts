@@ -20,6 +20,7 @@ import {
   computeAdaptiveBackoff,
   labelEngagement,
   countPostSendEngagement,
+  isDecisionPayloadSent,
 } from "./autoForgeCore";
 import type { SentimentReading, PinnedMemory, ChatMessage } from "../types";
 
@@ -198,6 +199,13 @@ await runTest("different messages not duplicate", () => {
 
 await runTest("empty payload not duplicate", () => {
   assert(isDuplicateMessage("", ["anything"]) === false, "empty payload = not duplicate");
+});
+
+await runTest("decision delivery state is scoped to the viewed payload", () => {
+  const delivered = [{ message: "already sent" }];
+  assert(isDecisionPayloadSent("already sent", delivered) === true, "matching historical decision is sent");
+  assert(isDecisionPayloadSent("still pending", delivered) === false, "different historical decision stays sendable");
+  assert(isDecisionPayloadSent("  ALREADY SENT ", delivered) === true, "delivery match is normalized");
 });
 
 // ─── computeAdaptiveBackoff ───────────────────────────────────────────────────

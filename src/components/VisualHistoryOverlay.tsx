@@ -39,23 +39,23 @@ export function VisualHistoryOverlay() {
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4"
         onClick={() => { setOpen(false); playSfx("hud_close"); }}
       >
         <motion.div
           onClick={(e) => e.stopPropagation()}
-          className="bg-[#121217] border border-white/10 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+          className="bg-[#121217] border border-white/10 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] min-w-0 flex flex-col overflow-hidden"
         >
           {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-white/10 bg-black/40 shrink-0">
-            <div className="flex items-center gap-2">
-              <Camera className="w-5 h-5 text-orange-400" />
-              <h2 className="text-lg font-bold text-white">Visual Snapshot History</h2>
-              <span className="text-[10px] text-gray-500 ml-2">
+          <div className="flex items-center justify-between gap-2 p-3 sm:p-4 border-b border-white/10 bg-black/40 shrink-0 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <Camera className="w-5 h-5 text-orange-400 shrink-0" />
+              <h2 className="text-sm sm:text-lg font-bold text-white truncate">Visual Snapshot History</h2>
+              <span className="hidden min-[380px]:inline text-[10px] text-gray-500 sm:ml-2 shrink-0">
                 {history.length} / 30 snapshots
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
               {history.length > 0 && (
                 <button
                   onClick={() => {
@@ -63,13 +63,15 @@ export function VisualHistoryOverlay() {
                     playSfx("clear_context");
                     toast.success("Visual history cleared");
                   }}
+                  aria-label="Clear visual snapshot history"
                   className="text-[10px] text-gray-400 hover:text-red-400 px-2 py-1 rounded border border-white/10 hover:border-red-500/30 transition-colors flex items-center gap-1"
                 >
-                  <Trash2 className="w-3 h-3" /> Clear
+                  <Trash2 className="w-3 h-3" /> <span className="hidden min-[360px]:inline">Clear</span>
                 </button>
               )}
               <button
                 onClick={() => { setOpen(false); playSfx("hud_close"); }}
+                aria-label="Close visual snapshot history"
                 className="text-gray-400 hover:text-white p-1 rounded hover:bg-white/10 transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -78,7 +80,7 @@ export function VisualHistoryOverlay() {
           </div>
 
           {/* Timeline */}
-          <div className="flex-1 overflow-y-auto p-4 analytics-scroll">
+          <div className="flex-1 overflow-y-auto p-2.5 sm:p-4 analytics-scroll min-w-0">
             {history.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
                 <Camera className="w-12 h-12 text-orange-500/20" />
@@ -90,15 +92,15 @@ export function VisualHistoryOverlay() {
             ) : (
               <div className="relative">
                 {/* Timeline line */}
-                <div className="absolute left-[88px] top-2 bottom-2 w-px bg-white/5" />
+                <div className="hidden sm:block absolute left-[88px] top-2 bottom-2 w-px bg-white/5" />
 
                 <div className="space-y-3">
                   {reversed.map((entry, idx) => {
                     const isLatest = idx === 0;
                     return (
-                      <div key={entry.id} className="flex gap-3 group">
+                      <div key={entry.id} className="flex flex-col gap-1.5 sm:flex-row sm:gap-3 group min-w-0">
                         {/* Timestamp column */}
-                        <div className="w-20 shrink-0 flex flex-col items-end pt-1">
+                        <div className="w-full sm:w-20 shrink-0 flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 sm:gap-0 sm:pt-1 px-0.5 sm:px-0">
                           <span className={cn(
                             "text-[10px] font-mono",
                             isLatest ? "text-orange-400 font-bold" : "text-gray-500"
@@ -111,7 +113,7 @@ export function VisualHistoryOverlay() {
                         </div>
 
                         {/* Timeline dot */}
-                        <div className="relative shrink-0 w-4 flex justify-center pt-3">
+                        <div className="relative shrink-0 w-4 hidden sm:flex justify-center pt-3">
                           <div className={cn(
                             "w-2.5 h-2.5 rounded-full border-2 transition-colors",
                             isLatest
@@ -130,12 +132,12 @@ export function VisualHistoryOverlay() {
                             : "bg-white/[0.02] border-white/5 hover:border-white/10"
                         )}>
                           {/* Image + meta */}
-                          <div className="flex gap-3 p-2.5">
-                            <div className="relative shrink-0">
+                          <div className="flex flex-col min-[420px]:flex-row gap-2.5 min-[420px]:gap-3 p-2.5 min-w-0">
+                            <div className="relative w-full min-[420px]:w-auto min-w-0 shrink-0 overflow-hidden rounded-md">
                               <img
                                 src={entry.url}
                                 alt={`Snapshot ${formatClock(entry.timestamp)}`}
-                                className="w-28 h-16 rounded-md object-cover border border-white/10"
+                                className="w-full min-[420px]:w-28 h-auto min-[420px]:h-16 aspect-video min-[420px]:aspect-auto rounded-md object-cover border border-white/10"
                               />
                               {/* Source badge */}
                               <span className={cn(
@@ -165,9 +167,9 @@ export function VisualHistoryOverlay() {
                             {/* Analysis text */}
                             <div className="flex-1 min-w-0 flex flex-col justify-between">
                               <div>
-                                <div className="flex items-center gap-1.5 mb-1">
+                                <div className="flex flex-wrap items-center gap-1.5 mb-1 min-w-0 max-w-full overflow-hidden">
                                   {isLatest && (
-                                    <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                                    <span className="shrink-0 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
                                       Latest
                                     </span>
                                   )}
@@ -180,20 +182,20 @@ export function VisualHistoryOverlay() {
                                     const first = entry.tags[0] ?? "";
                                     if (first.includes("vision failed")) {
                                       return (
-                                        <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+                                        <span className="min-w-0 max-w-full shrink text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30 whitespace-nowrap overflow-hidden text-ellipsis">
                                           Vision Failed
                                         </span>
                                       );
                                     }
                                     if (first.startsWith("Captured")) {
                                       return (
-                                        <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/5 text-gray-500 border border-white/10">
+                                        <span className="min-w-0 max-w-full shrink text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/5 text-gray-500 border border-white/10 whitespace-nowrap overflow-hidden text-ellipsis">
                                           No Analysis
                                         </span>
                                       );
                                     }
                                     return (
-                                      <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                      <span className="min-w-0 max-w-full shrink text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap overflow-hidden text-ellipsis">
                                         Analyzed
                                       </span>
                                     );
@@ -221,7 +223,7 @@ export function VisualHistoryOverlay() {
                               </div>
 
                               {/* Actions */}
-                              <div className="flex items-center gap-1.5 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
                                 <ThemedTooltip content="Pin to Long-Term Memory">
                                   <button
                                     onClick={() => {
@@ -279,8 +281,8 @@ export function VisualHistoryOverlay() {
 
           {/* Footer hint */}
           {history.length > 0 && (
-            <div className="px-4 py-2 border-t border-white/5 bg-black/20 flex items-center gap-2 text-[9px] text-gray-600">
-              <Clock className="w-3 h-3" />
+            <div className="px-3 sm:px-4 py-2 border-t border-white/5 bg-black/20 flex items-start gap-2 text-[9px] text-gray-600 min-w-0">
+              <Clock className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
                 <span className="text-blue-400 font-bold">P</span> = manual capture ·{" "}
                 <span className="text-gray-400 font-bold">A</span> = auto capture ·{" "}
