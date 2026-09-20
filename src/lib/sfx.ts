@@ -1,4 +1,9 @@
 import { useAppStore } from "../store";
+import {
+  mobileAudioCueAllowed,
+  shouldSuppressLowerPriorityCue,
+  type MobileAudioCue,
+} from "./mobileAudioPolicy";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,24 @@ type SoundDefinition = { type: "synth"; synth: SynthConfig };
 let ctx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
 let currentSinkId: string | null = null;
+let activePriorityCue: { cue: MobileAudioCue; until: number } | null = null;
+
+export function reserveAudioPriority(cue: MobileAudioCue, durationMs: number): void {
+  const now = Date.now();
+  if (!activePriorityCue || activePriorityCue.until <= now ||
+    !shouldSuppressLowerPriorityCue(cue, activePriorityCue, now)) {
+    activePriorityCue = { cue, until: now + Math.max(0, durationMs) };
+  }
+}
+
+function cueForSfx(event: SfxEvent): MobileAudioCue {
+  if (event === "error" || event === "disconnect") return "error";
+  if (event === "send_message" || event === "forge_complete" || event === "refine_complete") return "send_complete";
+  if (event === "forge_start" || event === "autoforge_action" || event === "autoforge_on" || event === "autoforge_off") return "major_action";
+  if (event === "slider_commit") return "slider_commit";
+  if (event === "select_change" || event === "settings_save") return "setting_select";
+  return "navigation";
+}
 
 function getCtx(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -1064,7 +1087,9 @@ export function playSfx(event: SfxEvent, options?: { volume?: number }): void {
   if (typeof window === "undefined") return;
 
   const state = useAppStore.getState();
-  if (!state.sfxEnabled) return;
+  const cue = cueForSfx(event);
+  if (!mobileAudioCueAllowed(cue, state.sfxEnabled)) return;
+  if (shouldSuppressLowerPriorityCue(cue, activePriorityCue)) return;
 
   const theme: Theme = state.theme === "cosmotech" ? "cosmotech" : state.theme === "corrupture" ? "cosmotech" : "default";
   const soundMap = SOUND_MAPS[theme];
@@ -1075,7 +1100,18 @@ export function playSfx(event: SfxEvent, options?: { volume?: number }): void {
 
   if (def.type === "synth") {
     playSynth(def.synth, volume);
+    reserveAudioPriority(cue, Math.max(80, def.synth.duration * 1000));
   }
+}
+
+/** Web Audio fallback for the always-on direct-mention media alert. */
+export function playAttentionFallbackSfx(): void {
+  if (typeof window === "undefined") return;
+  const state = useAppStore.getState();
+  const theme: Theme = state.theme === "cosmotech" || state.theme === "corrupture" ? "cosmotech" : "default";
+  const definition = SOUND_MAPS[theme].mention_alert;
+  reserveAudioPriority("attention_mention", definition.synth.duration * 1000);
+  playSynth(definition.synth, 0.72);
 }
 
 export function playForceBurstSfx(): void {

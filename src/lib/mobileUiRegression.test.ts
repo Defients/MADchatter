@@ -8,12 +8,14 @@ const welcomePath = fileURLToPath(new URL("../components/MobileWelcomeOverlay.ts
 const trialPath = fileURLToPath(new URL("../components/MobileFriendTrialCard.tsx", import.meta.url));
 const appPath = fileURLToPath(new URL("../App.tsx", import.meta.url));
 const forgeLayoutPath = fileURLToPath(new URL("../components/ForgeLayout.tsx", import.meta.url));
+const smartReplyShelfPath = fileURLToPath(new URL("../components/MobileSmartReplyShelf.tsx", import.meta.url));
 const mobile = readFileSync(mobilePath, "utf8");
 const vision = readFileSync(visionPath, "utf8");
 const welcome = readFileSync(welcomePath, "utf8");
 const trial = readFileSync(trialPath, "utf8");
 const app = readFileSync(appPath, "utf8");
 const forgeLayout = readFileSync(forgeLayoutPath, "utf8");
+const smartReplyShelf = readFileSync(smartReplyShelfPath, "utf8");
 
 assert.match(mobile, /R34lInlineDetails showDesktopShortcutHint=\{false\}/, "mobile suppresses desktop R34L shortcut hint");
 assert.match(mobile, /providerSectionExpanded &&/, "provider inputs are conditionally absent when collapsed");
@@ -28,6 +30,17 @@ assert.doesNotMatch(mobile, />\s*Welcome\s*</, "Welcome is not added to the mobi
 assert.match(app, /!isMobile && <ModeWelcomeOverlay \/>/, "mobile enters its dedicated workspace without the CORE/STUDIO picker");
 assert.match(app, /!isMobile && <StudioDiscoveryOverlay \/>/, "mobile never receives the later Studio promotion");
 assert.match(app, /!isMobile && <StudioGateOverlay \/>/, "mobile never receives the Studio gate");
+assert.match(app, /!isMobile && <StatusBar \/>/, "desktop status dock cannot cover Mobile CORE navigation");
+assert.doesNotMatch(mobile, /multiBotEnabled|manualSendBotId|setManualSendBotId/, "Mobile CORE exposes no multi-bot controls");
+assert.match(
+  mobile,
+  /if \(!sfxEnabled\) \{[\s\S]*initSfxAudioContext\(\);[\s\S]*setSfxEnabled\(true\);[\s\S]*playSfx\("select_change"\);/,
+  "enabling optional SFX initializes audio, commits ON, then demonstrates the setting",
+);
+assert.match(mobile, /disabled=\{!ttsEnabled\}[\s\S]*aria-disabled=\{!ttsEnabled\}/, "Background TTS has native and ARIA disabled semantics while TTS is off");
+assert.equal(mobile.match(/onValueCommit=\{\(\) => playSfx\("slider_commit"\)\}/g)?.length, 3, "mobile sliders sound only through their commit callbacks");
+assert.match(mobile, /describeConfidenceThreshold\(autoForgeConfidenceThreshold\)/, "confidence rendering consumes the pure semantic classifier");
+assert.match(smartReplyShelf, /source: "smart_reply"/, "mobile reply sends retain the canonical smart_reply source");
 assert.ok(
   mobile.indexOf("<MobileFriendTrialCard />") < mobile.indexOf("USABLE_CLOUD_PROVIDERS.map"),
   "Friend Trial is rendered before normal mobile providers",

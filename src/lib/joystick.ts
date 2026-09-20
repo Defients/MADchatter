@@ -45,6 +45,10 @@ const DEFAULT_JOYSTICK_BOT_USERNAME = "defbot";
 const GATEWAY_IDENTIFIER = JSON.stringify({ channel: "GatewayChannel" });
 
 type ChatReadState = "disconnected" | "connecting" | "connected" | "error";
+export interface JoystickIncomingMessageMeta {
+  messageId?: string;
+  replyTargetUsername?: string;
+}
 
 export class JoystickChatClient {
   private ws: WebSocket | null = null;
@@ -52,7 +56,7 @@ export class JoystickChatClient {
   private channelSlug: string = "";
   private state: ChatReadState = "disconnected";
   private stateListeners: Set<(state: ChatReadState) => void> = new Set();
-  private messageListeners: Set<(username: string, content: string) => void> = new Set();
+  private messageListeners: Set<(username: string, content: string, meta?: JoystickIncomingMessageMeta) => void> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private cancelled = false;
   private reconnectAttempts = 0;
@@ -63,7 +67,7 @@ export class JoystickChatClient {
     this.basicAuthKey = basicAuthKey;
   }
 
-  onMessage(cb: (username: string, content: string) => void): void {
+  onMessage(cb: (username: string, content: string, meta?: JoystickIncomingMessageMeta) => void): void {
     this.messageListeners.add(cb);
   }
 
@@ -164,7 +168,12 @@ export class JoystickChatClient {
             const username = msg.author?.username || msg.author?.slug || "user";
             const content = msg.text || "";
             if (content) {
-              this.messageListeners.forEach((l) => l(username, content));
+              const rawMessageId = msg.id || msg.message_id;
+              const replyTargetUsername = msg.reply_to?.author?.username || msg.reply_to_username;
+              this.messageListeners.forEach((l) => l(username, content, {
+                ...(rawMessageId != null ? { messageId: String(rawMessageId) } : {}),
+                ...(replyTargetUsername ? { replyTargetUsername: String(replyTargetUsername) } : {}),
+              }));
             }
           }
           // StreamEvent and UserPresence messages could be handled here in the future

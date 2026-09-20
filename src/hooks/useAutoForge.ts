@@ -21,8 +21,7 @@ import { recordJokeUsage, getActiveJokes, scoreJokeRelevance } from "../lib/joke
 import { analyzeRepetition, formatRepetitionContext } from "../lib/antiRepetition";
 import { actionRateLimiter } from "../lib/actionRateLimiter";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
-import { notifyMention, notifyAutoForgeError, notifyActivitySpike } from "../lib/notifications";
-import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
+import { notifyAutoForgeError, notifyActivitySpike } from "../lib/notifications";
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
@@ -128,9 +127,6 @@ export function useAutoForge() {
     addDecisionLogEntry,
     updateDecisionLogEntry,
     markAutoForgeActionBucket,
-    smartRepliesEnabled,
-    setSmartReplies,
-    setSmartRepliesLoading,
     autoForgeDryRun,
     autoForgeConfidenceThreshold,
     sessionGoals,
@@ -158,9 +154,9 @@ export function useAutoForge() {
   const forgingStartedAtRef = useRef(0);
   // Track engagement-check timers for cleanup on unmount
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null });
+  const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null });
 
-  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, smartRepliesEnabled, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null };
+  storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null };
 
   // Sync rate limiter config
   actionRateLimiter.updateConfig(rateLimitConfig);
@@ -373,59 +369,9 @@ export function useAutoForge() {
         }
       }
 
-      if (isMentioned) {
-        incrementStat("mentionsDetected");
-        if (useAppStore.getState().desktopNotificationsEnabled) {
-          const firstMention = allMentionedLines[0] || "";
-          const username = firstMention.split(":")[0] || "Someone";
-          notifyMention(username, firstMention);
-        }
-        toast.warning(`You were mentioned!`, {
-          description: allMentionedLines.slice(0, 2).map(l => l.length > 80 ? l.slice(0, 80) + "..." : l).join("\n"),
-          id: "mention-alert",
-          duration: 5000,
-        });
-        playSfx('mention_alert');
-        // C5: Dispatch prominent mention overlay event
-        window.dispatchEvent(new CustomEvent("bot-mentioned", {
-          detail: {
-            lines: allMentionedLines.slice(0, 5),
-            timestamp: Date.now(),
-            channel: state.streamMetadata.channelName,
-          },
-        }));
-        addEventRef.current({
-          timestamp: Date.now(),
-          type: "mention",
-          severity: "high",
-          summary: `Mentioned by chat: ${allMentionedLines.slice(0, 3).join(" | ")}`,
-          details: { mentionedLines: allMentionedLines, botUsername, channelName },
-        });
-
-        // Smart reply generation — when smart replies are enabled (works alongside AutoForge)
-        if (smartRepliesEnabled && canGenerateSmartReplies()) {
-          setSmartRepliesLoading(true);
-          generateSmartReplies(allMentionedLines)
-            .then((replies) => {
-              // Don't write stale replies into a new session.
-              if (!guard.isCurrent()) {
-                console.log("[AutoForge] Discarding stale smart replies (session changed)");
-                setSmartRepliesLoading(false);
-                return;
-              }
-              if (replies.length > 0) {
-                setSmartReplies(replies);
-              }
-              setSmartRepliesLoading(false);
-            })
-            .catch((e) => {
-              if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
-                console.error("[AutoForge] Smart reply generation failed:", e);
-              }
-              setSmartRepliesLoading(false);
-            });
-        }
-      }
+      // Direct-chat acknowledgement and Smart Replies are event-driven at the
+      // incoming-chat chokepoint. This scan remains advisory AutoForge context
+      // (including fuzzy/audio mentions) and deliberately has no side effects.
 
       if (activitySpike) {
         incrementStat("spikesDetected");
@@ -1489,69 +1435,11 @@ export function useAutoForge() {
     }
   };
 
-  // Lightweight mention watcher — runs when AutoForge is OFF but smart
-  // replies are enabled. Detects mentions and generates smart replies
-  // without the expensive AutoForge decision loop, so the user still gets
-  // reply suggestions while AutoForge is disabled.
-  const checkMentionsOnly = async () => {
-    const state = useAppStore.getState();
-    if (!state.smartRepliesEnabled || !canGenerateSmartReplies()) return;
-    if (shouldPauseTrialAutomation(getActiveProvider(), state.trialUsage)) return;
-
-    const botUsername = state.platform === "kick"
-      ? (getKickSession()?.username || "").toLowerCase()
-      : state.platform === "joystick"
-        ? (getJoystickSession()?.username || "").toLowerCase()
-        : (getTwitchSession()?.username || "").toLowerCase();
-    if (!botUsername) return;
-
-    const mentionPatterns = [botUsername, botUsername.replace(/[^a-z0-9]/g, "")];
-    const recentMessages = state.chatLog.slice(-15).filter(m => !m.marker);
-    const mentionedLines: string[] = [];
-    for (const msg of recentMessages) {
-      const lower = msg.text.toLowerCase();
-      if (mentionPatterns.some(p => p && lower.includes(p))) {
-        mentionedLines.push(`${msg.user}: ${msg.text}`);
-      }
-      if (botUsername && lower.includes(`@${botUsername}`)) {
-        if (!mentionedLines.includes(`${msg.user}: ${msg.text}`)) mentionedLines.push(`${msg.user}: ${msg.text}`);
-      }
-    }
-    mentionedLines.push(...getSpokenMentionLines(state.multiBotEnabled
-        ? state.bots.find((b) => b.active && b.session?.username.toLowerCase() === botUsername)?.id ?? ""
-        : ""));
-    if (mentionedLines.length === 0) return;
-
-    // Capture scope so the async smart-reply result doesn't write into a
-    // different session if the channel switched during generation.
-    const mentionScope = captureSessionScope();
-    setSmartRepliesLoading(true);
-    generateSmartReplies(mentionedLines)
-      .then((replies) => {
-        if (!isSessionScopeCurrent(mentionScope)) {
-          console.log("[AutoForge] Discarding stale smart replies (session changed)");
-          setSmartRepliesLoading(false);
-          return;
-        }
-        if (replies.length > 0) setSmartReplies(replies);
-        setSmartRepliesLoading(false);
-      })
-      .catch((e) => {
-        if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
-          console.error("[AutoForge] Smart reply generation failed:", e);
-        }
-        setSmartRepliesLoading(false);
-      });
-  };
-
   useEffect(() => {
     // Run the check every 15 seconds to see if it's time to act
     const interval = setInterval(() => {
       if (storeRef.current.autoForgeEnabled && storeRef.current.autoForgeAutoCheckEnabled) {
         checkAutoForge();
-      } else if (!storeRef.current.autoForgeEnabled && storeRef.current.smartRepliesEnabled) {
-        // AutoForge off — still detect mentions for smart replies
-        checkMentionsOnly();
       }
     }, 15000);
     
@@ -1577,20 +1465,8 @@ export function useAutoForge() {
     };
     window.addEventListener("easter-egg-supercharge", onSupercharge);
 
-    // Clean up expired smart replies every 10 seconds
-    const replyCleanup = setInterval(() => {
-      const current = useAppStore.getState().smartReplies;
-      if (current.length > 0) {
-        const cleaned = cleanExpiredSmartReplies(current);
-        if (cleaned.length !== current.length) {
-          useAppStore.getState().setSmartReplies(cleaned);
-        }
-      }
-    }, 10000);
-
     return () => {
       clearInterval(interval);
-      clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForceCheck);
       window.removeEventListener("easter-egg-supercharge", onSupercharge);
       if (followupTimerRef.current) {

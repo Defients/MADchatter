@@ -828,9 +828,9 @@ export function ForgeLayout() {
       if (lastSent.dryRun) {
         // Dry run: append the actual message text as a preview entry
         appendChatLog({ id: lastSent.id, user: "You (dry run)", text: lastSent.message, timestamp: lastSent.timestamp, dryRun: true });
-      } else if (lastSent.source === "manual") {
+      } else if (lastSent.source === "manual" || lastSent.source === "smart_reply") {
         // Manual send: show the actual message text highlighted in gold
-        appendChatLog({ id: lastSent.id, user: "You", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "manual" });
+        appendChatLog({ id: lastSent.id, user: "You", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: lastSent.source });
       } else if (lastSent.source === "autoforge" || lastSent.source === "followup") {
         // AutoForge: show the actual message text highlighted in gold
         const botName = lastSent.botId
@@ -865,8 +865,8 @@ export function ForgeLayout() {
       const cur = bot.runtime.sentMessages.length;
       if (cur > prev) {
         const lastSent = bot.runtime.sentMessages[cur - 1];
-        if (lastSent?.source === "manual") {
-          appendChatLog({ id: lastSent.id, user: bot.session?.username || "Bot", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "manual" });
+        if (lastSent?.source === "manual" || lastSent?.source === "smart_reply") {
+          appendChatLog({ id: lastSent.id, user: bot.session?.username || "Bot", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: lastSent.source });
           appended = true;
         } else if (lastSent?.source === "autoforge" || lastSent?.source === "followup") {
           appendChatLog({ id: lastSent.id, user: bot.session?.username || "Bot", text: lastSent.message, timestamp: lastSent.timestamp, selfSent: true, selfSentSource: "autoforge" });
@@ -996,14 +996,15 @@ export function ForgeLayout() {
 
   // Send a smart reply and record it in the sent log / stats so anti-repetition
   // and analytics see it (previously smart replies were sent but not tracked).
-  const sendSmartReply = async (text: string) => {
+  const sendSmartReply = async (reply: (typeof smartReplies)[number]) => {
     const channel = streamMetadata?.channelName;
     if (!channel) return;
     const state = useAppStore.getState();
     try {
-      await sendManualMessage({ message: text, channel, source: "smart_reply" });
+      await sendManualMessage({ message: reply.text, channel, botId: reply.botId, source: "smart_reply" });
       if (state.messageSoundEnabled) playMessageSound();
       setSmartReplies([]);
+      useAppStore.getState().setSmartReplyNotice(null);
       toast.success("Reply sent!");
       playSfx('send_message');
     } catch (e: any) {
@@ -1022,7 +1023,7 @@ export function ForgeLayout() {
       const idx = parseInt(e.key, 10) - 1;
       if (idx >= 0 && idx < smartReplies.length) {
         e.preventDefault();
-        sendSmartReply(smartReplies[idx].text);
+        sendSmartReply(smartReplies[idx]);
       }
     };
     window.addEventListener('keydown', handler);
@@ -2241,7 +2242,7 @@ export function ForgeLayout() {
                       <button
                         key={reply.id}
                         type="button"
-                        onClick={() => sendSmartReply(reply.text)}
+                        onClick={() => sendSmartReply(reply)}
                         className="text-[10px] px-2 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/25 hover:border-cyan-400/50 transition-all max-w-[200px] truncate flex items-center gap-1"
                       >
                         <kbd className="text-[8px] font-mono bg-cyan-500/20 rounded px-0.5 text-cyan-400 shrink-0">{idx + 1}</kbd>

@@ -52,7 +52,7 @@ import {
   GripHorizontal,
   Check,
 } from "lucide-react";
-import { useAppStore, selectMultiBotActive, MOBILE_DIRECTOR_NOTE_LIMIT } from "../store";
+import { useAppStore, MOBILE_DIRECTOR_NOTE_LIMIT } from "../store";
 import { useCoreReadiness } from "../hooks/useCoreReadiness";
 import { useNowTick } from "../hooks/useNowTick";
 import { useEffectiveMode, useStudioAvailable } from "../hooks/useMediaQuery";
@@ -65,7 +65,7 @@ import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { primeBackgroundTtsAudio, endAllBackgroundTtsSessions } from "../lib/backgroundTts";
-import { playSfx } from "../lib/sfx";
+import { initSfxAudioContext, playSfx } from "../lib/sfx";
 import { switchChannel } from "../lib/channelSwitch";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { refineSuggestion, visionRequest } from "../lib/ai";
@@ -98,6 +98,8 @@ import {
 } from "../lib/mobileControls";
 import logoUrl from "../../madchatter-logo1.png";
 import { useSelfSabotageLogoTap } from "../hooks/useSelfSabotageLogoTap";
+import { MobileSmartReplyShelf } from "./MobileSmartReplyShelf";
+import { describeConfidenceThreshold } from "../lib/confidenceThreshold";
 
 // Color maps for sentiment
 const SENTIMENT_DOT_COLORS: Record<string, string> = {
@@ -250,7 +252,7 @@ export function CoreMobileWorkspace(props: {
   const autoForgeConfidenceThreshold = useAppStore((s) => s.autoForgeConfidenceThreshold);
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
-  const { decision: lastAutoForgeDecision, bot: lastDecisionBot } = useEffectiveAutoForgeDecision();
+  const { decision: lastAutoForgeDecision } = useEffectiveAutoForgeDecision();
   const autoForgeDecisionHistory = useAppStore((s) => s.autoForgeDecisionHistory);
   const autoForgeNextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
   // Shared app clock (hooks/useNowTick).
@@ -271,9 +273,6 @@ export function CoreMobileWorkspace(props: {
   const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const lastTokenUsage = useAppStore((s) => s.lastTokenUsage);
   const setLastTokenUsage = useAppStore((s) => s.setLastTokenUsage);
-  const multiBotActive = useAppStore(selectMultiBotActive);
-  const bots = useAppStore((s) => s.bots);
-  const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
   const r34lEnabled = useAppStore((s) => s.r34lEnabled);
   const setR34lEnabled = useAppStore((s) => s.setR34lEnabled);
   const sfxEnabled = useAppStore((s) => s.sfxEnabled);
@@ -284,16 +283,9 @@ export function CoreMobileWorkspace(props: {
   const readiness = useCoreReadiness();
   const providerSummary = getCoreProviderSummary();
 
-  const activeBots = useMemo(
-    () => (multiBotEnabled ? bots.filter((b) => b.active && b.session) : []),
-    [multiBotEnabled, bots]
-  );
   const mergedDecisionHistory = useMemo(
-    () => mergeAutoForgeDecisionHistory(
-      autoForgeDecisionHistory,
-      multiBotActive ? activeBots : [],
-    ),
-    [autoForgeDecisionHistory, multiBotActive, activeBots],
+    () => mergeAutoForgeDecisionHistory(autoForgeDecisionHistory, []),
+    [autoForgeDecisionHistory],
   );
   const telemetryHistorySelection = resolveAutoForgeHistorySelection(
     mergedDecisionHistory,
@@ -301,9 +293,8 @@ export function CoreMobileWorkspace(props: {
   );
   const selectedTelemetryEntry = telemetryHistorySelection.entry;
   const telemetryDecision = selectedTelemetryEntry?.decision ?? lastAutoForgeDecision;
-  const telemetryDecisionBot = selectedTelemetryEntry?.bot ?? lastDecisionBot;
   const telemetryDecisionKey = selectedTelemetryEntry?.key
-    ?? `effective:${telemetryDecisionBot?.id ?? "legacy"}:${telemetryDecision?.timestamp ?? 0}:${telemetryDecision?.decision ?? "none"}`;
+    ?? `effective:legacy:${telemetryDecision?.timestamp ?? 0}:${telemetryDecision?.decision ?? "none"}`;
 
   const setDecisionSending = useCallback((key: string, sending: boolean) => {
     setSendingDecisionKeys((current) => {
@@ -434,8 +425,6 @@ export function CoreMobileWorkspace(props: {
           <MobileForgeTab
             readiness={readiness}
             providerSummary={providerSummary}
-            activeBots={activeBots}
-            multiBotActive={multiBotActive}
             onSelectTuning={() => setMobileTab("tuning")}
           />
         </div>
@@ -460,6 +449,10 @@ export function CoreMobileWorkspace(props: {
           />
         </div>
       </main>
+
+      {/* Global Mobile CORE response surface — available from every tab and
+          kept in normal flex flow so it never covers navigation/safe areas. */}
+      <MobileSmartReplyShelf onOpenTuning={() => setMobileTab("tuning")} />
 
       {/* ─── 3. Persistent Status / Telemetry Strip (with Expandable Drawer) ─── */}
       {/* ─── 3. Persistent Status / Telemetry Strip (collapsible utility strip) ───
@@ -650,9 +643,6 @@ export function CoreMobileWorkspace(props: {
                   <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] min-w-0">
                     <span className="text-orange-400 font-bold uppercase break-words min-w-0">
                       Decision: {telemetryDecision.decision}
-                      {telemetryDecisionBot && (
-                        <span className="text-purple-300 font-mono normal-case"> @{telemetryDecisionBot.session?.username ?? telemetryDecisionBot.label}</span>
-                      )}
                     </span>
                     <span className="text-gray-400 font-mono shrink-0">
                       {(telemetryDecision.confidence * 100).toFixed(0)}% conf
@@ -665,8 +655,6 @@ export function CoreMobileWorkspace(props: {
                     <DecisionSendButton
                       decisionKey={telemetryDecisionKey}
                       payload={telemetryDecision.action_payload}
-                      botId={telemetryDecisionBot?.id}
-                      botSentMessages={telemetryDecisionBot?.runtime.sentMessages}
                       sending={sendingDecisionKeys.has(telemetryDecisionKey)}
                       onSendingChange={(sending) => setDecisionSending(telemetryDecisionKey, sending)}
                       onSent={(text) => {
@@ -823,8 +811,6 @@ function MobileContextTab(props: {
   const platform = useAppStore((s) => s.platform);
   const chatLog = useAppStore((s) => s.chatLog);
   const sentimentHistory = useAppStore((s) => s.sentimentHistory);
-  const smartReplies = useAppStore((s) => s.smartReplies);
-  const smartRepliesLoading = useAppStore((s) => s.smartRepliesLoading);
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
   const pinnedMemories = useAppStore((s) => s.pinnedMemories);
   const addPinnedMemory = useAppStore((s) => s.addPinnedMemory);
@@ -1287,33 +1273,6 @@ function MobileContextTab(props: {
         </div>
       )}
 
-      {/* Smart Replies Chips */}
-      {(smartReplies.length > 0 || smartRepliesLoading) && (
-        <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 border-b border-white/5 bg-cyan-500/5 overflow-x-auto">
-          {smartRepliesLoading ? (
-            <span className="text-[10px] text-cyan-400 animate-pulse">Generating replies…</span>
-          ) : (
-            smartReplies.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={async () => {
-                  try {
-                    await sendManualMessage({ message: r.text, channel, source: "manual" });
-                    toast.success("Reply sent!");
-                  } catch (e: any) {
-                    toast.error(e.message || "Failed to send");
-                  }
-                }}
-                className="shrink-0 text-[10px] font-bold px-2.5 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/25 transition-all truncate max-w-[200px]"
-              >
-                {r.text}
-              </button>
-            ))
-          )}
-        </div>
-      )}
-
       {/* ─── Chat Messages Scroll Area ─── */}
       <div
         ref={chatContainerRef}
@@ -1583,8 +1542,6 @@ function MobileChatComposer(props: {
 function MobileForgeTab(props: {
   readiness: ReturnType<typeof useCoreReadiness>;
   providerSummary: ReturnType<typeof getCoreProviderSummary>;
-  activeBots: any[];
-  multiBotActive: boolean;
   onSelectTuning?: () => void;
 }) {
   // Store state
@@ -1791,6 +1748,7 @@ function MobileForgeTab(props: {
             step={1}
             value={config.humorLevel}
             onValueChange={(value) => updateConfig({ humorLevel: value })}
+            onValueCommit={() => playSfx("slider_commit")}
             ariaLabel="Humor level"
           />
         </div>
@@ -1816,6 +1774,7 @@ function MobileForgeTab(props: {
             step={1}
             value={config.chaosLevel}
             onValueChange={(value) => updateConfig({ chaosLevel: value })}
+            onValueCommit={() => playSfx("slider_commit")}
             className="mobile-slider-purple"
             ariaLabel="Chaos level"
           />
@@ -1983,8 +1942,6 @@ function MobileForgeTab(props: {
                 onSend={handleSend}
                 onRefine={handleRefine}
                 onClose={(id) => setVariants(variants.filter((item) => item.variant_id !== id))}
-                multiBotActive={props.multiBotActive}
-                activeBots={props.activeBots}
               />
             ))}
           </div>
@@ -2453,6 +2410,7 @@ function MobileTuningTab(props: {
   const setTtsBackgroundEnabled = useAppStore((s) => s.setTtsBackgroundEnabled);
   const smartRepliesEnabled = useAppStore((s) => s.smartRepliesEnabled);
   const setSmartRepliesEnabled = useAppStore((s) => s.setSmartRepliesEnabled);
+  const confidenceDescription = describeConfidenceThreshold(autoForgeConfidenceThreshold);
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -2824,7 +2782,10 @@ function MobileTuningTab(props: {
               <button
                 key={lvl}
                 type="button"
-                onClick={() => updateConfig({ effortLevel: lvl })}
+                onClick={() => {
+                  updateConfig({ effortLevel: lvl });
+                  playSfx("select_change");
+                }}
                 className={cn(
                   "py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target",
                   (config.effortLevel || "medium") === lvl
@@ -2845,9 +2806,19 @@ function MobileTuningTab(props: {
           <MobileDirectorPanel />
 
           {/* TTS */}
-          <div
-            onClick={() => setTtsEnabled(!ttsEnabled)}
-            className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
+          <button
+            type="button"
+            onClick={() => {
+              const next = !ttsEnabled;
+              setTtsEnabled(next);
+              if (!next) {
+                setTtsBackgroundEnabled(false);
+                endAllBackgroundTtsSessions();
+              }
+              playSfx("select_change");
+            }}
+            aria-pressed={ttsEnabled}
+            className="flex w-full items-center justify-between rounded-lg px-1 text-left text-xs transition-colors hover:bg-white/[0.035] active:bg-white/[0.06] touch-target"
           >
             <span className="text-gray-300">Text-to-Speech (TTS)</span>
             <span
@@ -2860,14 +2831,19 @@ function MobileTuningTab(props: {
             >
               {ttsEnabled ? "ON" : "OFF"}
             </span>
-          </div>
+          </button>
 
           {/* Background TTS — TTS playback only, never a general
               "run in background" switch. The tap primes the keep-alive
               audio element inside the user gesture so engines that gate
               media on interaction accept it later. */}
-          <div
+          <button
+            type="button"
+            disabled={!ttsEnabled}
+            aria-disabled={!ttsEnabled}
+            aria-pressed={ttsEnabled && ttsBackgroundEnabled}
             onClick={() => {
+              if (!ttsEnabled) return;
               const next = !ttsBackgroundEnabled;
               setTtsBackgroundEnabled(next);
               // ON primes the keep-alive inside this user gesture; OFF drops
@@ -2875,33 +2851,52 @@ function MobileTuningTab(props: {
               // utterance to end.
               if (next) primeBackgroundTtsAudio();
               else endAllBackgroundTtsSessions();
+              playSfx("select_change");
             }}
-            className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
+            className={cn(
+              "ml-3 flex w-[calc(100%-0.75rem)] items-center justify-between rounded-lg border-l px-2 text-left text-xs transition-all touch-target",
+              ttsEnabled
+                ? "cursor-pointer border-emerald-400/20 bg-emerald-400/[0.025] hover:bg-emerald-400/[0.06]"
+                : "cursor-not-allowed border-white/5 bg-black/20 opacity-50",
+            )}
           >
             <div className="flex flex-col min-w-0 pr-2">
-              <span className="text-gray-300">Background TTS</span>
+              <span className={ttsEnabled ? "text-gray-300" : "text-gray-500"}>↳ Background TTS</span>
               <span className="text-[9px] text-gray-600 truncate">
-                Background playback depends on your browser and phone settings.
+                {ttsEnabled ? "Background playback depends on your browser and phone settings." : "Requires Text-to-Speech."}
               </span>
             </div>
             <span
               className={cn(
                 "text-[10px] font-bold px-2 py-0.5 rounded border shrink-0",
-                ttsBackgroundEnabled
+                ttsEnabled && ttsBackgroundEnabled
                   ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
                   : "bg-white/5 border-white/5 text-gray-500"
               )}
             >
-              {ttsBackgroundEnabled ? "ON" : "OFF"}
+              {!ttsEnabled ? "DISABLED" : ttsBackgroundEnabled ? "ON" : "OFF"}
             </span>
-          </div>
+          </button>
 
           {/* Sound Effects */}
-          <div
-            onClick={() => setSfxEnabled(!sfxEnabled)}
-            className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
+          <button
+            type="button"
+            onClick={() => {
+              if (!sfxEnabled) {
+                initSfxAudioContext();
+                setSfxEnabled(true);
+                playSfx("select_change");
+              } else {
+                setSfxEnabled(false);
+              }
+            }}
+            aria-pressed={sfxEnabled}
+            className="flex w-full items-center justify-between rounded-lg px-1 text-left text-xs transition-colors hover:bg-white/[0.035] active:bg-white/[0.06] touch-target"
           >
-            <span className="text-gray-300">Sound Effects & SFX</span>
+            <span className="flex flex-col">
+              <span className="text-gray-300">Sound Effects & SFX</span>
+              <span className="text-[9px] text-gray-600">Optional interface sounds. Direct mention alerts stay on.</span>
+            </span>
             <span
               className={cn(
                 "text-[10px] font-bold px-2 py-0.5 rounded border",
@@ -2912,7 +2907,7 @@ function MobileTuningTab(props: {
             >
               {sfxEnabled ? "ON" : "OFF"}
             </span>
-          </div>
+          </button>
 
           {/* R34L Human Typing — true three-state control (tap cycle:
               OFF → FROZEN → ON → OFF). No modifier keys required on touch:
@@ -2942,7 +2937,7 @@ function MobileTuningTab(props: {
                   setR34lLearningFrozen(true);
                   toast.success("R34L FROZEN — applying learned style, collecting nothing new");
                 }
-                playSfx("palette_select");
+                playSfx("select_change");
               }}
               aria-label={`R34L mode: ${r34lLearningFrozen ? "FROZEN (apply only)" : r34lEnabled ? "ON (learning)" : "OFF"}. Tap to cycle OFF, FROZEN, ON.`}
               className={cn(
@@ -2959,13 +2954,16 @@ function MobileTuningTab(props: {
           </div>
           <R34lInlineDetails showDesktopShortcutHint={false} />
 
-          {/* Smart Replies — generates click-to-send reply suggestions when
-              the bot is mentioned. Works with AutoForge off (mention-only
-              loop) or on. The generation loop is mounted globally, so this
-              toggle is all mobile users need to turn it on. */}
-          <div
-            onClick={() => setSmartRepliesEnabled(!smartRepliesEnabled)}
-            className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
+          {/* Smart Replies — incoming direct mentions trigger immediately at
+              the chat chokepoint. AutoForge and AutoCheck are independent. */}
+          <button
+            type="button"
+            onClick={() => {
+              setSmartRepliesEnabled(!smartRepliesEnabled);
+              playSfx("select_change");
+            }}
+            aria-pressed={smartRepliesEnabled}
+            className="flex w-full items-center justify-between rounded-lg px-1 text-left text-xs transition-colors hover:bg-white/[0.035] active:bg-white/[0.06] touch-target"
           >
             <div className="flex flex-col min-w-0">
               <span className="text-gray-300">Smart Replies</span>
@@ -2983,7 +2981,7 @@ function MobileTuningTab(props: {
             >
               {smartRepliesEnabled ? "ON" : "OFF"}
             </span>
-          </div>
+          </button>
         </div>
       </div>
 
@@ -3004,7 +3002,10 @@ function MobileTuningTab(props: {
                 <button
                   key={lvl}
                   type="button"
-                  onClick={() => updateConfig({ emoteDensity: lvl })}
+                onClick={() => {
+                  updateConfig({ emoteDensity: lvl });
+                  playSfx("select_change");
+                }}
                   aria-pressed={active}
                   className={cn(
                     "relative py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-300/80",
@@ -3036,7 +3037,10 @@ function MobileTuningTab(props: {
                 <button
                   key={lvl}
                   type="button"
-                  onClick={() => updateConfig({ lengthPreference: toggleMobileLengthPreference(config.lengthPreference, lvl) })}
+                  onClick={() => {
+                    updateConfig({ lengthPreference: toggleMobileLengthPreference(config.lengthPreference, lvl) });
+                    playSfx("select_change");
+                  }}
                   aria-pressed={active}
                   aria-label={`${lvl} message length${active ? "; tap again for adaptable length" : ""}`}
                   className={cn(
@@ -3062,7 +3066,10 @@ function MobileTuningTab(props: {
                 <button
                   key={lvl}
                   type="button"
-                  onClick={() => updateConfig({ toxicityFilter: lvl })}
+                  onClick={() => {
+                    updateConfig({ toxicityFilter: lvl });
+                    playSfx("select_change");
+                  }}
                   aria-pressed={active}
                   className={cn(
                     "relative py-1.5 rounded-lg border text-[10px] font-bold uppercase transition-all touch-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70",
@@ -3098,6 +3105,7 @@ function MobileTuningTab(props: {
             const nd = !autoForgeDryRun;
             setAutoForgeDryRun(nd);
             toast.info(`Dry run mode ${nd ? "enabled" : "disabled"}`);
+            playSfx("select_change");
           }}
           className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
         >
@@ -3121,8 +3129,8 @@ function MobileTuningTab(props: {
         <div className="space-y-1 pt-1 border-t border-white/5">
           <div className="flex justify-between items-center text-xs font-bold">
             <span className="text-gray-300">Confidence Threshold</span>
-            <span className="text-[10px] font-mono text-amber-400">
-              {(autoForgeConfidenceThreshold * 100).toFixed(0)}%
+            <span className="text-[10px] font-mono" style={{ color: confidenceDescription.color }}>
+              {(autoForgeConfidenceThreshold * 100).toFixed(0)}% · {confidenceDescription.label}
             </span>
           </div>
           <MobileIntentRange
@@ -3131,8 +3139,10 @@ function MobileTuningTab(props: {
             step={0.05}
             value={autoForgeConfidenceThreshold}
             onValueChange={setAutoForgeConfidenceThreshold}
-            className="mobile-slider-amber"
-            ariaLabel="Confidence threshold"
+            onValueCommit={() => playSfx("slider_commit")}
+            className="mobile-slider-confidence"
+            accentColor={confidenceDescription.color}
+            ariaLabel={`Confidence threshold ${Math.round(autoForgeConfidenceThreshold * 100)} percent, ${confidenceDescription.label}`}
           />
         </div>
       </div>

@@ -10,30 +10,31 @@ import { analyzeRepetition, formatRepetitionContext } from "./antiRepetition";
 import { buildLongTermMemoryContext } from "./autoForgeCore";
 import { getAvailableEmoteNames } from "./emotes";
 import { resolveCurrentR34lAdaptation } from "./r34lAdaptation";
+import { getCachedTrialUsage, isTrialDailyLimitError, shouldPauseTrialAutomation, TRIAL_PROVIDER } from "./trial";
+import { SmartReplyRequestError } from "./directMention";
 
-let lastSmartReplyTime = 0;
-const SMART_REPLY_COOLDOWN_MS = 30_000;
-const SMART_REPLY_EXPIRY_MS = 60_000;
-
-export function canGenerateSmartReplies(): boolean {
-  return Date.now() - lastSmartReplyTime > SMART_REPLY_COOLDOWN_MS;
-}
-
-export function cleanExpiredSmartReplies(replies: SmartReply[]): SmartReply[] {
-  const now = Date.now();
-  return replies.filter((r) => now - r.timestamp < SMART_REPLY_EXPIRY_MS);
-}
-
-export async function generateSmartReplies(mentionedLines: string[], options?: { botId?: string }): Promise<SmartReply[]> {
-  if (!canGenerateSmartReplies()) return [];
-  if (!hasAnyApiKey()) return [];
-
-  lastSmartReplyTime = Date.now();
+export async function generateSmartReplies(mentionedLines: string[], options?: {
+  botId?: string;
+  mentionMessageId?: string;
+  mentionedUsername?: string;
+  botUsername?: string;
+}): Promise<SmartReply[]> {
+  if (!hasAnyApiKey()) {
+    throw new SmartReplyRequestError("no_provider", "Smart Replies need an AI provider.");
+  }
 
   const state = useAppStore.getState();
   const activeProvider = getActiveProvider();
 
-  if (!getApiKey(activeProvider)) return [];
+  if (!getApiKey(activeProvider)) {
+    throw new SmartReplyRequestError("no_provider", "Smart Replies need an AI provider.");
+  }
+  if (activeProvider === TRIAL_PROVIDER && shouldPauseTrialAutomation(activeProvider, state.trialUsage ?? getCachedTrialUsage())) {
+    throw new SmartReplyRequestError(
+      "trial_exhausted",
+      "Today's Friend Trial is used up. It resets at 12:00 PM ET, or you can switch to your own AI provider.",
+    );
+  }
 
   // Resolve the actual bot username from the platform session — NOT the
   // streamer's channel name. In multi-bot mode, prefer the explicitly
@@ -54,7 +55,7 @@ export async function generateSmartReplies(mentionedLines: string[], options?: {
     if (platform === 'joystick') return window.__joystickSession?.username;
     return window.__twitchSession?.username;
   };
-  const botUsername = resolveBotUsername();
+  const botUsername = options?.botUsername || resolveBotUsername();
 
   // Resolve the bot's persona + runtime for context enrichment. In multi-bot
   // mode (with an explicit botId or manual send bot), use that bot's persona
@@ -218,15 +219,32 @@ Rules:
     }
 
     const suggestions = typeof result === "string" ? [] : (result?.suggestions || []);
-    if (suggestions.length === 0) return [];
+    if (suggestions.length === 0) {
+      throw new SmartReplyRequestError("no_usable_reply", "The provider returned no usable Smart Replies.");
+    }
 
     return suggestions.slice(0, 3).map((s: any) => ({
       id: generateId(),
       text: String(s.message || "").slice(0, 280),
       timestamp: Date.now(),
+      mentionMessageId: options?.mentionMessageId,
+      mentionedUsername: options?.mentionedUsername,
+      botUsername,
+      botId: options?.botId,
     })).filter((r: SmartReply) => r.text.length > 0);
   } catch (e) {
+    if (e instanceof SmartReplyRequestError) throw e;
+    if (isTrialDailyLimitError(e)) {
+      throw new SmartReplyRequestError("trial_exhausted", e.message);
+    }
+    const message = e instanceof Error ? e.message : String(e);
+    if (/trial.+expired|session expired/i.test(message)) {
+      throw new SmartReplyRequestError("trial_expired", "Friend Trial expired. Reactivate it or choose another provider.");
+    }
+    if (/unavailable|offline|network|fetch|timeout|cooldown|connection/i.test(message)) {
+      throw new SmartReplyRequestError("provider_unavailable", "The active AI provider is unavailable right now.");
+    }
     console.error("[smartReplies] Generation failed:", e);
-    return [];
+    throw new SmartReplyRequestError("generation_failed", "Smart Reply generation failed. Try again on the next mention.");
   }
 }

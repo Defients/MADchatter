@@ -35,6 +35,7 @@ await send({ source: 'smart_reply' });
 assert.equal(deliveries[0].botId, 'chosen');
 assert.deepEqual(calls.filter(([name]) => name === 'incrementBotStat').map((call) => call.slice(1)), [['chosen', 'messagesSent'], ['chosen', 'manualActions']]);
 assert.equal(calls.at(-1)[2].details.source, 'smart_reply');
+assert.equal(calls.find(([name]) => name === 'addBotSentMessage')[2].source, 'smart_reply');
 assert.ok(!calls.some(([name]) => name === 'addSentMessage'));
 
 reset({ multiBotEnabled: true, bots: [bot('wrong', 'kick'), bot('inactive', 'twitch', false), bot('valid')] });

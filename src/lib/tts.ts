@@ -225,7 +225,12 @@ function speakWeb(text: string, voiceName: string | null, rate: number, volume: 
 
   // No-op unless Background TTS is enabled — holds the OS media session so
   // speech can survive lock/background where the platform permits.
-  beginBackgroundTtsSession("web", () => stopSpeaking());
+  const backgroundState = useAppStore.getState();
+  beginBackgroundTtsSession(
+    "web",
+    () => stopSpeaking(),
+    backgroundState.ttsEnabled && backgroundState.ttsBackgroundEnabled,
+  );
   synth.speak(utterance);
 }
 
@@ -336,7 +341,12 @@ async function speakElevenLabs(
   }
   // The <audio> element itself is the media session — this just publishes
   // metadata + a lock-screen stop handler when Background TTS is enabled.
-  beginBackgroundTtsSession("elevenlabs", () => stopSpeaking());
+  const backgroundState = useAppStore.getState();
+  beginBackgroundTtsSession(
+    "elevenlabs",
+    () => stopSpeaking(),
+    backgroundState.ttsEnabled && backgroundState.ttsBackgroundEnabled,
+  );
 }
 
 // ─── Main Entry Point ────────────────────────────────────────────────────────
@@ -372,6 +382,10 @@ export function stopSpeaking(): void {
   // Release any background hold (keep-alive + media session) — no-op when
   // nothing is held.
   endAllBackgroundTtsSessions();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("madchatter-tts-disabled", stopSpeaking);
 }
 
 export async function testVoice(): Promise<void> {

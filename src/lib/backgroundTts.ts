@@ -21,7 +21,7 @@
  * behaves exactly as it did before the toggle existed.
  */
 
-import { useAppStore } from "../store";
+import { ensureManagedAudioElement, primeMediaElement, safePlayMediaElement } from "./mediaAudio";
 
 export type BackgroundTtsKind = "web" | "elevenlabs";
 
@@ -29,6 +29,10 @@ let keepAliveEl: HTMLAudioElement | null = null;
 let silenceUrl: string | null = null;
 /** Number of live TTS utterances currently holding a background session. */
 let activeSessions = 0;
+
+export function getBackgroundTtsSessionCountForTesting(): number {
+  return activeSessions;
+}
 
 // ─── Silent keep-alive clip ─────────────────────────────────────────────────
 // 1s of 8kHz/16-bit/mono PCM at ~-60dB — effectively inaudible but a real
@@ -73,21 +77,11 @@ function buildSilenceDataUri(): string {
 }
 
 function ensureKeepAliveEl(): HTMLAudioElement | null {
-  if (typeof window === "undefined" || typeof document === "undefined") return null;
-  if (!keepAliveEl) {
-    try {
-      if (!silenceUrl) silenceUrl = buildSilenceDataUri();
-      const el = document.createElement("audio");
-      el.src = silenceUrl;
-      el.loop = true;
-      el.preload = "auto";
-      el.setAttribute("playsinline", "");
-      el.setAttribute("aria-hidden", "true");
-      keepAliveEl = el;
-    } catch {
-      return null;
-    }
-  }
+  if (!silenceUrl) silenceUrl = buildSilenceDataUri();
+  keepAliveEl = ensureManagedAudioElement(keepAliveEl, silenceUrl, {
+    loop: true,
+    label: "Background text-to-speech keepalive",
+  });
   return keepAliveEl;
 }
 
@@ -128,14 +122,7 @@ function setMediaSession(playing: boolean, onStop?: () => void): void {
 export function primeBackgroundTtsAudio(): void {
   const el = ensureKeepAliveEl();
   if (!el) return;
-  try {
-    const p = el.play();
-    if (p && typeof (p as Promise<void>).then === "function") {
-      (p as Promise<void>)
-        .then(() => { if (activeSessions === 0 && keepAliveEl) keepAliveEl.pause(); })
-        .catch(() => { /* engine refused — that's a graceful no-op */ });
-    }
-  } catch { /* ignore */ }
+  primeMediaElement(el, activeSessions > 0);
 }
 
 /**
@@ -143,8 +130,8 @@ export function primeBackgroundTtsAudio(): void {
  * strict no-op — foreground playback is identical either way.
  * `onStop` is wired to lock-screen pause/stop controls (tts.stopSpeaking).
  */
-export function beginBackgroundTtsSession(kind: BackgroundTtsKind, onStop: () => void): void {
-  if (!useAppStore.getState().ttsBackgroundEnabled) return;
+export function beginBackgroundTtsSession(kind: BackgroundTtsKind, onStop: () => void, enabled: boolean): void {
+  if (!enabled) return;
   activeSessions++;
   // Web Speech has no media element of its own — the silent keep-alive holds
   // the OS media session open so speech may continue in the background where
@@ -153,7 +140,7 @@ export function beginBackgroundTtsSession(kind: BackgroundTtsKind, onStop: () =>
   if (kind === "web") {
     const el = ensureKeepAliveEl();
     if (el && el.paused) {
-      try { el.play().catch(() => { /* unsupported — degrade silently */ }); } catch { /* ignore */ }
+      void safePlayMediaElement(el);
     }
   }
   setMediaSession(true, onStop);

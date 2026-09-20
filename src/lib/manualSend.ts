@@ -82,7 +82,13 @@ export async function sendManualMessage({
       summary: `${dryRun ? "[DRY RUN] " : ""}${source === "autoforge" ? "AutoForge send" : source === "smart_reply" ? "Smart reply" : "Manual send"}${sentBot ? ` as @${sentBot.session?.username}` : ""}: "${text.substring(0, 60)}${text.length > 60 ? "..." : ""}"`,
       details: { source, message: text, channel: destination, dryRun, ...(sentBot ? { botId: sentBot.id } : {}) },
     };
-    const sentMessage = { message: text, channel: destination, timestamp, source: source === "autoforge" ? "autoforge" as const : "manual" as const, ...(dryRun ? { dryRun: true } : {}) };
+    const sentMessage = {
+      message: text,
+      channel: destination,
+      timestamp,
+      source: source === "autoforge" ? "autoforge" as const : source === "smart_reply" ? "smart_reply" as const : "manual" as const,
+      ...(dryRun ? { dryRun: true } : {}),
+    };
     if (sentBot) {
       state.addBotSentMessage(sentBot.id, { ...sentMessage, botId: sentBot.id });
       if (!dryRun) {

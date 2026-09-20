@@ -26,7 +26,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 33 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 34 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
@@ -146,7 +146,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Per-bot: `useAutoForgeBot(botId)` — 15s interval per bot, requests speaker floor from `botCoordinator`. Intervals are staggered by bot index across the 15s window so they don't all fire at once and flood the single Ollama slot.
 - Orchestrator: `useMultiBotOrchestrator()` — returns JSX with `<BotLoopHost>` that mounts per-bot hooks. Must be rendered in App.tsx.
 - Both loops run a `vibeCheck()` pre-filter before the expensive `autoforgeDecide` AI call — skips dead-chat/offline/user-forging cycles without spending tokens. Never skips mentions or spikes.
-- When AutoForge is OFF but smart replies are enabled, both loops fall back to a lightweight mention-only check on the same 15s interval — detects mentions and generates smart reply suggestions without the AutoForge decision loop, so the user still gets reply suggestions while AutoForge is disabled.
+- Smart Replies are event-driven from the canonical incoming-chat chokepoint and are independent of AutoForge/AutoCheck. The AutoForge loops retain mention evidence only for autonomous decision context; they do not acknowledge, alert, or generate Smart Replies.
 - Both loops track `consecutiveSilenceRef` and apply `computeAdaptiveBackoff()` to lengthen the check interval during dead periods (resets on any action; mentions/spikes bypass).
 - Watchdogs (120s): the in-flight check guard and global `isForging` self-heal if a hung await wedges them. Force bypasses a live `isForging` gate; scheduler cancellations and queue timeouts reschedule quietly (+20s) without error toasts.
 - Queue timeouts (`isQueueTimeout()`) are capacity issues (too many bots queued for the single Ollama slot), NOT provider failures — they don't poison provider health or trigger cooldown.
@@ -244,10 +244,11 @@ Known non-fatal Vite build warnings (safe to ignore):
 - `formatThreadContext(botUsername)` — formats active threads into a compact `[ACTIVE CONVERSATION THREADS]` prompt block.
 - Both AutoForge loops (`useAutoForge`, `useAutoForgeBot`) inject `formatThreadContext()` into `autoforgeDecide` via the `threadContext` param so the bot knows when it's being replied to.
 
-### Smart Replies (`src/lib/smartReplies.ts`)
-- `generateSmartReplies(mentionedLines, { botId })` — generates 3 short reply suggestions when the bot is mentioned.
+### Smart Replies (`src/lib/directMention.ts`, `src/lib/mentionHandling.ts`, `src/lib/smartReplies.ts`)
+- Incoming chat carries a stable message ID into `handleIncomingDirectMentions()`. High-confidence `@username` or platform-reply evidence is message-deduped, acknowledged immediately, and may generate 3 click-to-send suggestions independently of AutoForge.
+- `generateSmartReplies(mentionedLines, { botId, mentionMessageId, mentionedUsername, botUsername })` generates the suggestions and preserves the target identity for desktop multi-bot sends.
 - **Context enrichment (v1.0.5):** Now injects the same rich context as AutoForge: memory context (from `retrieveRelevantMemories` + `formatMemoryContext` + `formatDirectorNotesContext`), anti-repetition context (folded into `memoryContext`), long-term memory (pinned + golden), bot identity mode + story, available emotes, and visual context. In multi-bot mode, uses the bot's own per-bot memory and sent history.
-- 30-second cooldown, 60-second expiry. Scheduled at `autonomous` priority (must not block manual Forge).
+- Dedup is scoped to `${botUsername}:${messageId}` with bounded TTL memory and a burst guard; distinct messages are never collapsed by a module-global cooldown. Replies expire after 60 seconds. Generation is scheduled at `autonomous` priority (must not block manual Forge).
 - Resolves the actual bot username from the platform session (multi-bot mode uses the explicit `botId` or `manualSendBotId`).
 
 ### Channel Snapshots (`src/lib/channelStore.ts`)

@@ -49,7 +49,6 @@ import {
   resolveEffectiveCheckFloorMs,
   type AutoCheckSignal,
 } from "../lib/coreAutoCheck";
-import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { formatThreadContext } from "../lib/conversationThread";
 import { createAutoForgeExecutionGuard, captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
@@ -260,50 +259,9 @@ export function useAutoForgeBot(botId: string) {
       const audioMentionLines = getSpokenMentionLines(botId);
       const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
 
-      // ── Mirror mention/spike detection into global stats ────────────────
-      // The legacy loop handles these globally but self-disables in multi-bot
-      // mode. Without this mirror, the AnalyticsPanel "Mentions" and "Spikes"
-      // counters stay at zero. Events go to per-bot runtime so the AutoForge
-      // Report can merge them without duplication.
-      if (isMentioned) {
-        store.incrementStat("mentionsDetected");
-        const allMentionLines = [...mentionedLines, ...audioMentionLines];
-        const source = audioMentionLines.length > 0 && mentionedLines.length === 0 ? "audio" : mentionedLines.length > 0 && audioMentionLines.length === 0 ? "chat" : "chat+audio";
-        store.addBotAutoForgeEvent(botId, {
-          timestamp: Date.now(),
-          type: "mention",
-          severity: "high",
-          summary: `[${bot.session.username}] Mentioned (${source}): ${allMentionLines.slice(0, 3).join(" | ")}`,
-          details: { mentionedLines, audioMentionLines, botUsername, botId },
-        });
-
-        // Smart reply generation — when smart replies are enabled, generate
-        // click-to-send suggestions for this bot's mention. Passes botId so
-        // the smart reply prompt uses THIS bot's identity, not the manual
-        // send bot's. Shared global smartReplies state (UI suggestions).
-        if (store.smartRepliesEnabled && canGenerateSmartReplies()) {
-          store.setSmartRepliesLoading(true);
-          generateSmartReplies(allMentionLines, { botId })
-            .then((replies) => {
-              // Don't write stale replies into a new session.
-              if (!guard.isCurrent()) {
-                console.log(`[AutoForgeBot ${bot.session.username}] Discarding stale smart replies (session changed)`);
-                useAppStore.getState().setSmartRepliesLoading(false);
-                return;
-              }
-              if (replies.length > 0) {
-                useAppStore.getState().setSmartReplies(replies);
-              }
-              useAppStore.getState().setSmartRepliesLoading(false);
-            })
-            .catch((e) => {
-              if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
-                console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
-              }
-              useAppStore.getState().setSmartRepliesLoading(false);
-            });
-        }
-      }
+      // Direct-chat acknowledgement and Smart Replies are owned by the
+      // incoming-chat coordinator. Fuzzy/audio mention evidence stays here as
+      // advisory AutoForge context without duplicating alerts or AI requests.
       if (activitySpike) {
         store.incrementStat("spikesDetected");
         store.addBotAutoForgeEvent(botId, {
@@ -1632,52 +1590,6 @@ export function useAutoForgeBot(botId: string) {
     }
   };
 
-  // Lightweight mention watcher — runs when AutoForge is OFF but smart
-  // replies are enabled. Detects this bot's mentions and generates smart
-  // replies without the expensive AutoForge decision loop.
-  const checkBotMentionsOnly = async () => {
-    const store = useAppStore.getState();
-    if (!store.smartRepliesEnabled || !canGenerateSmartReplies()) return;
-    if (shouldPauseTrialAutomation(getActiveProvider(), store.trialUsage)) return;
-    const bot = store.bots.find((b) => b.id === botId);
-    if (!bot || !bot.active || !bot.session) return;
-
-    const botUsername = (bot.session.username || "").toLowerCase();
-    if (!botUsername) return;
-
-    const recentMessages = store.chatLog.slice(-15).filter((m) => !m.marker);
-    const mentionedLines: string[] = [];
-    for (const msg of recentMessages) {
-      if (isNameMentioned(msg.text, botUsername)) {
-        mentionedLines.push(`${msg.user}: ${msg.text}`);
-      }
-    }
-    const audioMentionLines = getSpokenMentionLines(botId);
-    const allMentionLines = [...mentionedLines, ...audioMentionLines];
-    if (allMentionLines.length === 0) return;
-
-    // Capture scope so the async smart-reply result doesn't write into a
-    // different session if the channel switched during generation.
-    const mentionScope = captureSessionScope();
-    store.setSmartRepliesLoading(true);
-    generateSmartReplies(allMentionLines, { botId })
-      .then((replies) => {
-        if (!isSessionScopeCurrent(mentionScope)) {
-          console.log(`[AutoForgeBot ${bot.session.username}] Discarding stale smart replies (session changed)`);
-          useAppStore.getState().setSmartRepliesLoading(false);
-          return;
-        }
-        if (replies.length > 0) useAppStore.getState().setSmartReplies(replies);
-        useAppStore.getState().setSmartRepliesLoading(false);
-      })
-      .catch((e) => {
-        if (!isSchedulerCancellation(e) && !isQueueTimeout(e)) {
-          console.error(`[AutoForgeBot ${bot.session.username}] Smart reply generation failed:`, e);
-        }
-        useAppStore.getState().setSmartRepliesLoading(false);
-      });
-  };
-
   useEffect(() => {
     // Stagger bot check intervals so they don't all fire at once and flood
     // the single Ollama slot. Each bot's tick is offset by its index in the
@@ -1696,9 +1608,6 @@ export function useAutoForgeBot(botId: string) {
       if (store.multiBotEnabled && store.autoForgeEnabled && store.autoForgeAutoCheckEnabled) {
         const bot = store.bots.find((b) => b.id === botId);
         if (bot && bot.active && bot.session) checkBot();
-      } else if (store.multiBotEnabled && !store.autoForgeEnabled && store.smartRepliesEnabled) {
-        // AutoForge off — still detect mentions for smart replies
-        checkBotMentionsOnly();
       }
     };
 
@@ -1710,18 +1619,6 @@ export function useAutoForgeBot(botId: string) {
       tick();
       botInterval = setInterval(tick, 15000);
     }, staggerMs);
-
-    // Clean up expired smart replies every 10 seconds (mirrors legacy loop).
-    // Multiple bot loops may run this — the work is idempotent and trivial.
-    const replyCleanup = setInterval(() => {
-      const current = useAppStore.getState().smartReplies;
-      if (current.length > 0) {
-        const cleaned = cleanExpiredSmartReplies(current);
-        if (cleaned.length !== current.length) {
-          useAppStore.getState().setSmartReplies(cleaned);
-        }
-      }
-    }, 10000);
 
     const onForce = (e: Event) => {
       const store = useAppStore.getState();
@@ -1753,7 +1650,6 @@ export function useAutoForgeBot(botId: string) {
     return () => {
       clearTimeout(startTimer);
       if (botInterval) clearInterval(botInterval);
-      clearInterval(replyCleanup);
       window.removeEventListener("autoforge-force-check", onForce);
       window.removeEventListener("easter-egg-supercharge", onSupercharge);
       if (followupTimerRef.current) {

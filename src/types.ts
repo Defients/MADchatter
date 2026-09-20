@@ -11,8 +11,8 @@ export interface ChatMessage {
   dryRun?: boolean;
   /** Message was sent by the user/bot (not received from chat). Styled in gold. */
   selfSent?: boolean;
-  /** Source of the self-sent message: "manual" or "autoforge". */
-  selfSentSource?: "manual" | "autoforge";
+  /** Source of the self-sent message. Smart Replies remain operator-approved. */
+  selfSentSource?: "manual" | "smart_reply" | "autoforge";
   /** Twitch native emotes from IRC tags: emoteId → array of [start, end] ranges. */
   twitchEmotes?: Record<string, number[][]>;
 }
@@ -124,7 +124,7 @@ export interface SentMessage {
   message: string;
   channel: string;
   timestamp: number;
-  source: "manual" | "autoforge" | "followup";
+  source: "manual" | "smart_reply" | "autoforge" | "followup";
   // Multi-bot mode: which bot account sent this. Absent in legacy single-bot mode.
   botId?: string;
   // Dry run: message was previewed locally, never posted to the live channel.
@@ -379,6 +379,30 @@ export interface SmartReply {
   id: string;
   text: string;
   timestamp: number;
+  mentionMessageId?: string;
+  mentionedUsername?: string;
+  botUsername?: string;
+  botId?: string;
+}
+
+export type SmartReplyFailureReason =
+  | "no_provider"
+  | "provider_unavailable"
+  | "trial_exhausted"
+  | "trial_expired"
+  | "generation_failed"
+  | "no_usable_reply"
+  | "spam_guard";
+
+export interface SmartReplyNotice {
+  state: "mentioned" | "loading" | "ready" | "unavailable" | "error";
+  messageId: string;
+  username: string;
+  botUsername: string;
+  text: string;
+  receivedAt: number;
+  reason?: SmartReplyFailureReason;
+  message?: string;
 }
 
 // ─── Chatter Leaderboard Types ─────────────────────────────────

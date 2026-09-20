@@ -43,6 +43,8 @@ import { JoystickChatClient, joystickSendManager, getJoystickBasicAuthKey, getJo
 import { sendManualMessage } from './lib/manualSend';
 import { playMessageSound, setAudioOutputSink, setSoundUrl, setSoundVolume } from './lib/sound';
 import { playSfx, initSfxAudioContext } from './lib/sfx';
+import { primeMentionAlertAudio } from './lib/attentionAudio';
+import { handleIncomingDirectMentions, resetDirectMentionHandling } from './lib/mentionHandling';
 import { createChatMessage, parseTwitchEmoteTag } from './lib/chatUtils';
 import { getR34lRecognitionSet } from './lib/r34lAdaptation';
 import type { ChatMessage } from './types';
@@ -130,6 +132,7 @@ export default function App() {
     soundVolume,
     hypeLevel,
     cursorTrailEnabled,
+    sessionRevision,
   } = useAppStore();
 
   const tmiClientRef = useRef<tmi.Client | null>(null);
@@ -256,7 +259,10 @@ export default function App() {
 
   // 1c. Initialize SFX audio context on first user interaction
   useEffect(() => {
-    const init = () => { initSfxAudioContext(); };
+    const init = () => {
+      initSfxAudioContext();
+      primeMentionAlertAudio();
+    };
     window.addEventListener('click', init, { once: true });
     window.addEventListener('keydown', init, { once: true });
     return () => {
@@ -264,6 +270,10 @@ export default function App() {
       window.removeEventListener('keydown', init);
     };
   }, []);
+
+  useEffect(() => {
+    resetDirectMentionHandling();
+  }, [sessionRevision, platform, streamMetadata?.channelName]);
 
   // 1d. Request notification permission & start message queue processor
   useEffect(() => {
@@ -283,8 +293,28 @@ export default function App() {
   }, [desktopNotificationsEnabled]);
 
   // Helper: process incoming chat message (sentiment + activity + chatter stats + keyword triggers)
-  const processIncomingMessage = async (username: string, text: string, platform: string, badges: string[] = [], r34lMeta?: { isReply?: boolean; nativeEmotes?: string[]; channel: string; revision: number }) => {
+  const processIncomingMessage = async (username: string, text: string, platform: string, badges: string[] = [], r34lMeta?: {
+    isReply?: boolean;
+    replyTargetUsername?: string | null;
+    messageId: string;
+    receivedAt: number;
+    nativeEmotes?: string[];
+    channel: string;
+    revision: number;
+  }) => {
     const state = useAppStore.getState();
+    if (r34lMeta) {
+      handleIncomingDirectMentions({
+        messageId: r34lMeta.messageId,
+        username,
+        text,
+        receivedAt: r34lMeta.receivedAt,
+        channel: r34lMeta.channel,
+        platform,
+        sessionRevision: r34lMeta.revision,
+        replyTargetUsername: r34lMeta.replyTargetUsername,
+      });
+    }
     // Classify sentiment
     const { label, score } = classifySentiment(text);
     state.addSentimentReading({ timestamp: Date.now(), label, score, username, text });
@@ -395,7 +425,7 @@ export default function App() {
       const joystickClient = new JoystickChatClient(basicAuthKey);
       joystickClientRef.current = joystickClient;
 
-      joystickClient.onMessage((username, content) => {
+      joystickClient.onMessage((username, content, meta) => {
         // Our own sends echo back through the room feed — the send pipeline
         // already appends a styled selfSent entry, so skip the duplicate.
         const botName = getJoystickBotUsername();
@@ -403,9 +433,14 @@ export default function App() {
           if (messageSoundEnabled && botName && username.toLowerCase() === botName.toLowerCase()) playMessageSound();
           return;
         }
-        queueChatMessage(createChatMessage(username, content, 'joystick'));
+        const incoming = createChatMessage(username, content, 'joystick');
+        if (meta?.messageId) incoming.id = meta.messageId;
+        queueChatMessage(incoming);
         incrementMessagesReceived();
         processIncomingMessage(username, content, 'joystick', [], {
+          messageId: incoming.id,
+          receivedAt: incoming.timestamp,
+          replyTargetUsername: meta?.replyTargetUsername,
           channel,
           revision: useAppStore.getState().sessionRevision,
         });
@@ -445,13 +480,18 @@ export default function App() {
       const kickClient = new KickChatClient();
       kickClientRef.current = kickClient;
 
-      kickClient.onMessage((username, content) => {
+      kickClient.onMessage((username, content, meta) => {
         // Our own sends echo back through the room feed — the send pipeline
         // already appends a styled selfSent entry, so skip the duplicate.
         if (ownBotUsernames('kick').has(username.toLowerCase())) return;
-        queueChatMessage(createChatMessage(username, content, 'kick'));
+        const incoming = createChatMessage(username, content, 'kick');
+        if (meta?.messageId) incoming.id = meta.messageId;
+        queueChatMessage(incoming);
         incrementMessagesReceived();
         processIncomingMessage(username, content, 'kick', [], {
+          messageId: incoming.id,
+          receivedAt: incoming.timestamp,
+          replyTargetUsername: meta?.replyTargetUsername,
           channel,
           revision: useAppStore.getState().sessionRevision,
         });
@@ -522,7 +562,9 @@ export default function App() {
       recordIncomingMessage(tags.id || '', username, message, replyParentId);
       // Parse Twitch native emotes from IRC tags for inline rendering
       const twitchEmotes = parseTwitchEmoteTag((tags as any).emotes);
-      queueChatMessage(createChatMessage(username, message, 'twitch', twitchEmotes));
+      const incoming = createChatMessage(username, message, 'twitch', twitchEmotes);
+      if (tags.id) incoming.id = tags.id;
+      queueChatMessage(incoming);
       incrementMessagesReceived();
       // R34L learning metadata: native emote names recovered from IRC tags
       // (positions are UTF-16 code units, matching JS string slicing), plus
@@ -533,6 +575,9 @@ export default function App() {
         : undefined;
       processIncomingMessage(username, message, 'twitch', [], {
         isReply: !!replyParentId,
+        replyTargetUsername: (tags as any)['reply-parent-user-login'] || (tags as any)['reply-parent-display-name'] || null,
+        messageId: incoming.id,
+        receivedAt: incoming.timestamp,
         nativeEmotes: r34lNativeEmotes,
         channel,
         revision: useAppStore.getState().sessionRevision,
@@ -1097,7 +1142,7 @@ export default function App() {
       <Suspense fallback={null}><MemoryPanel /></Suspense>
       <Suspense fallback={null}><AnalyticsPanel /></Suspense>
       <Suspense fallback={null}><VisualHistoryOverlay /></Suspense>
-      <StatusBar />
+      {!isMobile && <StatusBar />}
       <ShortcutHelp />
       {/* No separate first-run greeting: the CORE workspace hero (brand,
           tagline, channel input front and center) is the first-run surface. */}

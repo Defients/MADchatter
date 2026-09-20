@@ -45,7 +45,7 @@ const resilientLocalStorage: Storage = {
     }
   },
 };
-import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
+import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, SmartReplyNotice, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
 import { stripReasoningBlocks } from "./lib/textSanitize";
@@ -104,6 +104,7 @@ import {
   reconcileAutoCheckSchedule,
   type AutoCheckMode,
 } from "./lib/coreAutoCheck";
+import { endAllBackgroundTtsSessions } from "./lib/backgroundTts";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
 // ─── Director Notes ─────────────────────────────────────────
@@ -113,7 +114,7 @@ import {
 // mobile add action.
 export const MOBILE_DIRECTOR_NOTE_LIMIT = 3;
 
-const SETTINGS_VERSION = 33;
+const SETTINGS_VERSION = 34;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -836,6 +837,8 @@ interface AppState {
   setSmartReplies: (replies: SmartReply[]) => void;
   smartRepliesLoading: boolean;
   setSmartRepliesLoading: (loading: boolean) => void;
+  smartReplyNotice: SmartReplyNotice | null;
+  setSmartReplyNotice: (notice: SmartReplyNotice | null) => void;
   smartRepliesEnabled: boolean;
   setSmartRepliesEnabled: (enabled: boolean) => void;
 
@@ -1835,6 +1838,7 @@ export const useAppStore = create<AppState>()(
           variants: [],
           isForging: false,
           smartRepliesLoading: false,
+          smartReplyNotice: null,
           chatLog: [],
           sentMessages: [],
           audioTranscript: "",
@@ -2326,7 +2330,15 @@ export const useAppStore = create<AppState>()(
       setEmoteAwarenessEnabled: (enabled) => set({ emoteAwarenessEnabled: enabled }),
 
       ttsEnabled: false,
-      setTtsEnabled: (enabled) => set({ ttsEnabled: enabled }),
+      setTtsEnabled: (enabled) => {
+        if (!enabled) {
+          endAllBackgroundTtsSessions();
+          set({ ttsEnabled: false, ttsBackgroundEnabled: false });
+          if (typeof window !== "undefined") window.dispatchEvent(new Event("madchatter-tts-disabled"));
+          return;
+        }
+        set({ ttsEnabled: true });
+      },
       ttsProvider: "web",
       setTtsProvider: (provider) => set({ ttsProvider: provider }),
       ttsVoice: null,
@@ -2340,7 +2352,11 @@ export const useAppStore = create<AppState>()(
       ttsAudioOutputDeviceId: null,
       setTtsAudioOutputDeviceId: (id) => set({ ttsAudioOutputDeviceId: id }),
       ttsBackgroundEnabled: false,
-      setTtsBackgroundEnabled: (enabled) => set({ ttsBackgroundEnabled: enabled }),
+      setTtsBackgroundEnabled: (enabled) => {
+        if (enabled && !get().ttsEnabled) return;
+        if (!enabled) endAllBackgroundTtsSessions();
+        set({ ttsBackgroundEnabled: enabled });
+      },
 
       // ─── Bot Identity (B8) ───────────────────────────────────
       botIdentityMode: "admit",
@@ -2598,8 +2614,12 @@ export const useAppStore = create<AppState>()(
       setSmartReplies: (replies) => set({ smartReplies: replies }),
       smartRepliesLoading: false,
       setSmartRepliesLoading: (loading) => set({ smartRepliesLoading: loading }),
+      smartReplyNotice: null,
+      setSmartReplyNotice: (notice) => set({ smartReplyNotice: notice }),
       smartRepliesEnabled: false,
-      setSmartRepliesEnabled: (enabled) => set({ smartRepliesEnabled: enabled }),
+      setSmartRepliesEnabled: (enabled) => set(enabled
+        ? { smartRepliesEnabled: true }
+        : { smartRepliesEnabled: false, smartReplies: [], smartRepliesLoading: false, smartReplyNotice: null }),
 
       // ─── Chatter Leaderboard ─────────────────────────────────
       chatterStats: {},
@@ -3686,14 +3706,22 @@ export const useAppStore = create<AppState>()(
           if (data.cursorTrailEnabled !== undefined) set({ cursorTrailEnabled: data.cursorTrailEnabled });
           if (data.emoteProviders) set({ emoteProviders: data.emoteProviders });
           if (data.emoteAwarenessEnabled !== undefined) set({ emoteAwarenessEnabled: data.emoteAwarenessEnabled });
-          if (data.ttsEnabled !== undefined) set({ ttsEnabled: data.ttsEnabled });
+          if (data.ttsEnabled !== undefined) {
+            const enabled = data.ttsEnabled === true;
+            set({
+              ttsEnabled: enabled,
+              ...(enabled ? {} : { ttsBackgroundEnabled: false }),
+            });
+          }
           if (data.ttsProvider) set({ ttsProvider: data.ttsProvider });
           if (data.ttsVoice !== undefined) set({ ttsVoice: data.ttsVoice });
           if (data.ttsRate !== undefined) set({ ttsRate: data.ttsRate });
           if (data.ttsVolume !== undefined) set({ ttsVolume: data.ttsVolume });
           if (data.elevenlabsApiKey !== undefined) set({ elevenlabsApiKey: data.elevenlabsApiKey });
           if (data.ttsAudioOutputDeviceId !== undefined) set({ ttsAudioOutputDeviceId: data.ttsAudioOutputDeviceId });
-          if (data.ttsBackgroundEnabled !== undefined) set({ ttsBackgroundEnabled: data.ttsBackgroundEnabled === true });
+          if (data.ttsBackgroundEnabled !== undefined) {
+            set((state) => ({ ttsBackgroundEnabled: state.ttsEnabled && data.ttsBackgroundEnabled === true }));
+          }
           if (data.botIdentityMode) set({ botIdentityMode: data.botIdentityMode });
           if (data.botIdentityStory !== undefined) set({ botIdentityStory: data.botIdentityStory });
           if (data.forgeTemplates) set({ forgeTemplates: data.forgeTemplates });
@@ -4156,6 +4184,11 @@ export const useAppStore = create<AppState>()(
           if (persistedState.ttsBackgroundEnabled === undefined) {
             persistedState.ttsBackgroundEnabled = false;
           }
+        }
+        // v34: Background TTS is subordinate to TTS. Normalize the legacy
+        // impossible state without changing either preference for valid users.
+        if (version < 34 && persistedState && persistedState.ttsEnabled !== true) {
+          persistedState.ttsBackgroundEnabled = false;
         }
         return persistedState;
       },

@@ -23,6 +23,7 @@ const storageMap = new Map<string, string>();
 
 const { useAppStore } = await import("../store");
 const { getCoreProviderSummary } = await import("./coreProviderSummary");
+const { beginBackgroundTtsSession, getBackgroundTtsSessionCountForTesting } = await import("./backgroundTts");
 
 let passed = 0;
 let failed = 0;
@@ -125,6 +126,18 @@ function testTuningAudioOptions() {
 
   store.setTtsEnabled(true);
   assertEq(useAppStore.getState().ttsEnabled, true, "TTS toggle persists true");
+
+  store.setTtsEnabled(false);
+  store.setTtsBackgroundEnabled(true);
+  assertEq(useAppStore.getState().ttsBackgroundEnabled, false, "Background TTS cannot activate while TTS is off");
+
+  store.setTtsEnabled(true);
+  store.setTtsBackgroundEnabled(true);
+  beginBackgroundTtsSession("web", () => {}, true);
+  assertEq(getBackgroundTtsSessionCountForTesting(), 1, "Background TTS runtime can become active while TTS is on");
+  store.setTtsEnabled(false);
+  assertEq(useAppStore.getState().ttsBackgroundEnabled, false, "Disabling TTS clears the Background TTS setting");
+  assertEq(getBackgroundTtsSessionCountForTesting(), 0, "Disabling TTS ends active Background TTS runtime sessions");
 }
 
 // Execute tests

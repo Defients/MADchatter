@@ -14,7 +14,15 @@ const local = {
   removeItem: (key: string) => { storage.delete(key); },
 };
 Object.assign(globalThis, { localStorage: local, window: Object.assign(new EventTarget(), { localStorage: local }) });
-storage.set("madchatter-storage", JSON.stringify({ version: 28, state: { roomModelSynthesisEnabled: false } }));
+storage.set("madchatter-storage", JSON.stringify({
+  version: 28,
+  state: {
+    roomModelSynthesisEnabled: false,
+    ttsEnabled: false,
+    // Legacy impossible state: migration must not leave background playback live.
+    ttsBackgroundEnabled: true,
+  },
+}));
 const { useAppStore: store } = await import("../store");
 let passed = 0;
 function scenario(name: string, run: () => void) {
@@ -25,11 +33,13 @@ const identities = [{ botId: "gremlin", display: "Gremlin", names: ["gremlin"] }
 scenario("v28 migration preserves enrichment opt-out and seeds episodic preference", () => {
   assert.equal(store.getState().roomModelSynthesisEnabled, false);
   assert.equal(store.getState().episodicMemoryEnabled, true);
+  assert.equal(store.getState().ttsEnabled, false);
+  assert.equal(store.getState().ttsBackgroundEnabled, false);
 });
 scenario("both intelligence preferences survive persistence and export/import", () => {
   store.getState().setEpisodicMemoryEnabled(false);
   const persisted = JSON.parse(storage.get("madchatter-storage")!);
-  assert.equal(persisted.version, 33);
+  assert.equal(persisted.version, 34);
   assert.equal(persisted.state.episodicMemoryEnabled, false);
   assert.equal(persisted.state.spokenCallout, undefined);
   const exported = store.getState().exportSettings();

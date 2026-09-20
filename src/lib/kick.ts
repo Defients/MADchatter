@@ -183,6 +183,10 @@ export async function fetchKickMetadata(slug: string): Promise<{ title: string; 
 }
 
 type ChatReadState = "disconnected" | "connecting" | "connected" | "error";
+export interface KickIncomingMessageMeta {
+  messageId?: string;
+  replyTargetUsername?: string;
+}
 
 export class KickChatClient {
   private ws: WebSocket | null = null;
@@ -190,7 +194,7 @@ export class KickChatClient {
   private channelSlug: string = "";
   private state: ChatReadState = "disconnected";
   private stateListeners: Set<(state: ChatReadState) => void> = new Set();
-  private messageListeners: Set<(username: string, content: string) => void> = new Set();
+  private messageListeners: Set<(username: string, content: string, meta?: KickIncomingMessageMeta) => void> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private cancelled = false;
@@ -202,7 +206,7 @@ export class KickChatClient {
     'App\\Events\\ChatMessageSentEvent',
   ];
 
-  onMessage(cb: (username: string, content: string) => void): void {
+  onMessage(cb: (username: string, content: string, meta?: KickIncomingMessageMeta) => void): void {
     this.messageListeners.add(cb);
   }
 
@@ -302,7 +306,12 @@ export class KickChatClient {
           // Strip emote tokens: [emote:id:name] -> name
           content = content.replace(/\[emote:\d+:([^\]]+)\]/g, '$1');
           if (content) {
-            this.messageListeners.forEach((l) => l(username, content));
+            const rawMessageId = data.id || data.message_id || data.chat_entry?.id;
+            const replyTargetUsername = data.reply_to?.sender?.username || data.reply_to?.user?.username;
+            this.messageListeners.forEach((l) => l(username, content, {
+              ...(rawMessageId != null ? { messageId: String(rawMessageId) } : {}),
+              ...(replyTargetUsername ? { replyTargetUsername: String(replyTargetUsername) } : {}),
+            }));
           }
         } else {
           // Log unhandled events at debug level for future investigation

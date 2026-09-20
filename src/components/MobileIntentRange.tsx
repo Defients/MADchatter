@@ -8,8 +8,10 @@ export interface MobileIntentRangeProps {
   step: number;
   value: number;
   onValueChange: (value: number) => void;
+  onValueCommit?: (value: number) => void;
   ariaLabel: string;
   className?: string;
+  accentColor?: string;
 }
 
 function stepPrecision(step: number): number {
@@ -28,8 +30,10 @@ export function MobileIntentRange({
   step,
   value,
   onValueChange,
+  onValueCommit,
   ariaLabel,
   className,
+  accentColor,
 }: MobileIntentRangeProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const gestureRef = useRef<RangeGestureState | null>(null);
@@ -48,13 +52,17 @@ export function MobileIntentRange({
 
   const finishGesture = (pointerId: number, cancelled = false) => {
     const gesture = gestureRef.current;
-    if (!gesture || gesture.pointerId !== pointerId) return;
-    if (cancelled || gesture.intent !== "horizontal") restoreControlledValue();
+    if (gesture && gesture.pointerId !== pointerId) return;
+    const committed = !cancelled && (!gesture || gesture.intent === "horizontal");
+    if (!committed) restoreControlledValue();
     if (inputRef.current?.hasPointerCapture(pointerId)) {
       inputRef.current.releasePointerCapture(pointerId);
     }
     gestureRef.current = null;
+    if (committed) onValueCommit?.(Number(inputRef.current?.value ?? value));
   };
+
+  const progress = ((value - min) / Math.max(Number.EPSILON, max - min)) * 100;
 
   return (
     <input
@@ -106,6 +114,15 @@ export function MobileIntentRange({
       }}
       aria-label={ariaLabel}
       className={cn("mobile-slider", className)}
+      onKeyUp={(event) => {
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+          onValueCommit?.(Number(event.currentTarget.value));
+        }
+      }}
+      style={{
+        "--mobile-slider-progress": `${Math.max(0, Math.min(100, progress))}%`,
+        ...(accentColor ? { "--mobile-slider-accent": accentColor } : {}),
+      } as React.CSSProperties}
     />
   );
 }
