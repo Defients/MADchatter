@@ -64,6 +64,7 @@ import { isDecisionPayloadSent } from "../lib/autoForgeCore";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
+import { primeBackgroundTtsAudio, endAllBackgroundTtsSessions } from "../lib/backgroundTts";
 import { playSfx } from "../lib/sfx";
 import { switchChannel } from "../lib/channelSwitch";
 import { getPlatformSendFn } from "../lib/platformSend";
@@ -2445,6 +2446,8 @@ function MobileTuningTab(props: {
   const setSfxEnabled = useAppStore((s) => s.setSfxEnabled);
   const ttsEnabled = useAppStore((s) => s.ttsEnabled);
   const setTtsEnabled = useAppStore((s) => s.setTtsEnabled);
+  const ttsBackgroundEnabled = useAppStore((s) => s.ttsBackgroundEnabled);
+  const setTtsBackgroundEnabled = useAppStore((s) => s.setTtsBackgroundEnabled);
   const smartRepliesEnabled = useAppStore((s) => s.smartRepliesEnabled);
   const setSmartRepliesEnabled = useAppStore((s) => s.setSmartRepliesEnabled);
 
@@ -2853,6 +2856,40 @@ function MobileTuningTab(props: {
               )}
             >
               {ttsEnabled ? "ON" : "OFF"}
+            </span>
+          </div>
+
+          {/* Background TTS — TTS playback only, never a general
+              "run in background" switch. The tap primes the keep-alive
+              audio element inside the user gesture so engines that gate
+              media on interaction accept it later. */}
+          <div
+            onClick={() => {
+              const next = !ttsBackgroundEnabled;
+              setTtsBackgroundEnabled(next);
+              // ON primes the keep-alive inside this user gesture; OFF drops
+              // any live hold immediately instead of waiting for the current
+              // utterance to end.
+              if (next) primeBackgroundTtsAudio();
+              else endAllBackgroundTtsSessions();
+            }}
+            className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
+          >
+            <div className="flex flex-col min-w-0 pr-2">
+              <span className="text-gray-300">Background TTS</span>
+              <span className="text-[9px] text-gray-600 truncate">
+                Background playback depends on your browser and phone settings.
+              </span>
+            </div>
+            <span
+              className={cn(
+                "text-[10px] font-bold px-2 py-0.5 rounded border shrink-0",
+                ttsBackgroundEnabled
+                  ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
+                  : "bg-white/5 border-white/5 text-gray-500"
+              )}
+            >
+              {ttsBackgroundEnabled ? "ON" : "OFF"}
             </span>
           </div>
 

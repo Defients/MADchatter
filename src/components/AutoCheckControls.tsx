@@ -22,9 +22,12 @@
  * no CORE-only copy of anything.
  */
 
+import { useEffect, useState } from "react";
 import { Activity, Clock, Sparkles, Zap } from "lucide-react";
 import { useAppStore } from "../store";
 import { useNowTick } from "../hooks/useNowTick";
+import { useAutoCheckCountdownTicks } from "../hooks/useAutoCheckCountdownTicks";
+import { useIsMobile } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import {
   AUTO_CHECK_INTERVAL_OPTIONS,
@@ -62,6 +65,11 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
   const normalizedMode = normalizeAutoCheckMode(mode);
   const isInterval = normalizedMode === "interval";
   const floorMs = resolveAutoCheckFloorMs(normalizedMode, intervalMs);
+  const isMobile = useIsMobile();
+  // Timestamp of the last mode change that pulled NEXT CHECK forward —
+  // drives the subtle shortened-countdown flash below.
+  const timerShortenedAt = useAppStore((s) => s.autoForgeTimerShortenedAtMs);
+  const [shortenPulse, setShortenPulse] = useState(false);
 
   // Shared app clock — subscribed only while a real countdown is on screen.
   const now = useNowTick(isInterval && autoCheckEnabled && autoForgeEnabled);
@@ -83,6 +91,23 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
   });
 
   const idle = !autoCheckEnabled || !autoForgeEnabled;
+
+  // Mobile-only soft 3→2→1 ticks. The scheduled attempt's due timestamp is
+  // the attempt identity — dedupe/pause/supersede semantics live in
+  // lib/autoCheckCountdown.ts. Smart mode has no honest countdown → no ticks.
+  useAutoCheckCountdownTicks({
+    enabled: isMobile && !idle && isInterval,
+    dueAtMs: isInterval && !idle ? window.dueAtMs : null,
+    now,
+  });
+
+  // Brief emphasis when a cadence change shortens the live countdown.
+  useEffect(() => {
+    if (!timerShortenedAt) return;
+    setShortenPulse(true);
+    const t = setTimeout(() => setShortenPulse(false), 550);
+    return () => clearTimeout(t);
+  }, [timerShortenedAt]);
 
   return (
     <div className={cn("space-y-2", className)}>
@@ -123,6 +148,7 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
         status={status}
         checking={checking}
         armed={armed}
+        pulse={shortenPulse}
       />
     </div>
   );
@@ -193,8 +219,10 @@ function AutoCheckProgressRow(props: {
   status: string;
   checking: boolean;
   armed: boolean;
+  /** True for ~0.5s after a cadence change pulled NEXT CHECK forward. */
+  pulse?: boolean;
 }) {
-  const { idle, isInterval, floorMs, lastCheckMs, elapsedMs, status, checking, armed } = props;
+  const { idle, isInterval, floorMs, lastCheckMs, elapsedMs, status, checking, armed, pulse } = props;
   return (
     <div className="space-y-1">
       <div className="h-1.5 rounded-full bg-black/50 border border-white/5 overflow-hidden">
@@ -232,7 +260,7 @@ function AutoCheckProgressRow(props: {
           ) : (
             <Zap className="w-3 h-3 shrink-0 opacity-60" />
           )}
-          <span className="truncate">{status}</span>
+          <span className={cn("truncate", pulse && "auto-check-shortened")}>{status}</span>
         </span>
         {!idle && isInterval && (
           <span className="text-gray-500 shrink-0">{formatAutoCheckInterval(floorMs)}</span>

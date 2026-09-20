@@ -1096,3 +1096,46 @@ export function playForceBurstSfx(): void {
 export function initSfxAudioContext(): void {
   getCtx();
 }
+
+// ─── AutoForge countdown ticks (mobile) ─────────────────────────────────────
+// One cohesive gesture, not three unrelated effects: the same soft filtered
+// "tik" at a slightly rising pitch/gain per step. Deliberately outside the
+// SfxEvent map — per-attempt dedup lives in autoCheckCountdown.ts and these
+// are never user-triggered UI feedback. Gains stay whisper-quiet.
+
+const AUTOCHECK_TICKS: Record<1 | 2 | 3, SynthConfig> = {
+  3: {
+    duration: 0.09,
+    layers: [
+      { type: "sine", freq: [2050, 1750], gain: 0.045, attack: 0.002, decay: 0.02, sustain: 0, release: 0.05, filterFreq: 3200 },
+      { type: "triangle", freq: 1025, gain: 0.03, attack: 0.002, decay: 0.02, sustain: 0, release: 0.04 },
+    ],
+  },
+  2: {
+    duration: 0.09,
+    layers: [
+      { type: "sine", freq: [2300, 1950], gain: 0.05, attack: 0.002, decay: 0.02, sustain: 0, release: 0.05, filterFreq: 3400 },
+      { type: "triangle", freq: 1150, gain: 0.035, attack: 0.002, decay: 0.02, sustain: 0, release: 0.04 },
+    ],
+  },
+  1: {
+    duration: 0.11,
+    layers: [
+      { type: "sine", freq: [2600, 2200], gain: 0.06, attack: 0.002, decay: 0.025, sustain: 0, release: 0.06, filterFreq: 3800 },
+      { type: "triangle", freq: 1300, gain: 0.045, attack: 0.002, decay: 0.02, sustain: 0, release: 0.05 },
+      // faint woody transient — the 1 tick reads slightly more tactile without
+      // becoming a crescendo
+      { type: "square", freq: [5200, 4100], gain: 0.012, attack: 0.001, decay: 0.008, sustain: 0, release: 0.03, delay: 0.004, filterFreq: 6000 },
+    ],
+  },
+};
+
+/** Soft 3→2→1 countdown tick for the mobile AutoForge HUD. Respects sfxEnabled/sfxVolume. */
+export function playAutoCheckTick(step: 1 | 2 | 3): void {
+  if (typeof window === "undefined") return;
+  const state = useAppStore.getState();
+  if (!state.sfxEnabled) return;
+  const def = AUTOCHECK_TICKS[step];
+  if (!def) return;
+  playSynth(def, state.sfxVolume ?? 0.3);
+}

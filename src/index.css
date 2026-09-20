@@ -287,7 +287,8 @@
   .forge-btn-shimmer,
   .forge-btn-glow,
   .forge-btn-active-pulse,
-  .forge-collapse-pulse {
+  .forge-collapse-pulse,
+  .auto-check-shortened {
     animation: none !important;
     transition: none !important;
   }
@@ -3798,6 +3799,21 @@
   width: 60%;
   animation: auto-check-smart-sweep 2.6s ease-in-out infinite;
   will-change: transform;
+}
+
+/* NEXT CHECK pulled forward by a cadence change — a half-second emphasis on
+   the status text so the user can see the scheduler actually responded.
+   Reduced-motion disables it (the value still snaps, which is the signal). */
+@keyframes auto-check-shortened {
+  0%   { color: #6ee7b7; text-shadow: 0 0 10px rgba(52, 211, 153, 0.7); transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+
+.auto-check-shortened {
+  display: inline-block;
+  max-width: 100%;
+  transform-origin: left center;
+  animation: auto-check-shortened 0.5s ease-out;
 }
 
 /* ── Mobile CORE toasts: docked under the header, never pushing layout ─────── */

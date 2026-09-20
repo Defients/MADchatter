@@ -26,7 +26,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 32 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 33 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.

@@ -2,6 +2,11 @@ import { useAppStore } from "../store";
 // Single emoji glyph table shared with the chat-output sanitizer
 // (textSanitize.ts) — the two lists previously drifted apart.
 import { EMOJI_GLYPH_REGEX } from "./textSanitize";
+import {
+  beginBackgroundTtsSession,
+  endAllBackgroundTtsSessions,
+  endBackgroundTtsSession,
+} from "./backgroundTts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -178,6 +183,11 @@ export function isWebSpeechAvailable(): boolean {
   return typeof window !== "undefined" && !!window.speechSynthesis;
 }
 
+// Monotonic token guarding the background session hold: a superseded
+// utterance's async 'end'/'error' (fired by speechSynthesis.cancel()) must
+// never release the NEW utterance's session.
+let webSpeechSessionToken = 0;
+
 function speakWeb(text: string, voiceName: string | null, rate: number, volume: number): void {
   if (!isWebSpeechAvailable()) {
     console.warn("[TTS] Web Speech API not available");
@@ -187,10 +197,22 @@ function speakWeb(text: string, voiceName: string | null, rate: number, volume: 
   const synth = window.speechSynthesis;
   synth.cancel();
 
+  const token = ++webSpeechSessionToken;
+  // Drop a superseded utterance's background hold now — cancel() may or may
+  // not deliver its 'end' event, and we can't let a stale hold linger.
+  endBackgroundTtsSession();
+  const release = () => {
+    if (token !== webSpeechSessionToken) return;
+    webSpeechSessionToken++;
+    endBackgroundTtsSession();
+  };
+
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = Math.max(0.1, Math.min(4, rate));
   utterance.volume = Math.max(0, Math.min(1, volume));
   utterance.pitch = 1;
+  utterance.onend = release;
+  utterance.onerror = release;
 
   if (voiceName) {
     const voices = getWebSpeechVoices();
@@ -201,6 +223,9 @@ function speakWeb(text: string, voiceName: string | null, rate: number, volume: 
     }
   }
 
+  // No-op unless Background TTS is enabled — holds the OS media session so
+  // speech can survive lock/background where the platform permits.
+  beginBackgroundTtsSession("web", () => stopSpeaking());
   synth.speak(utterance);
 }
 
@@ -208,6 +233,8 @@ function speakWeb(text: string, voiceName: string | null, rate: number, volume: 
 
 let elevenlabsAudioEl: HTMLAudioElement | null = null;
 let elevenlabsCurrentUrl: string | null = null;
+// Same supersede guard as webSpeechSessionToken, for the shared <audio> el.
+let elevenlabsSessionToken = 0;
 
 function revokeElevenLabsUrl(): void {
   if (elevenlabsCurrentUrl) {
@@ -284,9 +311,19 @@ async function speakElevenLabs(
     }
   }
 
-  // Clean up object URL after playback to avoid memory leaks
+  // Clean up object URL after playback to avoid memory leaks. The session
+  // token keeps a superseded clip's 'ended' listener (still attached to the
+  // shared element) from releasing the new clip's background hold.
+  const token = ++elevenlabsSessionToken;
+  endBackgroundTtsSession(); // drop a superseded clip's hold now
+  const release = () => {
+    if (token !== elevenlabsSessionToken) return;
+    elevenlabsSessionToken++;
+    endBackgroundTtsSession();
+  };
   elevenlabsAudioEl.addEventListener("ended", () => {
     revokeElevenLabsUrl();
+    release();
   }, { once: true });
 
   try {
@@ -294,8 +331,12 @@ async function speakElevenLabs(
   } catch (e) {
     // If playback fails, revoke the URL immediately so it doesn't leak
     revokeElevenLabsUrl();
+    release();
     throw e;
   }
+  // The <audio> element itself is the media session — this just publishes
+  // metadata + a lock-screen stop handler when Background TTS is enabled.
+  beginBackgroundTtsSession("elevenlabs", () => stopSpeaking());
 }
 
 // ─── Main Entry Point ────────────────────────────────────────────────────────
@@ -328,6 +369,9 @@ export function stopSpeaking(): void {
   }
   // Revoke any pending blob URL since playback is being stopped
   revokeElevenLabsUrl();
+  // Release any background hold (keep-alive + media session) — no-op when
+  // nothing is held.
+  endAllBackgroundTtsSessions();
 }
 
 export async function testVoice(): Promise<void> {

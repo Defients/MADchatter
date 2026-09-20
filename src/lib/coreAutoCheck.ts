@@ -277,6 +277,9 @@ export interface AutoCheckWindow {
   elapsedMs: number;
   /** Milliseconds until the next evaluation is due. */
   dueInMs: number;
+  /** Absolute timestamp of the effective due moment (max of cadence due and
+   *  model pacing due) — the countdown's scheduled-attempt identity. */
+  dueAtMs: number;
   /** 0→1 progress toward the next evaluation. */
   progress: number;
 }
@@ -312,7 +315,84 @@ export function computeAutoCheckWindow(
   return {
     elapsedMs: elapsed,
     dueInMs,
+    dueAtMs: effectiveDueMs > 0 ? effectiveDueMs : args.now + floorMs,
     progress: floorMs <= 0 ? 1 : Math.min(1, elapsed / floorMs),
+  };
+}
+
+// ─── Mode-switch reconciliation ───────────────────────────────────────────
+
+/** Minimum pull-forward (ms) that counts as a user-visible shortening. */
+export const AUTO_CHECK_SHORTEN_NOTICE_MS = 1_000;
+
+export interface AutoCheckScheduleReconcileArgs {
+  /** The newly selected mode. */
+  mode: AutoCheckMode;
+  /** The newly selected cadence (interval mode). */
+  intervalMs: number;
+  now: number;
+  /** Timestamp of the last evaluation that reached the model (0 = never). */
+  lastCheckAt: number;
+  /** Current pacing-gate timestamp (`autoForgeNextActionMs`). A timestamp ≤ now
+   *  means the schedule is already due — treated as "as soon as possible",
+   *  never pushed back out. Non-finite means no schedule. */
+  scheduledMs: number;
+  /** Send rate-limit min cooldown — widens the floor exactly like the loops. */
+  minCooldownMs?: number;
+}
+
+export interface AutoCheckScheduleReconcileResult {
+  /** The reconciled pacing-gate timestamp to write back. */
+  nextActionMs: number;
+  /** True when reconciliation moved the schedule meaningfully earlier — the
+   *  UI uses this to flash the shortened countdown. */
+  shortened: boolean;
+}
+
+/**
+ * Reconcile the live NEXT CHECK schedule against a newly selected mode.
+ *
+ * A mode change may pull an overlong countdown forward, but must never push
+ * an already-sooner (or already-due) attempt farther away:
+ *
+ *   - interval: the target is one cadence from now — `min(remaining, floor)`.
+ *     48s remaining → 15s cadence = 15s; 8s remaining → 15s cadence = 8s.
+ *   - smart: the target is the smart floor residual (lastCheck + floor). A
+ *     fresh timing assessment replaces a stale countdown left over from a
+ *     different mode; when the floor has already elapsed the check is due now
+ *     and the context gate decides whether it spends a model call.
+ *
+ * The result is written to the pacing gate (`autoForgeNextActionMs`) only —
+ * the cadence gate (lastCheck + floor) is recomputed live by the loops, so an
+ * already-sooner attempt that the new floor legitimately blocks still resolves
+ * honestly at fire time.
+ */
+export function reconcileAutoCheckSchedule(
+  args: AutoCheckScheduleReconcileArgs,
+): AutoCheckScheduleReconcileResult {
+  const mode = normalizeAutoCheckMode(args.mode);
+  const now = args.now;
+  const floorMs = resolveEffectiveCheckFloorMs(mode, args.intervalMs, args.minCooldownMs ?? 0);
+
+  // Earliest moment the cadence gate itself permits a non-urgent check.
+  const last =
+    typeof args.lastCheckAt === "number" && Number.isFinite(args.lastCheckAt) && args.lastCheckAt > 0 && args.lastCheckAt <= now
+      ? args.lastCheckAt
+      : 0;
+  const cadenceDueMs = last > 0 ? last + floorMs : now;
+
+  const modeDueMs = mode === "interval" ? now + floorMs : cadenceDueMs;
+  const scheduledMs = typeof args.scheduledMs === "number" ? args.scheduledMs : NaN;
+  const hasValidSchedule = Number.isFinite(scheduledMs) && scheduledMs > now;
+  // A due/overdue timestamp means "check as soon as possible" — preserving it
+  // as the remaining time keeps the attempt maximally soon rather than
+  // pushing it out to the new mode's cadence.
+  const remainingMs = Number.isFinite(scheduledMs) ? scheduledMs - now : Infinity;
+
+  const nextActionMs = now + Math.min(remainingMs, Math.max(0, modeDueMs - now));
+  return {
+    nextActionMs,
+    shortened: hasValidSchedule && nextActionMs <= scheduledMs - AUTO_CHECK_SHORTEN_NOTICE_MS,
   };
 }
 

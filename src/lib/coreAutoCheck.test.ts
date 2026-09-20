@@ -34,6 +34,7 @@ const {
   formatAutoCheckInterval,
   hasMeaningfulContextChange,
   normalizeAutoCheckMode,
+  reconcileAutoCheckSchedule,
   resolveAutoCheckFloorMs,
   resolveEffectiveCheckFloorMs,
 } = await import("./coreAutoCheck");
@@ -316,6 +317,87 @@ function testWindowWithCooldown() {
 testEffectiveFloor();
 testCadenceWithCooldown();
 testWindowWithCooldown();
+
+// ─── Test 9: mode-switch schedule reconciliation ──────────────────────────
+function testScheduleReconcile() {
+  const now = 10_000_000;
+  const rec = (over: Partial<Parameters<typeof reconcileAutoCheckSchedule>[0]>) =>
+    reconcileAutoCheckSchedule({
+      mode: "interval",
+      intervalMs: 60_000,
+      now,
+      lastCheckAt: 0,
+      scheduledMs: 0,
+      ...over,
+    });
+
+  // Interval: an overlong countdown pulls forward to the new cadence.
+  const long = rec({ intervalMs: 30_000, scheduledMs: now + 48_000 });
+  assertEq(long.nextActionMs, now + 30_000, "48s remaining + 30s mode → 30s");
+  assertEq(long.shortened, true, "a real pull-forward reports shortened");
+
+  // Interval: an already-sooner attempt is never pushed back out.
+  const sooner = rec({ intervalMs: 30_000, scheduledMs: now + 8_000 });
+  assertEq(sooner.nextActionMs, now + 8_000, "8s remaining + 30s mode stays ~8s");
+  assertEq(sooner.shortened, false, "preserving a sooner attempt is not a shortening");
+
+  // Interval: a longer countdown trims to the new cadence.
+  assertEq(rec({ scheduledMs: now + 90_000 }).nextActionMs, now + 60_000, "90s + 60s mode → 60s");
+
+  // Smart: fresh assessment = floor residual (lastCheck + 30s floor).
+  // 12s elapsed → residual 18s pulls a stale 40s countdown forward.
+  const smartShort = rec({ mode: "smart", lastCheckAt: now - 12_000, scheduledMs: now + 40_000 });
+  assertEq(smartShort.nextActionMs, now + 18_000, "smart residual 18s pulls a stale 40s forward");
+  assertEq(smartShort.shortened, true, "smart pull-forward reports shortened");
+
+  // Smart: a legitimately sooner attempt survives a longer smart result.
+  const smartKeep = rec({ mode: "smart", lastCheckAt: now - 6_000, scheduledMs: now + 5_000 });
+  assertEq(smartKeep.nextActionMs, now + 5_000, "5s stays under a 24s smart residual");
+  assertEq(smartKeep.shortened, false, "keeping the sooner attempt is not a shortening");
+
+  // Smart: floor already elapsed → the assessment says "due now", replacing
+  // whatever stale countdown a previous mode left behind.
+  assertEq(
+    rec({ mode: "smart", lastCheckAt: now - 60_000, scheduledMs: now + 40_000 }).nextActionMs,
+    now,
+    "smart floor elapsed → check is due now",
+  );
+
+  // Smart → interval → smart round-trip: the smart re-entry computes from
+  // lastCheck, never inherits the interval-mode timestamp.
+  const roundTrip = rec({ mode: "smart", lastCheckAt: now - 25_000, scheduledMs: now + 55_000 });
+  assertEq(roundTrip.nextActionMs, now + 5_000, "smart re-entry recomputes the residual (5s)");
+
+  // An already-due schedule stays due — a mode switch must not push a
+  // pending attempt back out to the full cadence.
+  assertEq(rec({ scheduledMs: now - 1_000 }).nextActionMs, now - 1_000, "overdue schedule stays due");
+  assertEq(rec({ scheduledMs: 0 }).nextActionMs, 0, "never-scheduled (0) stays due");
+
+  // Missing schedule is replaced by the mode's target.
+  assertEq(rec({ scheduledMs: NaN }).nextActionMs, now + 60_000, "NaN schedule is replaced");
+
+  // Min cooldown widens the interval target exactly like the live loops.
+  assertEq(
+    rec({ intervalMs: 30_000, minCooldownMs: 45_000, scheduledMs: now + 200_000 }).nextActionMs,
+    now + 45_000,
+    "cooldown widens the interval target",
+  );
+
+  // Sub-second pull-forwards don't count as a user-visible shortening.
+  const subSecond = rec({ scheduledMs: now + 60_500 });
+  assertEq(subSecond.nextActionMs, now + 60_000, "60.5s + 60s mode → 60s");
+  assertEq(subSecond.shortened, false, "sub-second pull-forward doesn't flash");
+
+  // dueAtMs: the countdown's scheduled-attempt identity.
+  const win = computeAutoCheckWindow({ mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now });
+  assertEq(win.dueAtMs, now + 30_000, "dueAtMs = cadence due timestamp");
+  const paced = computeAutoCheckWindow({
+    mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now, nextActionMs: now + 90_000,
+  });
+  assertEq(paced.dueAtMs, now + 90_000, "dueAtMs = model pacing when it is later");
+}
+
+testScheduleReconcile();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

@@ -101,6 +101,7 @@ import {
   DEFAULT_AUTO_CHECK_MODE,
   clampAutoCheckIntervalMs,
   normalizeAutoCheckMode,
+  reconcileAutoCheckSchedule,
   type AutoCheckMode,
 } from "./lib/coreAutoCheck";
 
@@ -112,7 +113,7 @@ import {
 // mobile add action.
 export const MOBILE_DIRECTOR_NOTE_LIMIT = 3;
 
-const SETTINGS_VERSION = 32;
+const SETTINGS_VERSION = 33;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -519,6 +520,11 @@ interface AppState {
   setAutoForgeLastCheckMs: (ms: number) => void;
   autoForgeCheckArmed: boolean;
   setAutoForgeCheckArmed: (armed: boolean) => void;
+  // Runtime-only pulse marker: timestamp of the last Auto-Check mode change
+  // that shortened NEXT CHECK. The countdown UI flashes briefly when this
+  // changes so the user can see the scheduler actually responded. Never
+  // persisted (not in partialize).
+  autoForgeTimerShortenedAtMs: number;
 
   r34lEnabled: boolean;
   setR34lEnabled: (enabled: boolean) => void;
@@ -712,6 +718,12 @@ interface AppState {
   setElevenlabsApiKey: (key: string) => void;
   ttsAudioOutputDeviceId: string | null;
   setTtsAudioOutputDeviceId: (id: string | null) => void;
+  // Background TTS (mobile): when enabled, TTS tries to keep playing while the
+  // phone is locked or the page is backgrounded — only where the OS/browser
+  // actually permits it. Strictly a TTS playback preference: it never gates
+  // AutoForge, capture, or any other background system. Persisted, default OFF.
+  ttsBackgroundEnabled: boolean;
+  setTtsBackgroundEnabled: (enabled: boolean) => void;
 
   // ─── Bot Identity (B8) ───────────────────────────────────
   botIdentityMode: "admit" | "custom";
@@ -1149,6 +1161,7 @@ export const partializeAppState = (state: AppState) => ({
   ttsVolume: state.ttsVolume,
   elevenlabsApiKey: state.elevenlabsApiKey,
   ttsAudioOutputDeviceId: state.ttsAudioOutputDeviceId,
+  ttsBackgroundEnabled: state.ttsBackgroundEnabled,
   botIdentityMode: state.botIdentityMode,
   botIdentityStory: state.botIdentityStory,
   forgeTemplates: state.forgeTemplates,
@@ -1472,16 +1485,65 @@ export const useAppStore = create<AppState>()(
       setAutoForgeAutoCheckEnabled: (enabled) => set({ autoForgeAutoCheckEnabled: enabled }),
       autoForgeAutoCheckMode: DEFAULT_AUTO_CHECK_MODE,
       autoForgeAutoCheckIntervalMs: DEFAULT_AUTO_CHECK_INTERVAL_MS,
-      setAutoForgeAutoCheckCadence: (mode, intervalMs) => set((state) => ({
-        autoForgeAutoCheckMode: normalizeAutoCheckMode(mode),
-        autoForgeAutoCheckIntervalMs: intervalMs === undefined
+      setAutoForgeAutoCheckCadence: (mode, intervalMs) => set((state) => {
+        const nextMode = normalizeAutoCheckMode(mode);
+        const nextIntervalMs = intervalMs === undefined
           ? state.autoForgeAutoCheckIntervalMs
-          : clampAutoCheckIntervalMs(intervalMs),
-      })),
+          : clampAutoCheckIntervalMs(intervalMs);
+        const updates: Partial<AppState> = {
+          autoForgeAutoCheckMode: nextMode,
+          autoForgeAutoCheckIntervalMs: nextIntervalMs,
+        };
+        if (nextMode === state.autoForgeAutoCheckMode
+          && nextIntervalMs === state.autoForgeAutoCheckIntervalMs) {
+          return updates;
+        }
+        // Immediately reconcile the live schedule against the new mode — a
+        // shorter cadence pulls an overlong countdown forward now instead of
+        // waiting for the next heartbeat, while an already-sooner attempt is
+        // never pushed back out.
+        const nowMs = Date.now();
+        const minCooldownMs = state.rateLimitConfig?.minCooldownMs;
+        let shortened = false;
+        const rec = reconcileAutoCheckSchedule({
+          mode: nextMode,
+          intervalMs: nextIntervalMs,
+          now: nowMs,
+          lastCheckAt: state.autoForgeLastCheckMs,
+          scheduledMs: state.autoForgeNextActionMs,
+          minCooldownMs,
+        });
+        updates.autoForgeNextActionMs = rec.nextActionMs;
+        shortened = rec.shortened;
+        // Multi-bot parity: each active bot carries its own pacing gate —
+        // reconcile them all against the same shared last-check timestamp.
+        if (state.multiBotEnabled && state.bots.length > 0) {
+          let botsChanged = false;
+          const bots = state.bots.map((b) => {
+            if (!b.active || !b.session) return b;
+            const botRec = reconcileAutoCheckSchedule({
+              mode: nextMode,
+              intervalMs: nextIntervalMs,
+              now: nowMs,
+              lastCheckAt: state.autoForgeLastCheckMs,
+              scheduledMs: b.runtime.autoForgeNextActionMs,
+              minCooldownMs,
+            });
+            if (botRec.nextActionMs === b.runtime.autoForgeNextActionMs) return b;
+            botsChanged = true;
+            if (botRec.shortened) shortened = true;
+            return { ...b, runtime: { ...b.runtime, autoForgeNextActionMs: botRec.nextActionMs } };
+          });
+          if (botsChanged) updates.bots = bots;
+        }
+        if (shortened) updates.autoForgeTimerShortenedAtMs = nowMs;
+        return updates;
+      }),
       autoForgeLastCheckMs: 0,
       setAutoForgeLastCheckMs: (ms) => set({ autoForgeLastCheckMs: ms }),
       autoForgeCheckArmed: false,
       setAutoForgeCheckArmed: (armed) => set({ autoForgeCheckArmed: armed }),
+      autoForgeTimerShortenedAtMs: 0,
 
       r34lEnabled: false,
       setR34lEnabled: (enabled) => set(enabled
@@ -2277,6 +2339,8 @@ export const useAppStore = create<AppState>()(
       setElevenlabsApiKey: (key) => set({ elevenlabsApiKey: key }),
       ttsAudioOutputDeviceId: null,
       setTtsAudioOutputDeviceId: (id) => set({ ttsAudioOutputDeviceId: id }),
+      ttsBackgroundEnabled: false,
+      setTtsBackgroundEnabled: (enabled) => set({ ttsBackgroundEnabled: enabled }),
 
       // ─── Bot Identity (B8) ───────────────────────────────────
       botIdentityMode: "admit",
@@ -3541,6 +3605,7 @@ export const useAppStore = create<AppState>()(
           ttsRate: state.ttsRate,
           ttsVolume: state.ttsVolume,
           ttsAudioOutputDeviceId: state.ttsAudioOutputDeviceId,
+          ttsBackgroundEnabled: state.ttsBackgroundEnabled,
         botIdentityMode: state.botIdentityMode,
         botIdentityStory: state.botIdentityStory,
           forgeTemplates: state.forgeTemplates,
@@ -3628,6 +3693,7 @@ export const useAppStore = create<AppState>()(
           if (data.ttsVolume !== undefined) set({ ttsVolume: data.ttsVolume });
           if (data.elevenlabsApiKey !== undefined) set({ elevenlabsApiKey: data.elevenlabsApiKey });
           if (data.ttsAudioOutputDeviceId !== undefined) set({ ttsAudioOutputDeviceId: data.ttsAudioOutputDeviceId });
+          if (data.ttsBackgroundEnabled !== undefined) set({ ttsBackgroundEnabled: data.ttsBackgroundEnabled === true });
           if (data.botIdentityMode) set({ botIdentityMode: data.botIdentityMode });
           if (data.botIdentityStory !== undefined) set({ botIdentityStory: data.botIdentityStory });
           if (data.forgeTemplates) set({ forgeTemplates: data.forgeTemplates });
@@ -4082,6 +4148,13 @@ export const useAppStore = create<AppState>()(
         if (version < 32 && persistedState) {
           if (persistedState.r34lLearningFrozen === undefined) {
             persistedState.r34lLearningFrozen = false;
+          }
+        }
+        // v33: Background TTS preference (mobile). Existing users default OFF —
+        // foreground TTS behavior is unchanged until the toggle is enabled.
+        if (version < 33 && persistedState) {
+          if (persistedState.ttsBackgroundEnabled === undefined) {
+            persistedState.ttsBackgroundEnabled = false;
           }
         }
         return persistedState;
