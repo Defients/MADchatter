@@ -63,6 +63,8 @@ import { playSfx } from "../lib/sfx";
 import { switchChannel } from "../lib/channelSwitch";
 import { getPlatformSendFn } from "../lib/platformSend";
 import { refineSuggestion, visionRequest } from "../lib/ai";
+import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
+import { R34lInlineDetails } from "./R34lReadout";
 import { perception, classifyVisionError } from "../lib/perceptionLiveness";
 import { fetchStreamThumbnailDataUrl } from "../lib/streamThumbnail";
 import { cn } from "../lib/utils";
@@ -1578,6 +1580,9 @@ function MobileForgeTab(props: {
         customInstruction,
         streamMetadata,
         activeProvider: provider,
+        r34lContext: useAppStore.getState().r34lEnabled
+          ? resolveCurrentR34lAdaptation().promptBlock
+          : undefined,
       });
       if (data.tokenUsage) {
         setLastTokenUsage({
@@ -2038,6 +2043,8 @@ function MobileTuningTab(props: {
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
   const r34lEnabled = useAppStore((s) => s.r34lEnabled);
   const setR34lEnabled = useAppStore((s) => s.setR34lEnabled);
+  const r34lLearningFrozen = useAppStore((s) => s.r34lLearningFrozen);
+  const setR34lLearningFrozen = useAppStore((s) => s.setR34lLearningFrozen);
   const sfxEnabled = useAppStore((s) => s.sfxEnabled);
   const setSfxEnabled = useAppStore((s) => s.setSfxEnabled);
   const ttsEnabled = useAppStore((s) => s.ttsEnabled);
@@ -2417,23 +2424,29 @@ function MobileTuningTab(props: {
             </span>
           </div>
 
-          {/* R34L Typing */}
+          {/* R34L Typing — Ctrl+click toggles Frozen Learning */}
           <div
-            onClick={() => setR34lEnabled(!r34lEnabled)}
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey) setR34lLearningFrozen(!r34lLearningFrozen);
+              else setR34lEnabled(!r34lEnabled);
+            }}
             className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
           >
             <span className="text-gray-300">R34L Human Typing Emulation</span>
             <span
               className={cn(
                 "text-[10px] font-bold px-2 py-0.5 rounded border",
-                r34lEnabled
-                  ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
-                  : "bg-white/5 border-white/5 text-gray-500"
+                r34lLearningFrozen
+                  ? "bg-yellow-500/20 border-yellow-500/40 text-yellow-300"
+                  : r34lEnabled
+                    ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
+                    : "bg-white/5 border-white/5 text-gray-500"
               )}
             >
-              {r34lEnabled ? "ON" : "OFF"}
+              {r34lLearningFrozen ? "FROZEN" : r34lEnabled ? "ON" : "OFF"}
             </span>
           </div>
+          <R34lInlineDetails />
 
           {/* Smart Replies — generates click-to-send reply suggestions when
               the bot is mentioned. Works with AutoForge off (mention-only

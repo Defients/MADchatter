@@ -25,7 +25,6 @@ import {
   FIRST_MESSAGE_DIRECTIVE,
   SUPERCHARGE_DIRECTIVE,
 } from "./prompts";
-import { analyzeChatStyle, formatChatStyleProfile } from "./chatStyle";
 import { stripEmDashes, stripEmojis } from "./textSanitize";
 import { buildMomentSynthesisInput, type RoomMoment } from "./roomModel";
 import type { Episode } from "./episodicMemory";
@@ -87,19 +86,14 @@ export function withAiTimeout<T>(promise: Promise<T>, timeoutMs: number = AI_REQ
 }
 
 /**
- * R34L adaptive profile segment. When R34L is on and the recent chat log has
- * enough signal, build a "CHAT STYLE PROFILE" block that steers the model
- * toward mirroring the room's actual typing texture. Returns "" when R34L is
- * off or chat is thin (the fixed R34L_TYPING_PROMPT baseline applies instead).
+ * R34L adaptation segment: the canonical per-channel learned-style block
+ * resolved by r34lAdaptation.ts from the persistent community-style learner
+ * (src/lib/r34lLearning.ts). Callers resolve it once per generation and pass
+ * it in as `r34lContext`; empty means R34L off, no channel, or evidence still
+ * collecting (the restrained R34L_TYPING_PROMPT baseline applies instead).
  */
-function r34lProfileSegment(
-  recentChatLog: string | undefined,
-  availableEmotes: string[] | undefined,
-  r34lEnabled?: boolean,
-): string {
-  if (!r34lEnabled || !recentChatLog) return "";
-  const profile = analyzeChatStyle(recentChatLog, availableEmotes);
-  return profile ? formatChatStyleProfile(profile) : "";
+function r34lProfileSegment(r34lContext?: string): string {
+  return r34lContext || "";
 }
 
 export interface StreamMetadata {
@@ -304,6 +298,9 @@ export interface GenerateChatParams {
    *  AI knows which emotes are channel-specific (favor) vs global (use sparingly).
    *  Falls back to `availableEmotes` (plain names) when not provided. */
   availableEmotesTagged?: string[];
+  /** R34L learned channel-style prompt block (resolved per generation by
+   *  r34lAdaptation.ts). Injected after R34L_TYPING_PROMPT when R34L is on. */
+  r34lContext?: string;
   botIdentityMode?: "admit" | "custom";
   botIdentityStory?: string;
   /** Scheduler priority override. Defaults to "critical" (manual Forge).
@@ -472,7 +469,7 @@ ${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMO
 ${effortDirective}
 ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count} suggestion${params.count > 1 ? "s" : ""}. Do not generate more or fewer than ${params.count}.` : ""}`;
 
-  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
+  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
   let generatedJsonStr = "";
 
   const forgeTimeout = getOperationTimeout("forge", provider);
@@ -910,6 +907,9 @@ export interface RefineParams {
   customInstruction?: string;
   streamMetadata: StreamMetadata;
   activeProvider: string;
+  /** R34L learned channel-style prompt block. When present, the Refine
+   *  prompt's default typing-style rule yields to this override. */
+  r34lContext?: string;
 }
 
 export async function refineSuggestion(params: RefineParams): Promise<{ message: string; why_it_fits: string; tokenUsage?: TokenUsage }> {
@@ -934,6 +934,7 @@ Title: ${params.streamMetadata?.title || "Unknown"}
 REFINEMENT INSTRUCTION:
 Type: ${params.refinementType}
 Custom Instruction: ${params.customInstruction || "None"}
+${params.r34lContext ? `\nTYPING STYLE OVERRIDE (R34L):\nThe streamer has R34L mode ON. Apply the learned channel texture below to the refined message — surface style only; the refinement instruction's intent still governs content.\n${params.r34lContext}\n` : ""}
 `;
 
   let generatedJsonStr = "";
@@ -1075,6 +1076,9 @@ export interface AutoForgeParams {
    *  AI knows which emotes are channel-specific (favor) vs global (use sparingly).
    *  Falls back to `availableEmotes` (plain names) when not provided. */
   availableEmotesTagged?: string[];
+  /** R34L learned channel-style prompt block (resolved per generation by
+   *  r34lAdaptation.ts). Injected after R34L_TYPING_PROMPT when R34L is on. */
+  r34lContext?: string;
   botIdentityMode?: "admit" | "custom";
   botIdentityStory?: string;
   audioEnergyLabel?: "silent" | "quiet" | "normal" | "loud" | "spike";
@@ -1675,7 +1679,7 @@ ${params.force ? "\nFORCE MODE: The user has manually forced this action. You MU
 ${params.antiRepetitionContext ? `\n\n${params.antiRepetitionContext}` : ""}
 DECIDE NOW.`;
 
-  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.recentChatLog, params.availableEmotes, params.r34lEnabled) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + (params.selfPerformanceContext ? SELF_PERFORMANCE_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
+  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + (params.selfPerformanceContext ? SELF_PERFORMANCE_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
 
   let lastError: Error | null = null;
   let usedFallback = false;

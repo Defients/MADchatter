@@ -26,7 +26,7 @@ Known non-fatal Vite build warnings (safe to ignore):
 ## Architecture Overview
 
 ### State (`src/store.ts`)
-- Zustand `persist` store, key `madchatter-storage`, schema version 30 with `migrate`.
+- Zustand `persist` store, key `madchatter-storage`, schema version 32 with `migrate`.
 - Legacy single-bot fields are the source of truth when `multiBotEnabled === false`.
 - Multi-bot state (`bots[]`, `activeBotId`, `manualSendBotId`) is additive — enabling copies legacy state into `bots[0]`; disabling syncs back.
 - `selectMultiBotActive` (exported selector): `multiBotEnabled && ≥2 bots active && authenticated`.
@@ -257,13 +257,19 @@ Known non-fatal Vite build warnings (safe to ignore):
 - Autosave every 60s + on `beforeunload`, guarded by `isSwitchingRef` during a switch.
 - Per-bot session restore is gated on `multiBotEnabled` — in single-bot mode the global fields are the source of truth (restoring per-bot events would duplicate them in the report's merge).
 
-### R34L Mode (`src/lib/prompts.ts`, `src/lib/chatStyle.ts`)
-- `R34L_TYPING_PROMPT` — fixed typing texture overlay (lowercase, punctuation, rhythm). Injected when `r34lEnabled` is true.
-- `STANDARD_TYPING_PROMPT` — explicit normal capitalization and grammar instruction. Injected when `r34lEnabled` is false. Without this, models default to lowercase Twitch-chat style because the recent chat log is lowercase and the base prompts say "be human-like." The standard prompt overrides that: capitalize sentences, use standard punctuation, no spelling mutations, still casual but not deliberately messy.
-- `analyzeChatStyle()` — analyzes recent chat for casing, emote density, slang, punctuation.
-- `formatChatStyleProfile()` — injects observed texture into the prompt as a profile block.
-- Cringe tokens (`lol`, `tbh`, `ngl`, `lmao`, etc.) are excluded from the slang lexicon and punctuation signals to prevent re-encouraging trailing closers.
-- **Refine prompt** has a permanent `TYPING STYLE` rule (normal capitalization/grammar) since it doesn't gate on `r34lEnabled`.
+### R34L Community Style Learning (`src/lib/r34lLearning.ts`, `src/lib/r34lAdaptation.ts`, schema v31; Frozen Learning v32)
+- **Model:** One canonical `R34lChannelProfile` per channel, keyed `platform:normalizedChannel` (`r34lProfileKey`). Deterministic local analysis only — casing (lettered-message denominator), length, punctuation, vocabulary, emote usage (extension `known` vs `native` IRC-tag sources), response forms. Measured traits, never inferred meaning. No AI provider required; no model request per message.
+- **Bounded influence:** per-contributor damping (`1/(1+0.35·n)`), 120-hash dedup ring (dups worth 0.15), minimum multi-contributor support, decay-compounded accumulators (baseline half-life 21d, overlay 6h). Caps: 25 profiles, 60 vocab, 40 emotes, 150 contributors. All constants are named exports at the top of `r34lLearning.ts`.
+- **Baseline vs overlay:** `r34lProfiles` (persisted, long-lived, untouched by `clearAllContext` and channel snapshots — it IS the per-channel archive) + `r34lSessionProfile` (runtime-only, wiped by `resetIntelligenceSession` on every channel/platform switch, capped at 40% of merged evidence) — a burst adapts the live texture without overwriting months of retained style.
+- **Ingestion:** `App.tsx` live platform handlers → `noteR34lObservation` — session-guarded (revision+platform+channel), eligibility-filtered (own bots via `ownBotUsernames`, known bots, commands, URL-only), once per message. Own-bot echoes are filtered before `processIncomingMessage`.
+- **Frozen Learning (v32):** `r34lLearningFrozen` (persisted) — Ctrl+click the R34L button (TuningDeck, or the Core dock/mobile R34L rows via the same Ctrl/Cmd+click contract) toggles it; the button goes yellow + snowflake. While frozen, `noteR34lObservation` returns before any write (no collection, decay-compounding, dedup-ring touches, or overlay updates) and `resetR34lChannelLearning` is a no-op — learned data can neither grow nor be erased. The resolver/readout are untouched, so everything already learned keeps applying to generation and `applied` stays true. Unfreezing resumes learning from the preserved state; the flag survives reload and round-trips export/import.
+- **Resolver:** `resolveCurrentR34lAdaptation()` is the single chokepoint — returns `{ view, promptBlock, applied }`. The SAME resolved evidence powers generation AND the readout. `r34lEnabled` off → empty promptBlock immediately, learning preserved (passive ingestion continues; the readout says so).
+- **Generation paths:** manual Forge (TheForge ×2 + TuningDeck), AutoForge decide + generate (useAutoForge ×2), per-bot AutoForge (useAutoForgeBot ×2), Smart Replies, Refine (mobile too). All pass `r34lContext` → `r34lProfileSegment` in `ai.ts`.
+- **Prompts:** `R34L_TYPING_PROMPT` reworked — reliable observations govern surface style; restrained neutral baseline when evidence is thin (declared as baseline, never "learned"); no invented typos/stock slang. Chat-derived tokens serialize as untrusted bounded data. Advisory only — never overrides operator instructions, STOP, or participation controls.
+- **Emote honesty:** observed-in-chat ≠ recognized-by-metadata ≠ known-usable-by-bot. Extension-cache names are usable-as-text; native/subscriber emotes stay honestly unknown. `emoteAwarenessEnabled` off or cold cache → metadata unavailable (emote traits degrade, others keep learning).
+- **Readout UI:** `R34lReadout.tsx` — `R34lInfoPopover` (Studio/TuningDeck, opened via the ⓘ next to the R34L toggle), `R34lInlineDetails` (Core dock + mobile tuning tab). Statements derive from `deriveR34lView` — no invented scores. `resetR34lChannelLearning()` is channel-scoped (clears profile + overlay + dedup for the live channel only).
+- **Persistence:** `resilientLocalStorage` wraps zustand storage — quota/private-mode write failures are swallowed (session continues in memory), recorded via `getPersistenceFailure()`. Migration v31 seeds `r34lProfiles: {}` and sanitizes entries; export/import carries sanitized profiles (key re-derived, hostile payloads degrade to fresh).
+- Tests: `npx tsx src/lib/r34lLearning.test.ts` (135 scenarios), `npx tsx src/store.r34l.test.ts` (84 store-integration scenarios, incl. Frozen Learning).
 
 ### Emote System (`src/lib/emotes.ts`)
 - Fetches global + channel-specific emotes from 7TV, FrankerFaceZ, and BetterTTV. Channel emotes override globals (same name → channel version). Cached per channel (10-min TTL).
@@ -339,7 +345,8 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/lib/sentiment.test.ts` | Sentiment classifier tests (run: `npx tsx src/lib/sentiment.test.ts`) |
 | `src/lib/autoForgeCore.test.ts` | AutoForge core computation tests (run: `npx tsx src/lib/autoForgeCore.test.ts`) |
 | `src/lib/antiRepetition.test.ts` | Anti-repetition + Jaccard dedup tests (run: `npx tsx src/lib/antiRepetition.test.ts`) |
-| `src/lib/chatStyle.test.ts` | Chat style analyzer tests (run: `npx tsx src/lib/chatStyle.test.ts`) |
+| `src/lib/r34lLearning.test.ts` | R34L learning engine tests (run: `npx tsx src/lib/r34lLearning.test.ts`) |
+| `src/store.r34l.test.ts` | R34L store integration tests (run: `npx tsx src/store.r34l.test.ts`) |
 | `src/lib/personalityEngine.test.ts` | Personality engine tests (run: `npx tsx src/lib/personalityEngine.test.ts`) |
 | `src/lib/memoryRetrieval.test.ts` | Memory retrieval + director notes tests (run: `npx tsx src/lib/memoryRetrieval.test.ts`) |
 | `src/lib/botCoordinator.test.ts` | Bot coordinator tests (run: `npx tsx src/lib/botCoordinator.test.ts`) |
@@ -348,7 +355,9 @@ Known non-fatal Vite build warnings (safe to ignore):
 | `src/lib/visionProvider.test.ts` | Vision provider tests (run: `npx tsx src/lib/visionProvider.test.ts`) |
 | `src/lib/prompts.ts` | System prompts (Forge, AutoForge, R34L, memory) |
 | `src/lib/keys.ts` | Provider keys, `openAiCompatEndpoint()` |
-| `src/lib/chatStyle.ts` | Chat style analysis for R34L adaptation |
+| `src/lib/r34lLearning.ts` | R34L community style learning engine (per-channel profiles, decay, emote stats, view derivation) |
+| `src/lib/r34lAdaptation.ts` | R34L adaptation resolver — single chokepoint for generation + readout |
+| `src/components/R34lReadout.tsx` | R34L learning readout UI (popover, summary, inline details) |
 | `src/lib/emotes.ts` | 7TV/FFZ/BTTV emote fetching, parsing, tagged names for AI prompt |
 | `src/lib/botCoordinator.ts` | Multi-bot speaker floor (mention-priority bidding) |
 | `src/lib/autoForgeCore.ts` | Shared AutoForge computation (activity, engagement, health, goals, vibe check, adaptive backoff, dedup) |

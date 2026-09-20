@@ -17,6 +17,7 @@ const SHORTCUTS = [
   { keys: ['V'], label: 'Open Visual Snapshot History', category: 'Capture' },
   { keys: ['T'], label: 'Cycle Theme (Default → CosmoTech → Corrupture)', category: 'Theme' },
   { keys: ['Shift', 'R'], label: 'Toggle R34L Typing Mode', category: 'Theme' },
+  { keys: ['Ctrl', 'Click'], label: 'R34L button — Frozen Learning (pause learning)', category: 'Theme' },
   { keys: ['Ctrl', 'Shift', 'S'], label: '⚡ Supercharge Mode (Easter egg)', category: 'Easter Egg' },
   { keys: ['Ctrl', 'B'], label: 'Collapse/Expand Context Rail', category: 'Layout' },
   { keys: ['1', '-', '9'], label: 'Toggle bot 1–9 on/off (multi-bot)', category: 'Multi-Bot' },

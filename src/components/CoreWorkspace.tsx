@@ -54,6 +54,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useAppStore } from "../store";
+import { R34lInlineDetails } from "./R34lReadout";
 import type { Platform } from "../lib/kick";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
@@ -3880,6 +3881,8 @@ function CoreUtilityDock(props: {
   const setSmartRepliesEnabled = useAppStore((s) => s.setSmartRepliesEnabled);
   const r34lEnabled = useAppStore((s) => s.r34lEnabled);
   const setR34lEnabled = useAppStore((s) => s.setR34lEnabled);
+  const r34lLearningFrozen = useAppStore((s) => s.r34lLearningFrozen);
+  const setR34lLearningFrozen = useAppStore((s) => s.setR34lLearningFrozen);
   const ttsEnabled = useAppStore((s) => s.ttsEnabled);
   const setTtsEnabled = useAppStore((s) => s.setTtsEnabled);
   const dockIcons: { widget: WidgetType; icon: React.ReactNode; label: string; active: boolean; badge?: string }[] = [
@@ -4028,12 +4031,21 @@ function CoreUtilityDock(props: {
                     value={smartRepliesEnabled}
                     onToggle={() => setSmartRepliesEnabled(!smartRepliesEnabled)}
                   />
-                  <DockSettingsToggle
-                    label="R34L Typing"
-                    description="Simulated typing delay"
-                    value={r34lEnabled}
-                    onToggle={() => setR34lEnabled(!r34lEnabled)}
-                  />
+                  <div>
+                    <DockSettingsToggle
+                      label="R34L Typing"
+                      description={r34lLearningFrozen
+                        ? "Frozen — learned style kept, learning paused (Ctrl+click to resume)"
+                        : "Learns & applies the channel's typing style (Ctrl+click to freeze learning)"}
+                      value={r34lEnabled}
+                      altActive={r34lLearningFrozen}
+                      onAltToggle={() => setR34lLearningFrozen(!r34lLearningFrozen)}
+                      onToggle={() => setR34lEnabled(!r34lEnabled)}
+                    />
+                    <div className="px-2 pb-1">
+                      <R34lInlineDetails />
+                    </div>
+                  </div>
                   <DockSettingsToggle
                     label="Text-to-Speech"
                     description="Read bot messages aloud"
@@ -4069,11 +4081,18 @@ function DockSettingsToggle(props: {
   description: string;
   value: boolean;
   onToggle: () => void;
+  /** Ctrl/Cmd+click alternate action (R34L Frozen Learning). */
+  onAltToggle?: () => void;
+  /** Renders the switch yellow — the alternate mode is active. */
+  altActive?: boolean;
 }) {
   return (
     <button
       type="button"
-      onClick={props.onToggle}
+      onClick={(e) => {
+        if (props.onAltToggle && (e.ctrlKey || e.metaKey)) props.onAltToggle();
+        else props.onToggle();
+      }}
       role="switch"
       aria-checked={props.value}
       aria-label={props.label}
@@ -4086,17 +4105,21 @@ function DockSettingsToggle(props: {
       <span
         className={cn(
           "shrink-0 relative w-8 h-4 rounded-full border transition-all",
-          props.value
-            ? "bg-cyan-500/30 border-cyan-500/40"
-            : "bg-white/5 border-white/10"
+          props.altActive
+            ? "bg-yellow-500/30 border-yellow-500/40"
+            : props.value
+              ? "bg-cyan-500/30 border-cyan-500/40"
+              : "bg-white/5 border-white/10"
         )}
       >
         <span
           className={cn(
             "absolute top-0.5 w-3 h-3 rounded-full transition-all",
-            props.value
-              ? "left-4 bg-cyan-400"
-              : "left-0.5 bg-gray-600"
+            props.altActive
+              ? "left-4 bg-yellow-400"
+              : props.value
+                ? "left-4 bg-cyan-400"
+                : "left-0.5 bg-gray-600"
           )}
         />
       </span>

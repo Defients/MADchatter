@@ -101,7 +101,7 @@ s().setAdaptiveLearningEnabled(false);
 const persisted = JSON.parse(storageMap.get("madchatter-storage")!);
 check("learning persisted to storage under its channel key", persisted?.state?.learningProfiles?.channela?.actions?.full_forge !== undefined);
 check("adaptiveLearningEnabled persisted", persisted?.state?.adaptiveLearningEnabled === false);
-check("persisted version migrated to current schema (30)", persisted?.version === 30);
+check("persisted version migrated to current schema (32)", persisted?.version === 32);
 
 // Simulate a reload: rebuild the store from what's on disk.
 // (New module instance is not possible in-process; verify the persisted

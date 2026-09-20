@@ -1,5 +1,50 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
+
+/**
+ * Persistence must never break the app. A `localStorage` write can throw
+ * (quota exceeded, private-mode restrictions, disabled storage); zustand's
+ * default storage lets that propagate out of every `set()`, which would take
+ * down live chat ingestion (R34L learning, Room Model) and generation with it.
+ * This wrapper swallows storage faults, keeps the in-memory store fully
+ * functional, and records the failure so the UI never claims a save succeeded.
+ */
+let persistenceFailedAt: number | null = null;
+let persistenceFailureReason: string | null = null;
+/** Last persistence failure, or null when storage is healthy. */
+export function getPersistenceFailure(): { at: number; reason: string } | null {
+  return persistenceFailedAt === null
+    ? null
+    : { at: persistenceFailedAt, reason: persistenceFailureReason ?? "unknown" };
+}
+const resilientLocalStorage: Storage = {
+  get length() {
+    try { return localStorage.length; } catch { return 0; }
+  },
+  clear() {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  },
+  key(index: number) {
+    try { return localStorage.key(index); } catch { return null; }
+  },
+  getItem(name: string) {
+    try { return localStorage.getItem(name); } catch { return null; }
+  },
+  removeItem(name: string) {
+    try { localStorage.removeItem(name); } catch { /* ignore */ }
+  },
+  setItem(name: string, value: string) {
+    try {
+      localStorage.setItem(name, value);
+      persistenceFailedAt = null;
+      persistenceFailureReason = null;
+    } catch (e) {
+      persistenceFailedAt = Date.now();
+      persistenceFailureReason = e instanceof Error ? e.message : String(e);
+      console.warn("[store] persistence write failed (session continues in memory):", e);
+    }
+  },
+};
 import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
@@ -34,6 +79,23 @@ import {
   sanitizeLearningProfile,
 } from "./lib/channelLearning";
 import {
+  type R34lChannelProfile,
+  analyzeR34lMessage,
+  capProfileWeight,
+  clearR34lDedup,
+  emptyR34lProfile,
+  filterR34lObservation,
+  markR34lSeen,
+  pruneR34lProfiles,
+  r34lProfileKey,
+  recordR34lObservation,
+  R34L_BASELINE_HALF_LIFE_MS,
+  R34L_OVERLAY_HALF_LIFE_MS,
+  R34L_OVERLAY_MAX_WEIGHT,
+  sanitizeR34lProfile,
+} from "./lib/r34lLearning";
+import { normalizeSessionChannel } from "./lib/normalizeChannel";
+import {
   DEFAULT_AUTO_CHECK_INTERVAL_MS,
   DEFAULT_AUTO_CHECK_MODE,
   clampAutoCheckIntervalMs,
@@ -42,7 +104,7 @@ import {
 } from "./lib/coreAutoCheck";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
-const SETTINGS_VERSION = 30;
+const SETTINGS_VERSION = 32;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -447,6 +509,12 @@ interface AppState {
 
   r34lEnabled: boolean;
   setR34lEnabled: (enabled: boolean) => void;
+  // Frozen Learning (Ctrl+click the R34L button): pauses ALL learning writes —
+  // no collection, decay, overwrite, or reset — while every previously learned
+  // trait keeps applying to generation. Persisted like r34lEnabled so a reload
+  // can't silently resume collection.
+  r34lLearningFrozen: boolean;
+  setR34lLearningFrozen: (frozen: boolean) => void;
   
   isAutoForgeHUDOpen: boolean;
   setIsAutoForgeHUDOpen: (isOpen: boolean) => void;
@@ -838,6 +906,37 @@ interface AppState {
   adaptiveLearningEnabled: boolean;
   setAdaptiveLearningEnabled: (enabled: boolean) => void;
 
+  // ─── R34L Community Style Learning (v31) ─────────────────────────
+  // Per-channel learned typing-style evidence (casing, length, punctuation,
+  // vocabulary, emote usage) — compact aggregates only, never raw chat text.
+  // Keyed `platform:normalizedChannel`: long-lived like learningProfiles
+  // (never wiped by clearAllContext, survives reloads, pruned to 25
+  // channels). The session overlay is runtime-only current-visit evidence —
+  // wiped on every channel switch so a burst can adapt the live texture
+  // without ever overwriting the retained baseline.
+  r34lProfiles: Record<string, R34lChannelProfile>;
+  r34lSessionProfile: R34lChannelProfile | null;
+  // Ingest ONE live incoming chat message into the channel's R34L profile.
+  // Session-guarded (revision + platform + channel must match the live
+  // session), eligibility-filtered (own bots, known bots, commands,
+  // URL-only), dedup-bounded. Never throws into chat processing.
+  noteR34lObservation: (obs: {
+    username: string;
+    text: string;
+    platform: Platform;
+    channel: string;
+    revision: number;
+    isReply?: boolean;
+    nativeEmotes?: string[];
+    knownEmotes?: ReadonlySet<string>;
+    emoteMetadataAvailable: boolean;
+    botUsernames: string[];
+  }) => void;
+  // Clears ONLY the current channel+platform's R34L profile, its session
+  // overlay, and its dedup ring (confirm-gated in the UI). Memories,
+  // settings, and other channels are untouched.
+  resetR34lChannelLearning: () => void;
+
   // ─── Bot Thinking State (B5) ────────────────────────────────
   isAutoForgeThinking: boolean;
   setIsAutoForgeThinking: (thinking: boolean) => void;
@@ -1013,6 +1112,8 @@ export const partializeAppState = (state: AppState) => ({
   pinnedMemories: state.pinnedMemories,
   goldenMemoryId: state.goldenMemoryId,
   r34lEnabled: state.r34lEnabled,
+  // Frozen Learning pause flag (v32) — a user preference, so it persists.
+  r34lLearningFrozen: state.r34lLearningFrozen,
   autoForgeEventLog: state.autoForgeEventLog,
   cosmotechTheme: state.cosmotechTheme,
   theme: state.theme,
@@ -1091,6 +1192,9 @@ export const partializeAppState = (state: AppState) => ({
   // the user's collection/injection preference (false = analytics-only).
   learningProfiles: state.learningProfiles,
   adaptiveLearningEnabled: state.adaptiveLearningEnabled,
+  // R34L community style profiles (v31) — long-lived per channel+platform.
+  // r34lSessionProfile is runtime-only and deliberately excluded.
+  r34lProfiles: state.r34lProfiles,
   // Room Model synthesis toggle (user preference). The Room State + moments
   // themselves are session data — archived per channel via channelStore,
   // deliberately NOT in localStorage (same risk profile as chatLog).
@@ -1127,6 +1231,9 @@ function resetIntelligenceSession(channel: string | null): Partial<AppState> {
   return {
     roomState: null, roomMoments: [], episodes: [], perceptionSummary: null,
     participationSnapshot: null, spokenCallout: null, spokenCalloutLog: [],
+    // R34L: the session overlay is current-visit evidence only. The retained
+    // per-channel baseline (r34lProfiles) is long-lived and untouched here.
+    r34lSessionProfile: null,
   };
 }
 
@@ -1350,6 +1457,8 @@ export const useAppStore = create<AppState>()(
 
       r34lEnabled: false,
       setR34lEnabled: (enabled) => set({ r34lEnabled: enabled }),
+      r34lLearningFrozen: false,
+      setR34lLearningFrozen: (frozen) => set({ r34lLearningFrozen: frozen }),
 
       isAutoForgeHUDOpen: false,
       setIsAutoForgeHUDOpen: (isOpen) => set({ isAutoForgeHUDOpen: isOpen }),
@@ -1670,6 +1779,9 @@ export const useAppStore = create<AppState>()(
           autoForgeFollowup: null,
           isAutoForgeThinking: false,
           smartReplies: [],
+          // R34L session overlay dies with the session (the retained
+          // baseline is long-lived per channel and deliberately survives).
+          r34lSessionProfile: null,
           // Auto-memory Zustand cache — the source of truth is the
           // channel-scoped memoryStore in IndexedDB, and useAutoMemory
           // re-hydrates for the new channel. Wiping here closes the window
@@ -2691,6 +2803,73 @@ export const useAppStore = create<AppState>()(
       adaptiveLearningEnabled: true,
       setAdaptiveLearningEnabled: (enabled) => set({ adaptiveLearningEnabled: enabled }),
 
+      // ─── R34L Community Style Learning ────────────────────────────
+      r34lProfiles: {},
+      r34lSessionProfile: null,
+      noteR34lObservation: (obs) => {
+        try {
+          const state = get();
+          // Frozen Learning: learned data is read-only — collect nothing,
+          // decay nothing, and don't even touch the dedup ring. Everything
+          // already learned keeps applying via the resolver; this only stops
+          // new evidence from being written.
+          if (state.r34lLearningFrozen) return;
+          // Session guard: a late observation from a previous visit
+          // (including an A→B→A round trip) never updates the current visit.
+          if (obs.revision !== state.sessionRevision) return;
+          if (obs.platform !== state.platform) return;
+          if (normalizeSessionChannel(obs.channel) !== normalizeSessionChannel(state.streamMetadata.channelName)) return;
+          if (!normalizeSessionChannel(obs.channel)) return;
+          const filter = filterR34lObservation({ username: obs.username, text: obs.text, botUsernames: obs.botUsernames });
+          if (!filter.eligible) return;
+          const key = r34lProfileKey(obs.platform, obs.channel);
+          const duplicate = markR34lSeen(key, obs.text);
+          const now = Date.now();
+          const analysis = analyzeR34lMessage(obs.text, { knownEmotes: obs.knownEmotes, nativeEmotes: obs.nativeEmotes });
+          set((s) => {
+            const baseline = s.r34lProfiles[key] ?? emptyR34lProfile(obs.platform, obs.channel, now);
+            const nextBaseline = recordR34lObservation(baseline, analysis, {
+              username: obs.username, isReply: obs.isReply, duplicate, now,
+              halfLifeMs: R34L_BASELINE_HALF_LIFE_MS, emoteMetadataAvailable: obs.emoteMetadataAvailable,
+            });
+            // Session overlay: fresh evidence for THIS visit only (bounded,
+            // fast-decaying, share-capped at merge time).
+            const overlayBase = s.r34lSessionProfile && s.r34lSessionProfile.key === key
+              ? s.r34lSessionProfile
+              : emptyR34lProfile(obs.platform, obs.channel, now);
+            const nextOverlay = capProfileWeight(recordR34lObservation(overlayBase, analysis, {
+              username: obs.username, isReply: obs.isReply, duplicate, now,
+              halfLifeMs: R34L_OVERLAY_HALF_LIFE_MS, emoteMetadataAvailable: obs.emoteMetadataAvailable,
+            }), R34L_OVERLAY_MAX_WEIGHT);
+            return {
+              r34lProfiles: pruneR34lProfiles({ ...s.r34lProfiles, [key]: nextBaseline }),
+              r34lSessionProfile: nextOverlay,
+            };
+          });
+        } catch (e) {
+          // Learning must never break chat processing or generation.
+          console.warn("[r34l] observation dropped:", e);
+        }
+      },
+      resetR34lChannelLearning: () => {
+        const state = get();
+        // Frozen Learning preserves learned data — it can never be erased
+        // while the freeze is active (Ctrl+click R34L to unfreeze first).
+        if (state.r34lLearningFrozen) return;
+        const channel = state.streamMetadata.channelName;
+        if (!normalizeSessionChannel(channel)) return;
+        const key = r34lProfileKey(state.platform, channel);
+        clearR34lDedup(key);
+        set((s) => {
+          const next = { ...s.r34lProfiles };
+          delete next[key];
+          return {
+            r34lProfiles: next,
+            r34lSessionProfile: s.r34lSessionProfile?.key === key ? null : s.r34lSessionProfile,
+          };
+        });
+      },
+
       // ─── Bot Thinking State (B5) ────────────────────────────
       isAutoForgeThinking: false,
       setIsAutoForgeThinking: (thinking) => set({ isAutoForgeThinking: thinking }),
@@ -3278,6 +3457,7 @@ export const useAppStore = create<AppState>()(
           config: state.config,
           platform: state.platform,
           r34lEnabled: state.r34lEnabled,
+          r34lLearningFrozen: state.r34lLearningFrozen,
           cosmotechTheme: state.cosmotechTheme,
         theme: state.theme,
           messageSoundEnabled: state.messageSoundEnabled,
@@ -3332,6 +3512,9 @@ export const useAppStore = create<AppState>()(
           // never credentials. Sanitized per-profile on import.
           learningProfiles: state.learningProfiles,
           adaptiveLearningEnabled: state.adaptiveLearningEnabled,
+          // R34L community style profiles (v31) — learned aggregates only,
+          // never credentials. Sanitized per-profile on import.
+          r34lProfiles: state.r34lProfiles,
           // Participation awareness (v28) — preferences + global stop only.
           participationManualMode: state.participationManualMode,
           participationAwarenessEnabled: state.participationAwarenessEnabled,
@@ -3358,6 +3541,7 @@ export const useAppStore = create<AppState>()(
           if (data.config) set((state) => ({ config: { ...state.config, ...data.config } }));
           if (data.platform === "twitch" || data.platform === "kick" || data.platform === "joystick") get().setPlatform(data.platform);
           if (data.r34lEnabled !== undefined) set({ r34lEnabled: data.r34lEnabled });
+          if (data.r34lLearningFrozen !== undefined) set({ r34lLearningFrozen: data.r34lLearningFrozen === true });
           if (data.cosmotechTheme !== undefined) set({ cosmotechTheme: data.cosmotechTheme });
           if (data.theme) set({ theme: data.theme, cosmotechTheme: data.theme === "cosmotech" });
           if (data.messageSoundEnabled !== undefined) set({ messageSoundEnabled: data.messageSoundEnabled });
@@ -3421,6 +3605,15 @@ export const useAppStore = create<AppState>()(
             set({ learningProfiles: pruneLearningProfiles(sanitized) });
           }
           if (data.adaptiveLearningEnabled !== undefined) set({ adaptiveLearningEnabled: data.adaptiveLearningEnabled === true });
+          // R34L community style profiles (v31) — sanitized per profile;
+          // identity re-derived from the map key (spoof-proof).
+          if (data.r34lProfiles && typeof data.r34lProfiles === "object") {
+            const sanitized: Record<string, R34lChannelProfile> = {};
+            for (const [key, profile] of Object.entries(data.r34lProfiles)) {
+              sanitized[key] = sanitizeR34lProfile(profile, key);
+            }
+            set({ r34lProfiles: pruneR34lProfiles(sanitized) });
+          }
           // Participation awareness (v28) — defensive: mode degrades to "auto".
           if (data.participationManualMode !== undefined) {
             const mode = data.participationManualMode;
@@ -3446,6 +3639,11 @@ export const useAppStore = create<AppState>()(
       }),
     {
       name: "madchatter-storage",
+      // Fault-tolerant storage: a quota/permission failure must degrade to
+      // "this session isn't persisted" — it must never throw out of a store
+      // action and break live chat ingestion or generation. Failures are
+      // recorded so the UI can avoid claiming persistence succeeded.
+      storage: createJSONStorage(() => resilientLocalStorage),
       partialize: partializeAppState,
       version: SETTINGS_VERSION,
       migrate: (persistedState: any, version: number) => {
@@ -3790,6 +3988,30 @@ export const useAppStore = create<AppState>()(
           if (typeof persistedState.localBridgeDevice !== "string") persistedState.localBridgeDevice = "auto";
           if (typeof persistedState.localBridgeSource !== "string") persistedState.localBridgeSource = "stream";
           if (typeof persistedState.localBridgeLanguage !== "string") persistedState.localBridgeLanguage = "en";
+        }
+        // v31: R34L community style learning. Existing users start with no
+        // learned evidence (cold start = the restrained baseline texture,
+        // preserving existing behavior exactly until evidence accumulates).
+        // Every persisted profile is sanitized defensively — malformed data
+        // degrades to a fresh profile.
+        if (version < 31 && persistedState) {
+          if (persistedState.r34lProfiles === undefined || typeof persistedState.r34lProfiles !== "object") {
+            persistedState.r34lProfiles = {};
+          } else {
+            const sanitized: Record<string, unknown> = {};
+            for (const [key, profile] of Object.entries(persistedState.r34lProfiles as Record<string, unknown>)) {
+              sanitized[key] = sanitizeR34lProfile(profile, key);
+            }
+            persistedState.r34lProfiles = sanitized;
+          }
+        }
+        // v32: R34L Frozen Learning (Ctrl+click the R34L button). Existing
+        // users default to unfrozen — learning behavior is unchanged until
+        // the mode is explicitly toggled on.
+        if (version < 32 && persistedState) {
+          if (persistedState.r34lLearningFrozen === undefined) {
+            persistedState.r34lLearningFrozen = false;
+          }
         }
         return persistedState;
       },

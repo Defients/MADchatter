@@ -6,6 +6,8 @@ import { Button } from "./ui/button";
 import { Slider } from "./ui/slider";
 import { cn } from "../lib/utils";
 import { generateChat } from "../lib/ai";
+import { R34lInfoPopover } from "./R34lReadout";
+import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import { getActiveProvider } from "../lib/keys";
 import { sendManualMessage } from "../lib/manualSend";
 import { playSfx } from "../lib/sfx";
@@ -59,6 +61,7 @@ import {
   RefreshCw,
   MousePointer2,
   BarChart3,
+  Snowflake,
 } from "lucide-react";
 import { playMessageSound, enumerateAudioOutputs, setAudioOutputSink, setSoundUrl, setSoundVolume as setSoundVolumeFn } from "../lib/sound";
 import { formatChatLog } from "../lib/chatUtils";
@@ -90,6 +93,8 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     setAutoForgeEnabled,
     r34lEnabled,
     setR34lEnabled,
+    r34lLearningFrozen,
+    setR34lLearningFrozen,
     messageSoundEnabled,
     setMessageSoundEnabled,
     audioOutputDeviceId,
@@ -460,6 +465,7 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         activeProvider,
         count,
         r34lEnabled,
+        r34lContext: resolveCurrentR34lAdaptation().promptBlock,
         botUsername: activeUser?.login,
         memoryContext,
       });
@@ -595,23 +601,46 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
               <button
                 type="button"
                 data-tutorial="r34l"
-                onClick={() => {
+                onClick={(e) => {
+                  // Ctrl+click = Frozen Learning: pause all learning writes
+                  // while everything already learned keeps applying.
+                  if (e.ctrlKey || e.metaKey) {
+                    const next = !r34lLearningFrozen;
+                    setR34lLearningFrozen(next);
+                    toast.success(next
+                      ? "Frozen Learning on — R34L keeps and applies what it already learned, but collects nothing new"
+                      : "Frozen Learning off — R34L resumes learning from its preserved state");
+                    return;
+                  }
                   setR34lEnabled(!r34lEnabled);
-                  toast.success(`R34L mode is now ${!r34lEnabled ? 'enabled — all Forges will type more human' : 'disabled'}`);
+                  toast.success(`R34L mode is now ${!r34lEnabled ? "enabled — Forge output will adapt to this channel's learned style" : "disabled — learned style is kept, not applied"}`);
                 }}
                 className={cn(
                   "relative px-2.5 py-1 rounded-md text-[10px] font-bold uppercase font-mono tracking-wider transition-all duration-300 overflow-hidden",
-                  r34lEnabled
-                    ? "text-emerald-300 bg-emerald-500/15 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.35)]"
-                    : "text-gray-500 bg-white/5 border border-white/10 hover:text-gray-400 hover:bg-white/10"
+                  r34lLearningFrozen
+                    ? "text-yellow-300 bg-yellow-500/15 border border-yellow-500/40 shadow-[0_0_12px_rgba(234,179,8,0.35)]"
+                    : r34lEnabled
+                      ? "text-emerald-300 bg-emerald-500/15 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.35)]"
+                      : "text-gray-500 bg-white/5 border border-white/10 hover:text-gray-400 hover:bg-white/10"
                 )}
               >
-                {r34lEnabled && (
-                  <span className="absolute inset-0 rounded-md pointer-events-none animate-pulse bg-gradient-to-r from-transparent via-emerald-400/10 to-transparent" />
+                {(r34lEnabled || r34lLearningFrozen) && (
+                  <span className={cn(
+                    "absolute inset-0 rounded-md pointer-events-none animate-pulse bg-gradient-to-r from-transparent to-transparent",
+                    r34lLearningFrozen ? "via-yellow-400/10" : "via-emerald-400/10"
+                  )} />
                 )}
                 <span className="relative flex items-center gap-1">
-                  <span className={cn("w-1.5 h-1.5 rounded-full transition-all duration-300", r34lEnabled ? "bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.8)] animate-pulse" : "bg-gray-600")} />
+                  <span className={cn(
+                    "w-1.5 h-1.5 rounded-full transition-all duration-300",
+                    r34lLearningFrozen
+                      ? "bg-yellow-400 shadow-[0_0_6px_rgba(234,179,8,0.8)]"
+                      : r34lEnabled
+                        ? "bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.8)] animate-pulse"
+                        : "bg-gray-600"
+                  )} />
                   R34L
+                  {r34lLearningFrozen && <Snowflake className="w-2.5 h-2.5" />}
                 </span>
               </button>
             } />
@@ -623,25 +652,25 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
             >
               <div className="p-3 space-y-2">
                 <div className="flex items-center gap-1.5 pb-1 border-b border-white/5">
-                  <span className={cn("w-2 h-2 rounded-full", r34lEnabled ? "bg-emerald-400 animate-pulse" : "bg-gray-600")} />
-                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider text-emerald-300">R34L Human Typing Mode</span>
+                  <span className={cn("w-2 h-2 rounded-full", r34lLearningFrozen ? "bg-yellow-400" : r34lEnabled ? "bg-emerald-400 animate-pulse" : "bg-gray-600")} />
+                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider text-emerald-300">R34L Community Style</span>
                 </div>
                 <p className="text-[11px] leading-relaxed text-gray-300">
-                  When enabled, all Forge outputs are transformed to type like a real person — lowercase, loose spelling, punctuation as emotion, softeners, and controlled messiness. R34L also <span className="text-emerald-300">adapts to the channel's chat</span>: it mirrors the casing, slang, punctuation, and emote rhythm of the current chatters (texture only — it keeps its own content and language, and never escalates profanity). Falls back to a default human texture when chat is quiet. Meaning is preserved; only the typing texture changes.
+                  When enabled, Forge outputs adopt the typing texture this community actually uses — R34L <span className="text-emerald-300">learns from the channel's chat over time</span> (casing, length, punctuation, emote habits) and keeps what it learns for each streamer. Personality and meaning stay the bot's own; only surface style adapts. Until enough evidence exists, a neutral conversational baseline applies.
                 </p>
-                <div className="rounded-md bg-black/30 border border-white/5 p-2 space-y-1.5">
-                  <div>
-                    <span className="text-[9px] font-bold uppercase font-mono text-gray-500 tracking-wider">Before</span>
-                    <p className="text-[11px] text-gray-400 font-mono leading-relaxed">"I disagree because your argument relies on an unsupported assumption."</p>
-                  </div>
-                  <div>
-                    <span className="text-[9px] font-bold uppercase font-mono text-emerald-400 tracking-wider">After</span>
-                    <p className="text-[11px] text-emerald-200 font-mono leading-relaxed">"i don't fully buy that bc the whole thing is kinda leaning on an assumption you never actually proved... like the confidence is there, sure, but the substrate is not"</p>
-                  </div>
-                </div>
+                <p className="text-[11px] leading-relaxed text-gray-300">
+                  <span className="text-yellow-300 font-bold">Frozen Learning</span> (<kbd className="text-[9px] font-mono bg-white/5 rounded px-1 py-0.5 border border-white/10">Ctrl</kbd>+click) pauses all learning — nothing new is collected, decayed, or overwritten, and learned data is never erased — while everything already learned keeps shaping output. Ctrl+click again to resume.
+                </p>
+                {r34lLearningFrozen && (
+                  <p className="text-[10px] leading-relaxed text-yellow-300/90 font-bold">
+                    Learning is frozen — the learned style still applies; new chat changes nothing.
+                  </p>
+                )}
+                <p className="text-[9px] text-gray-600">Click the ⓘ next to the toggle for the full learning readout and per-channel reset.</p>
               </div>
             </TooltipContent>
           </Tooltip>
+          <R34lInfoPopover />
           {/* HUD button — styled with icon */}
           <button 
             type="button"

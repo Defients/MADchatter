@@ -23,6 +23,7 @@ import { notifyMention, notifyAutoForgeError, notifyActivitySpike } from "../lib
 import { generateSmartReplies, canGenerateSmartReplies, cleanExpiredSmartReplies } from "../lib/smartReplies";
 import { isSchedulerCancellation, isQueueTimeout } from "../lib/aiScheduler";
 import { getAvailableEmoteNames } from "../lib/emotes";
+import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import { evaluateAllRules } from "../lib/ruleEngine";
 import { formatThreadContext } from "../lib/conversationThread";
 import { createAutoForgeExecutionGuard, captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
@@ -682,6 +683,8 @@ export function useAutoForge() {
         mentionedLines: allMentionedLines,
         contextTokenLimit: state.config.autoForgeContextTokens ?? 4000,
         r34lEnabled: state.r34lEnabled,
+        // R34L learned channel style — resolved from the persistent learner.
+        r34lContext: resolveCurrentR34lAdaptation().promptBlock,
         botUsername,
         force,
         memoryContext,
@@ -981,6 +984,7 @@ export function useAutoForge() {
             activeProvider,
             count: 3,
             r34lEnabled: state.r34lEnabled,
+            r34lContext: resolveCurrentR34lAdaptation().promptBlock,
             botUsername,
             memoryContext: memoryContextStr,
             sentimentContext: sentimentContextStr,

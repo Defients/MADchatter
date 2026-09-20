@@ -663,7 +663,7 @@ export function CoreTuningControls() {
               className="overflow-hidden"
             >
               <div className="px-3 pb-3 space-y-2">
-                <AdvancedRow label="R34L Typing" value={useAppStore.getState().r34lEnabled ? "On" : "Off"} />
+                <AdvancedRow label="R34L Typing" value={`${useAppStore.getState().r34lEnabled ? "On" : "Off"}${useAppStore.getState().r34lLearningFrozen ? " · Frozen" : ""}`} />
                 <AdvancedRow label="AutoMemory" value={useAppStore.getState().autoMemoryConfig?.enabled ? "On" : "Off"} />
                 <AdvancedRow label="Context Tokens" value={`${useAppStore.getState().config.autoForgeContextTokens || 4000}`} />
                 <AdvancedRow label="Dry Run" value={autoForgeDryRun ? "On" : "Off"} />

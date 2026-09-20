@@ -21,6 +21,7 @@ import { getBotRateLimiter, syncBotRateLimiterConfig, removeBotRateLimiter } fro
 import { isNameMentioned } from "../lib/nameMatch";
 import { summarizeSentiment, formatSentimentContext } from "../lib/sentiment";
 import { getAvailableEmoteNames, getAvailableEmotesTagged } from "../lib/emotes";
+import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import { evaluateAllRules } from "../lib/ruleEngine";
 import {
   computeChatActivity,
@@ -662,6 +663,9 @@ export function useAutoForgeBot(botId: string) {
         mentionedLines: [...mentionedLines, ...audioMentionLines],
         contextTokenLimit: bot.persona.config.autoForgeContextTokens ?? 4000,
         r34lEnabled: store.r34lEnabled,
+        // R34L learned channel style — shared channel profile; the bot's own
+        // persona still governs voice (style is texture, never personality).
+        r34lContext: resolveCurrentR34lAdaptation().promptBlock,
         botUsername,
         force,
         memoryContext,
@@ -985,6 +989,7 @@ export function useAutoForgeBot(botId: string) {
               activeProvider,
               count: 3,
               r34lEnabled: store.r34lEnabled,
+              r34lContext: resolveCurrentR34lAdaptation().promptBlock,
               botUsername,
               memoryContext,
               sentimentContext,

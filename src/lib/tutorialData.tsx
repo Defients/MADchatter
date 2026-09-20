@@ -359,7 +359,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     ),
     description: (
       <>
-        Toggle <span className="text-emerald-400 font-bold">R34L</span> to make your bot type like a real person — lowercase, loose spelling, punctuation as emotion, and controlled messiness. R34L also <span className="text-emerald-300">adapts to your channel's chat</span>: it mirrors the casing, slang, and emote rhythm of current chatters. Meaning is preserved; only the typing texture changes.
+        Toggle <span className="text-emerald-400 font-bold">R34L</span> to make your bot pick up the room's typing texture. R34L <span className="text-emerald-300">learns how this community actually writes</span> — casing, message length, punctuation, emote habits — and remembers it per streamer across visits. Your bot keeps its own personality and meaning; only surface style adapts. Tap the ⓘ next to the toggle any time to see exactly what it has learned.
       </>
     ),
     position: "left",

@@ -9,6 +9,7 @@ import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesConte
 import { analyzeRepetition, formatRepetitionContext } from "./antiRepetition";
 import { buildLongTermMemoryContext } from "./autoForgeCore";
 import { getAvailableEmoteNames } from "./emotes";
+import { resolveCurrentR34lAdaptation } from "./r34lAdaptation";
 
 let lastSmartReplyTime = 0;
 const SMART_REPLY_COOLDOWN_MS = 30_000;
@@ -201,6 +202,7 @@ Rules:
       activeProvider,
       count: 3,
       r34lEnabled: state.r34lEnabled,
+      r34lContext: resolveCurrentR34lAdaptation().promptBlock,
       botUsername,
       memoryContext,
       sentimentContext,

@@ -44,6 +44,7 @@ import { sendManualMessage } from './lib/manualSend';
 import { playMessageSound, setAudioOutputSink, setSoundUrl, setSoundVolume } from './lib/sound';
 import { playSfx, initSfxAudioContext } from './lib/sfx';
 import { createChatMessage, parseTwitchEmoteTag } from './lib/chatUtils';
+import { getR34lRecognitionSet } from './lib/r34lAdaptation';
 import type { ChatMessage } from './types';
 import { classifySentiment } from './lib/sentiment';
 import { requestNotificationPermission, notifyMention } from './lib/notifications';
@@ -279,7 +280,7 @@ export default function App() {
   }, [desktopNotificationsEnabled]);
 
   // Helper: process incoming chat message (sentiment + activity + chatter stats + keyword triggers)
-  const processIncomingMessage = async (username: string, text: string, platform: string, badges: string[] = []) => {
+  const processIncomingMessage = async (username: string, text: string, platform: string, badges: string[] = [], r34lMeta?: { isReply?: boolean; nativeEmotes?: string[]; channel: string; revision: number }) => {
     const state = useAppStore.getState();
     // Classify sentiment
     const { label, score } = classifySentiment(text);
@@ -313,6 +314,25 @@ export default function App() {
         isMention,
         isStreamer: !!state.streamMetadata.channelName &&
           username.toLowerCase() === state.streamMetadata.channelName.trim().toLowerCase(),
+      });
+    }
+    // R34L community style learning — each live message ingested exactly once.
+    // Own-bot echoes never reach here (filtered at the platform handlers), and
+    // the store action re-verifies session identity (revision+platform+channel)
+    // so a late message from a previous visit can never update the current one.
+    if (r34lMeta) {
+      const recog = getR34lRecognitionSet(state.streamMetadata.channelName);
+      state.noteR34lObservation({
+        username,
+        text,
+        platform: state.platform,
+        channel: r34lMeta.channel,
+        revision: r34lMeta.revision,
+        isReply: r34lMeta.isReply,
+        nativeEmotes: r34lMeta.nativeEmotes,
+        knownEmotes: recog.known,
+        emoteMetadataAvailable: recog.metadataAvailable,
+        botUsernames: [...ownBotUsernames(state.platform)],
       });
     }
     // Record chat activity for heatmap
@@ -382,7 +402,10 @@ export default function App() {
         }
         queueChatMessage(createChatMessage(username, content, 'joystick'));
         incrementMessagesReceived();
-        processIncomingMessage(username, content, 'joystick');
+        processIncomingMessage(username, content, 'joystick', [], {
+          channel,
+          revision: useAppStore.getState().sessionRevision,
+        });
       });
 
       joystickClient.onStateChange((state) => {
@@ -425,7 +448,10 @@ export default function App() {
         if (ownBotUsernames('kick').has(username.toLowerCase())) return;
         queueChatMessage(createChatMessage(username, content, 'kick'));
         incrementMessagesReceived();
-        processIncomingMessage(username, content, 'kick');
+        processIncomingMessage(username, content, 'kick', [], {
+          channel,
+          revision: useAppStore.getState().sessionRevision,
+        });
       });
 
       kickClient.onStateChange((state) => {
@@ -495,7 +521,19 @@ export default function App() {
       const twitchEmotes = parseTwitchEmoteTag((tags as any).emotes);
       queueChatMessage(createChatMessage(username, message, 'twitch', twitchEmotes));
       incrementMessagesReceived();
-      processIncomingMessage(username, message, 'twitch');
+      // R34L learning metadata: native emote names recovered from IRC tags
+      // (positions are UTF-16 code units, matching JS string slicing), plus
+      // reply-tag presence. Revision is captured synchronously at arrival so
+      // a late-processed message from a previous visit is dropped downstream.
+      const r34lNativeEmotes = twitchEmotes
+        ? [...new Set(Object.values(twitchEmotes).flatMap((ranges) => ranges.map(([s, e]) => message.slice(s, e + 1))))]
+        : undefined;
+      processIncomingMessage(username, message, 'twitch', [], {
+        isReply: !!replyParentId,
+        nativeEmotes: r34lNativeEmotes,
+        channel,
+        revision: useAppStore.getState().sessionRevision,
+      });
     });
 
     client.on('ban', (_channel, username, _reason) => {

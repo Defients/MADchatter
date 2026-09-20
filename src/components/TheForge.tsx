@@ -17,6 +17,7 @@ import { cn } from "../lib/utils";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
 import { getAvailableEmoteNames } from "../lib/emotes";
+import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import {
   Flame,
   Tv,
@@ -156,6 +157,10 @@ export function TheForge() {
         ].join("\n"),
         config,
         activeProvider: provider,
+        // R34L: manual Forge previously never received the flag (only the
+        // TuningDeck forge did) — wire it plus the learned-style block.
+        r34lEnabled: useAppStore.getState().r34lEnabled,
+        r34lContext: resolveCurrentR34lAdaptation().promptBlock,
         botUsername: platform === "kick" ? getKickSession()?.username : platform === "joystick" ? getJoystickSession()?.username : getTwitchSession()?.username,
         memoryContext,
         availableEmotes: useAppStore.getState().emoteAwarenessEnabled
@@ -291,6 +296,9 @@ export function TheForge() {
         customInstruction,
         streamMetadata,
         activeProvider: provider,
+        r34lContext: useAppStore.getState().r34lEnabled
+          ? resolveCurrentR34lAdaptation().promptBlock
+          : undefined,
       });
       if (data.tokenUsage) {
         setLastTokenUsage({
