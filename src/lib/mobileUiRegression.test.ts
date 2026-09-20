@@ -32,6 +32,8 @@ assert.ok(
   mobile.indexOf("<MobileFriendTrialCard />") < mobile.indexOf("USABLE_CLOUD_PROVIDERS.map"),
   "Friend Trial is rendered before normal mobile providers",
 );
+assert.match(mobile, /desc: "Google AI for chat and Forge"/, "Gemini uses capability copy rather than pricing claims");
+assert.doesNotMatch(mobile, /Fast & generous free tier|Gemini[^\n]*free tier/i, "Gemini never implies that Friend Trial or a free allowance belongs to Gemini");
 
 assert.match(welcome, /role="dialog"/, "welcome uses dialog semantics");
 assert.match(welcome, /aria-modal="true"/, "welcome is modal");

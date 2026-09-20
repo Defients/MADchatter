@@ -1,10 +1,12 @@
+import { useState } from "react";
 import { useAppStore } from "../store";
-import { X, Clock, Camera, Zap, Trash2, Pin, Download } from "lucide-react";
+import { X, Clock, Camera, Zap, Trash2, Pin, Download, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
 import { toast } from "sonner";
-import { ThemedTooltip, Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip";
+import { ThemedTooltip } from "./ui/tooltip";
+import { stripReasoningBlocks } from "../lib/textSanitize";
 
 function formatTimeAgo(ts: number, now: number): string {
   const diff = Math.max(0, now - ts);
@@ -27,6 +29,17 @@ export function VisualHistoryOverlay() {
   const clearHistory = useAppStore((s) => s.clearVisualSnapshotHistory);
   const removeSnapshot = useAppStore((s) => s.removeVisualSnapshot);
   const addPinnedMemory = useAppStore((s) => s.addPinnedMemory);
+  // Per-entry expansion — tap-to-expand is the only reliable way to read the
+  // full analysis on touch devices (the old hover tooltip doesn't exist on
+  // phones) and doubles as the desktop "inspect" path.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   if (!open) return null;
 
@@ -97,6 +110,15 @@ export function VisualHistoryOverlay() {
                 <div className="space-y-3">
                   {reversed.map((entry, idx) => {
                     const isLatest = idx === 0;
+                    // Entries captured before the reasoning-block sanitizer
+                    // existed can still carry raw <think> chain-of-thought
+                    // in this session — sanitize for display regardless.
+                    const cleanTags = entry.tags
+                      .map((t) => stripReasoningBlocks(t))
+                      .filter((t) => t.length > 0);
+                    const displayText = cleanTags.join("\n");
+                    const expanded = expandedIds.has(entry.id);
+                    const expandable = displayText.length > 180 || displayText.includes("\n");
                     return (
                       <div key={entry.id} className="flex flex-col gap-1.5 sm:flex-row sm:gap-3 group min-w-0">
                         {/* Timestamp column */}
@@ -201,25 +223,40 @@ export function VisualHistoryOverlay() {
                                     );
                                   })()}
                                 </div>
-                                <TooltipProvider delay={1000}>
-                                  <Tooltip>
-                                    <TooltipTrigger
-                                      render={
-                                        <p className="text-[11px] text-gray-300 leading-relaxed font-mono line-clamp-3 break-words cursor-help" />
-                                      }
+                                {displayText ? (
+                                  expandable ? (
+                                    /* Tap-to-expand: the full observation stays
+                                       in-flow so it works on touch (no hover)
+                                       and isn't width-capped like a tooltip. */
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleExpanded(entry.id)}
+                                      aria-expanded={expanded}
+                                      className="block w-full text-left group/analysis"
                                     >
-                                      {entry.tags.join(" · ")}
-                                    </TooltipTrigger>
-                                    <TooltipContent
-                                      side="bottom"
-                                      align="start"
-                                      sideOffset={6}
-                                      className="bg-[#1a1a22] border border-white/10 text-gray-200 rounded-xl shadow-2xl px-3.5 py-2.5 text-[11px] font-mono leading-relaxed max-w-sm whitespace-normal normal-case"
-                                    >
-                                      {entry.tags.join(" · ")}
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
+                                      <p
+                                        className={cn(
+                                          "text-[11px] text-gray-300 leading-relaxed font-mono break-words",
+                                          expanded ? "whitespace-pre-wrap" : "line-clamp-3",
+                                        )}
+                                      >
+                                        {displayText}
+                                      </p>
+                                      <span className="mt-0.5 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wider text-teal-400 group-hover/analysis:text-teal-300">
+                                        <ChevronDown className={cn("w-2.5 h-2.5 transition-transform", expanded && "rotate-180")} />
+                                        {expanded ? "Show less" : "Show full analysis"}
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    <p className="text-[11px] text-gray-300 leading-relaxed font-mono whitespace-pre-wrap break-words">
+                                      {displayText}
+                                    </p>
+                                  )
+                                ) : (
+                                  <p className="text-[11px] text-gray-600 italic font-mono">
+                                    No analysis captured.
+                                  </p>
+                                )}
                               </div>
 
                               {/* Actions */}
@@ -229,8 +266,8 @@ export function VisualHistoryOverlay() {
                                     onClick={() => {
                                       addPinnedMemory({
                                         type: "visual",
-                                        content: entry.tags.join(", "),
-                                        label: `Visual Snapshot — ${entry.tags[0]?.slice(0, 60) || "Captured"}${entry.tags[0] && entry.tags[0].length > 60 ? "…" : ""}`,
+                                        content: cleanTags.join(", ") || "Captured",
+                                        label: `Visual Snapshot — ${cleanTags[0]?.slice(0, 60) || "Captured"}${cleanTags[0] && cleanTags[0].length > 60 ? "…" : ""}`,
                                         timestamp: entry.timestamp,
                                         imageUrl: entry.url,
                                       });

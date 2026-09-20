@@ -50,3 +50,31 @@ export function stripEmojis(text: string): string {
   if (!text || typeof text !== "string") return text;
   return text.replace(EMOJI_GLYPH_REGEX, "").replace(/ {2,}/g, " ").trim();
 }
+
+/**
+ * Thinking-capable models (Ollama reasoning models, OpenRouter reasoning
+ * variants) can leak internal deliberation into visible output as
+ * `<think>…</think>` / `<thinking>…` / `<reasoning>…` blocks — even when
+ * reasoning is disabled at the request level, older endpoints and some
+ * providers still inline it. That content is not analysis: it's raw
+ * chain-of-thought that provides no situational context, and it was landing
+ * verbatim in the Visual Snapshot History description.
+ *
+ * Strips:
+ *  - closed blocks anywhere in the text,
+ *  - an unterminated trailing block (token-budget truncation cuts the
+ *    closing tag, leaving "<think> …" running to end-of-output),
+ *  - stray closing tags.
+ *
+ * If the entire output was reasoning, the result is "" — callers treat an
+ * empty observation as "no analysis" rather than displaying deliberation.
+ */
+export function stripReasoningBlocks(text: string): string {
+  if (!text || typeof text !== "string") return text;
+  return text
+    .replace(/<(think|thinking|reasoning|thought)>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<(think|thinking|reasoning|thought)>[\s\S]*$/i, "")
+    .replace(/<\/(think|thinking|reasoning|thought)>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

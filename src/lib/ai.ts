@@ -25,7 +25,7 @@ import {
   FIRST_MESSAGE_DIRECTIVE,
   SUPERCHARGE_DIRECTIVE,
 } from "./prompts";
-import { stripEmDashes, stripEmojis } from "./textSanitize";
+import { stripEmDashes, stripEmojis, stripReasoningBlocks } from "./textSanitize";
 import { buildMomentSynthesisInput, type RoomMoment } from "./roomModel";
 import type { Episode } from "./episodicMemory";
 import {
@@ -801,7 +801,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         total_tokens: response.usageMetadata.totalTokenCount,
       };
     }
-    return { text: response.text || "", tokenUsage: usage };
+    return { text: stripReasoningBlocks(response.text || ""), tokenUsage: usage };
   } else if (isOpenAICompatibleProvider(provider)) {
     // Independent Ollama vision uses a separately configured endpoint + model
     // (the user's vision config), never the text provider's Ollama config.
@@ -835,7 +835,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         total_tokens: response.usage.total_tokens,
       };
     }
-    return { text: response.choices[0].message.content || "", tokenUsage: usage };
+    return { text: stripReasoningBlocks(response.choices[0].message.content || ""), tokenUsage: usage };
   } else if (provider === "claude") {
     const ai = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     const mimeType = screenshot.match(/data:(.*?);base64,/)?.[1] || "image/jpeg";
@@ -861,7 +861,7 @@ Keep each section to one short line. Omit empty sections. Be specific and concis
         total_tokens: response.usage.input_tokens + response.usage.output_tokens,
       };
     }
-    return { text: (response.content[0] as any).text || "", tokenUsage: usage };
+    return { text: stripReasoningBlocks((response.content[0] as any).text || ""), tokenUsage: usage };
   }
   throw new Error("Invalid provider");
 }

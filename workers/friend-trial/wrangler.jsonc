@@ -9,7 +9,7 @@
   // `wrangler secret put` and never appear here.
   "vars": {
     "TRIAL_ENABLED": "true",
-    "TRIAL_END_AT": "2026-09-17T03:59:59Z",
+    "TRIAL_END_AT": "2026-10-02T03:59:59Z",
     "TRIAL_MODEL": "openai/gpt-oss-120b",
     // Optional vision-capable Groq model. When set, the Worker accepts
     // multimodal content (text + image_url) and routes image-bearing

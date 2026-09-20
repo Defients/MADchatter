@@ -2053,7 +2053,7 @@ const USABLE_CLOUD_PROVIDERS = [
     id: "gemini",
     label: "Google Gemini",
     shortLabel: "Gemini",
-    desc: "Fast & generous free tier",
+    desc: "Google AI for chat and Forge",
     keyField: "geminiKey" as const,
     placeholder: "Paste AIzaSy... key",
     color: "text-blue-400",

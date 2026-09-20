@@ -48,6 +48,7 @@ const resilientLocalStorage: Storage = {
 import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
+import { stripReasoningBlocks } from "./lib/textSanitize";
 import { getFallbackHistory } from "./lib/providerFallback";
 import type { AutoForgeDecision } from "./lib/ai";
 import { saveChannelSnapshot, loadChannelSnapshot, type ChannelSnapshot } from "./lib/channelStore";
@@ -1302,12 +1303,20 @@ export const useAppStore = create<AppState>()(
           visualSnapshotHistory: state.visualSnapshotHistory.filter((e) => e.id !== id),
         })),
       setVisualSnapshot: (url, tags, source = "auto", delta, skipHistory = false) => {
+        // Thinking-capable vision models can leak <think> chain-of-thought
+        // into the observation. Strip it at the store boundary so history
+        // entries, live tags, the Room Model, and pinned memories only ever
+        // see the actual analysis. A think-only output degrades to no tags
+        // (history falls back to "Captured").
+        const cleanTags = tags
+          .map((t) => stripReasoningBlocks(t))
+          .filter((t) => t.length > 0);
         if (!url) {
-          set({ visualSnapshotUrl: null, visualContextTags: tags });
+          set({ visualSnapshotUrl: null, visualContextTags: cleanTags });
           return;
         }
         // Room Model: vision lane evidence (frame change + semantic tags).
-        roomModel.noteVision({ tags, delta, source });
+        roomModel.noteVision({ tags: cleanTags, delta, source });
         // Perception Liveness: capture-stage evidence — a frame was produced
         // (semantic success/failure is reported separately at the
         // visionRequest call sites, after session/config-revision guards).
@@ -1315,13 +1324,13 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           const base = {
             visualSnapshotUrl: url,
-            visualContextTags: tags,
+            visualContextTags: cleanTags,
           };
           if (skipHistory) return base;
           const entry: VisualSnapshotHistoryEntry = {
             id: generateId(),
             url,
-            tags: tags.length > 0 ? tags : ["Captured"],
+            tags: cleanTags.length > 0 ? cleanTags : ["Captured"],
             timestamp: Date.now(),
             source,
             delta,
