@@ -56,7 +56,7 @@ try {
   await page.getByRole('button', { name: 'Stop all automated bot sends', exact: true }).filter({ visible: true }).first().click();
   await page.getByRole('button', { name: 'Resume automated bot sends', exact: true }).filter({ visible: true }).first().click();
   await page.screenshot({ path: resolve(directory, 'studio-1600.png'), fullPage: true });
-  assert.ok((await page.locator('body').innerText()).includes('2.0.0-rc.2'), 'release version rendered');
+  assert.ok((await page.locator('body').innerText()).includes('2.1.0'), 'release version rendered');
   results.push({ scenario: 'Studio renders and authoritative RC version is visible', passed: true });
   await page.getByRole('button', { name: 'Open system configuration' }).filter({ visible: true }).first().click();
   const episodes = page.getByRole('checkbox', { name: 'Remember shared episodes' });

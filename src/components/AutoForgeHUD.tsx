@@ -12,6 +12,7 @@ import { Reorder } from 'framer-motion';
 import { ThemedTooltip } from './ui/tooltip';
 import { DIRECTOR_NOTE_DURATIONS, directorNoteSummary, DirectorNoteChip, priorityBadge } from './directorNoteShared';
 import { useEffectiveMode } from '../hooks/useMediaQuery';
+import { isDecisionPayloadSent } from '../lib/autoForgeCore';
 import { useNowTick } from '../hooks/useNowTick';
 import { ParticipationControl } from './ParticipationControl';
 
@@ -382,9 +383,7 @@ export function AutoForgeHUD() {
   const recentSentMessages = multiBotActive
     ? (decisionBot?.runtime.sentMessages ?? [])
     : useAppStore.getState().sentMessages;
-  const wasActuallySent = !!safeActionPayload && recentSentMessages.some(
-    (m) => m.message.toLowerCase().trim() === safeActionPayload.toLowerCase().trim(),
-  );
+  const wasActuallySent = isDecisionPayloadSent(safeActionPayload, recentSentMessages);
   const showSendButton = decisionWasSent && !wasActuallySent;
 
   return (

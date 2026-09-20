@@ -104,6 +104,13 @@ import {
 } from "./lib/coreAutoCheck";
 
 /** Single source of truth for settings schema version — used by both persist and exportSettings */
+// ─── Director Notes ─────────────────────────────────────────
+// The mobile Director UI exposes exactly three active "thoughts" — aligned
+// with the PRIORITY 1–3 emphasis in formatDirectorNotesContext. Desktop
+// surfaces keep their own roomier cap (50) and never route through the
+// mobile add action.
+export const MOBILE_DIRECTOR_NOTE_LIMIT = 3;
+
 const SETTINGS_VERSION = 32;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
@@ -734,6 +741,9 @@ interface AppState {
   // ─── Director Notes (single-bot mode) ────────────────────
   directorNotes: DirectorNote[];
   addDirectorNote: (text: string, durationMs?: number | null) => void;
+  /** Mobile Director path — caps at 3 active notes. Returns a human-readable
+   *  blocking reason when the limit is reached, null on success. */
+  addDirectorNoteMobile: (text: string, durationMs?: number | null) => string | null;
   removeDirectorNote: (noteId: string) => void;
   clearDirectorNotes: () => void;
   /** Reorder director notes to match the given note ID order. Active notes
@@ -1456,9 +1466,20 @@ export const useAppStore = create<AppState>()(
       setAutoForgeCheckArmed: (armed) => set({ autoForgeCheckArmed: armed }),
 
       r34lEnabled: false,
-      setR34lEnabled: (enabled) => set({ r34lEnabled: enabled }),
+      setR34lEnabled: (enabled) => set(enabled
+        ? { r34lEnabled: true }
+        // OFF also clears Frozen — the canonical three-state contract is
+        // OFF (enabled=false, frozen=false) / FROZEN (true, true) /
+        // ON (true, false). A contradictory "disabled but frozen" state can
+        // never exist, on any surface (desktop, mobile, dock, export/import).
+        : { r34lEnabled: false, r34lLearningFrozen: false }),
       r34lLearningFrozen: false,
-      setR34lLearningFrozen: (frozen) => set({ r34lLearningFrozen: frozen }),
+      setR34lLearningFrozen: (frozen) => set(frozen
+        // Entering Frozen implies enabled — freezing only makes sense for
+        // an R34L that applies what it learned. Leaving Frozen resumes
+        // learning (never disables).
+        ? { r34lLearningFrozen: true, r34lEnabled: true }
+        : { r34lLearningFrozen: false }),
 
       isAutoForgeHUDOpen: false,
       setIsAutoForgeHUDOpen: (isOpen) => set({ isAutoForgeHUDOpen: isOpen }),
@@ -2258,6 +2279,10 @@ export const useAppStore = create<AppState>()(
       clearAutoMemories: () => set({ autoMemories: [] }),
 
       // ─── Director Notes (single-bot mode) ────────────────────
+      // The mobile Director UI exposes exactly three active "thoughts"
+      // (MOBILE_DIRECTOR_NOTE_LIMIT) — aligned with the PRIORITY 1–3 emphasis
+      // in formatDirectorNotesContext. The desktop surfaces keep their own
+      // roomier cap (50) and never route through the mobile action.
       directorNotes: [],
       addDirectorNote: (text, durationMs) => set((state) => ({
         directorNotes: [...state.directorNotes, {
@@ -2267,6 +2292,26 @@ export const useAppStore = create<AppState>()(
           expiresAt: durationMs ? Date.now() + durationMs : null,
         }].slice(-50),
       })),
+      /** Mobile path: caps at 3 active notes with expiry pruning. Returns the
+       *  blocking reason when the limit is reached (UI surfaces it), null on
+       *  success. Intentionally desktop-agnostic — the desktop input never
+       *  routes through this. */
+      addDirectorNoteMobile: (text, durationMs = null) => {
+        const now = Date.now();
+        const active = get().directorNotes.filter((n) => n.expiresAt == null || n.expiresAt > now);
+        if (active.length >= MOBILE_DIRECTOR_NOTE_LIMIT) {
+          return `Director limit reached (max ${MOBILE_DIRECTOR_NOTE_LIMIT} active thoughts). Remove or reorder an existing thought first.`;
+        }
+        set((state) => ({
+          directorNotes: [...state.directorNotes, {
+            id: generateId(),
+            text,
+            createdAt: now,
+            expiresAt: durationMs ? now + durationMs : null,
+          }].slice(-50),
+        }));
+        return null;
+      },
       removeDirectorNote: (noteId) => set((state) => ({
         directorNotes: state.directorNotes.filter((n) => n.id !== noteId),
       })),
@@ -2809,6 +2854,12 @@ export const useAppStore = create<AppState>()(
       noteR34lObservation: (obs) => {
         try {
           const state = get();
+          // R34L OFF = fully dormant. No analysis, no baseline writes, no
+          // session overlay writes, no dedup-ring touches, no decay — but
+          // previously learned profiles stay stored (OFF is not erase).
+          // This gate MUST come before the frozen check: an OFF + frozen
+          // combination must never collect evidence.
+          if (!state.r34lEnabled) return;
           // Frozen Learning: learned data is read-only — collect nothing,
           // decay nothing, and don't even touch the dedup ring. Everything
           // already learned keeps applying via the resolver; this only stops
@@ -3541,7 +3592,9 @@ export const useAppStore = create<AppState>()(
           if (data.config) set((state) => ({ config: { ...state.config, ...data.config } }));
           if (data.platform === "twitch" || data.platform === "kick" || data.platform === "joystick") get().setPlatform(data.platform);
           if (data.r34lEnabled !== undefined) set({ r34lEnabled: data.r34lEnabled });
-          if (data.r34lLearningFrozen !== undefined) set({ r34lLearningFrozen: data.r34lLearningFrozen === true });
+          // Frozen implies enabled — sanitize away the contradictory
+          // "disabled but frozen" combination during import.
+          if (data.r34lLearningFrozen !== undefined) set((st) => ({ r34lLearningFrozen: data.r34lLearningFrozen === true, r34lEnabled: data.r34lLearningFrozen === true ? true : st.r34lEnabled }));
           if (data.cosmotechTheme !== undefined) set({ cosmotechTheme: data.cosmotechTheme });
           if (data.theme) set({ theme: data.theme, cosmotechTheme: data.theme === "cosmotech" });
           if (data.messageSoundEnabled !== undefined) set({ messageSoundEnabled: data.messageSoundEnabled });

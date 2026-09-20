@@ -65,7 +65,7 @@ import {
 } from "lucide-react";
 import { playMessageSound, enumerateAudioOutputs, setAudioOutputSink, setSoundUrl, setSoundVolume as setSoundVolumeFn } from "../lib/sound";
 import { formatChatLog } from "../lib/chatUtils";
-import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
+import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "../lib/memoryRetrieval";
 import { speakMessage, stopSpeaking, testVoice, getWebSpeechVoices, onVoicesChanged, groupVoicesByLanguage, isWebSpeechAvailable, ELEVENLABS_VOICES, fetchElevenLabsVoices, type VoiceGroup, type ElevenLabsUserVoice } from "../lib/tts";
 import { Mic2, AudioLines, Square, Mic, Radio } from "lucide-react";
 import { usePushToTalk } from "../hooks/usePushToTalk";
@@ -428,6 +428,15 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
     try {
       const activeProvider = getActiveProvider();
 
+      // Director notes are streamer-authored directives — they reach manual
+      // Forge regardless of AutoMemory. Multi-bot uses the sending
+      // identity's own per-bot notes; single-bot uses the legacy notes.
+      const deckState = useAppStore.getState();
+      const deckDirectorBot = deckState.multiBotEnabled && deckState.manualSendBotId
+        ? deckState.bots.find((b) => b.id === deckState.manualSendBotId && b.active && b.session)
+        : null;
+      const directorNotes = deckDirectorBot ? deckDirectorBot.runtime.directorNotes : deckState.directorNotes;
+
       // Build memory context if auto-memory is enabled
       let memoryContext = "";
       if (cl_autoMemoryConfig?.enabled) {
@@ -448,7 +457,10 @@ export function TuningDeck({ rightSize = 22 }: { rightSize?: number }) {
         memoryContext = formatMemoryContext(retrieved, {
           memoriesFormed: cl_personalityState?.sessionMemoriesFormed ?? 0,
           jokesCreated: cl_personalityState?.sessionJokesCreated ?? 0,
-        });
+        }, directorNotes);
+      } else {
+        // AutoMemory off: director notes STILL apply.
+        memoryContext = formatDirectorNotesContext(directorNotes);
       }
 
       const data = await generateChat({

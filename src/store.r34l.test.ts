@@ -349,6 +349,82 @@ say("fznew0", "first message after unfreezing", { known: KNOWN });
 check("unfreeze resumes learning from preserved state", profile("twitch", "FreezeRoom").totalMessages === frozenBefore + 1);
 check("unfrozen reset works again", (s().resetR34lChannelLearning(), profile("twitch", "FreezeRoom") === undefined));
 
+// ─── Scenario N: the canonical three-state contract ───────────────────────
+// OFF = { enabled: false, frozen: false } — truly dormant for learning.
+// FROZEN = { enabled: true, frozen: true } — apply-only.
+// ON = { enabled: true, frozen: false } — apply + learn.
+// The contradictory combination (enabled=false + frozen=true) must not be
+// reachable through any setter.
+
+console.log("\n[N] R34L three-state contract (OFF / FROZEN / ON)");
+s().setPlatform("twitch");
+s().updateStreamMetadata({ channelName: "TriStateRoom" });
+s().setR34lEnabled(true);
+s().setR34lLearningFrozen(false);
+for (let i = 0; i < 80; i++) say(`ts${i % 25}`, "yo that was actually insane", { known: KNOWN });
+const tsMessages = profile("twitch", "TriStateRoom").totalMessages;
+check("ON state learns (enabled=true, frozen=false)", tsMessages === 80 && s().r34lEnabled && !s().r34lLearningFrozen);
+check("ON state applies the learned style", resolveCurrentR34lAdaptation().applied === true);
+
+// ON → OFF: no mutation whatsoever. Learned data is PRESERVED, not erased.
+s().setR34lEnabled(false);
+const overlayTsBefore = s().r34lSessionProfile!.totalMessages;
+const tsVocabBefore = Object.keys(profile("twitch", "TriStateRoom").vocab).length;
+say("tsnew0", "message that must not teach OFF state anything brand new", { known: KNOWN });
+say("tsnew1", "KEKW KEKW KEKW", { known: KNOWN });
+check("OFF (enabled=false) collects nothing new", profile("twitch", "TriStateRoom").totalMessages === tsMessages);
+check("OFF adds no vocabulary", Object.keys(profile("twitch", "TriStateRoom").vocab).length === tsVocabBefore);
+check("OFF writes no overlay evidence", s().r34lSessionProfile!.totalMessages === overlayTsBefore);
+check("OFF keeps the learned profile stored (OFF is not erase)", profile("twitch", "TriStateRoom") !== undefined && profile("twitch", "TriStateRoom").totalMessages === tsMessages);
+const offAdaptationTs = resolveCurrentR34lAdaptation();
+check("OFF does not apply the learned style", offAdaptationTs.applied === false && offAdaptationTs.promptBlock === "");
+
+// OFF + frozen must never collect either (defense-in-depth ordering).
+useAppStore.setState({ r34lLearningFrozen: true, r34lEnabled: false });
+say("tsnew2", "disabled-but-frozen contradiction message", { known: KNOWN });
+check("OFF+frozen collects nothing", profile("twitch", "TriStateRoom").totalMessages === tsMessages);
+useAppStore.setState({ r34lLearningFrozen: false });
+
+// OFF → FROZEN via the canonical setters (Ctrl/Cmd+click semantics):
+// entering Frozen enables R34L and seals learning.
+s().setR34lLearningFrozen(true);
+check("OFF → FROZEN implies enabled", s().r34lEnabled === true && s().r34lLearningFrozen === true);
+const frozenTsAdaptation = resolveCurrentR34lAdaptation();
+check("FROZEN applies the previously learned style", frozenTsAdaptation.applied === true && frozenTsAdaptation.promptBlock.length > 0);
+say("tsnew3", "frozen room must not learn this phrase at all", { known: KNOWN });
+check("FROZEN still records nothing new", profile("twitch", "TriStateRoom").totalMessages === tsMessages);
+
+// FROZEN → ON: learning resumes from the preserved state.
+s().setR34lLearningFrozen(false);
+check("FROZEN → ON resumes learning", s().r34lEnabled === true && s().r34lLearningFrozen === false);
+say("tsnew4", "learning resumes right after unfreezing here", { known: KNOWN });
+check("ON learns again after FROZEN", profile("twitch", "TriStateRoom").totalMessages === tsMessages + 1);
+
+// ON → OFF via setR34lEnabled(false): frozen must not survive the disable.
+s().setR34lLearningFrozen(true);
+s().setR34lEnabled(false);
+check("ON → OFF clears the frozen flag", s().r34lEnabled === false && s().r34lLearningFrozen === false);
+check("OFF still preserves learned data after the cycle", profile("twitch", "TriStateRoom").totalMessages === tsMessages + 1);
+
+// Import sanitization: a hostile/hand-edited export can't create the
+// contradictory "disabled but frozen" state.
+s().setR34lEnabled(false);
+s().importSettings(JSON.stringify({ r34lLearningFrozen: true }));
+check("imported frozen implies enabled", s().r34lEnabled === true && s().r34lLearningFrozen === true);
+s().importSettings(JSON.stringify({ r34lEnabled: false, r34lLearningFrozen: true }));
+check("imported contradictory pair resolves to frozen (enabled wins back)", s().r34lEnabled === true && s().r34lLearningFrozen === true);
+s().setR34lEnabled(true);
+
+// Mobile tap-cycle parity: OFF → FROZEN → ON → OFF driven purely through the
+// two setters must land in the canonical state after each step.
+s().setR34lEnabled(false);
+s().setR34lLearningFrozen(true);
+check("tap cycle: OFF → FROZEN", s().r34lLearningFrozen === true && s().r34lEnabled === true);
+s().setR34lLearningFrozen(false);
+check("tap cycle: FROZEN → ON", s().r34lEnabled === true && s().r34lLearningFrozen === false);
+s().setR34lEnabled(false);
+check("tap cycle: ON → OFF", s().r34lEnabled === false && s().r34lLearningFrozen === false);
+
 // ─── Summary ─────────────────────────────────────────────────────────────
 
 console.log(`\n${passed} passed, ${failed} failed`);

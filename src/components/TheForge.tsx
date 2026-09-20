@@ -15,7 +15,7 @@ import { playSfx } from "../lib/sfx";
 import { getActiveProvider, hasAnyApiKey, getProviderWithKey } from "../lib/keys";
 import { cn } from "../lib/utils";
 import { formatChatLog } from "../lib/chatUtils";
-import { retrieveRelevantMemories, formatMemoryContext } from "../lib/memoryRetrieval";
+import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "../lib/memoryRetrieval";
 import { getAvailableEmoteNames } from "../lib/emotes";
 import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import {
@@ -33,6 +33,7 @@ import {
   GripVertical,
 } from "lucide-react";
 import { FidgetSpinner } from "./FidgetSpinner";
+import { useHoldToConfirm } from "../hooks/useHoldToConfirm";
 import { motion, useDragControls } from "motion/react";
 import { ThemedTooltip } from "./ui/tooltip";
 
@@ -113,6 +114,16 @@ export function TheForge() {
     try {
       const provider = getActiveProvider();
 
+      // Director notes are streamer-authored directives — they reach manual
+      // Forge regardless of AutoMemory (user-authored, not auto-extracted).
+      // Multi-bot uses the sending identity's own per-bot notes (parity with
+      // the per-bot AutoForge loop); single-bot uses the legacy notes.
+      const forgeState = useAppStore.getState();
+      const forgeDirectorBot = forgeState.multiBotEnabled && forgeState.manualSendBotId
+        ? forgeState.bots.find((b) => b.id === forgeState.manualSendBotId && b.active && b.session)
+        : null;
+      const directorNotes = forgeDirectorBot ? forgeDirectorBot.runtime.directorNotes : forgeState.directorNotes;
+
       // Build memory context if auto-memory is enabled
       let memoryContext = "";
       if (autoMemoryConfig?.enabled) {
@@ -133,7 +144,11 @@ export function TheForge() {
         memoryContext = formatMemoryContext(retrieved, {
           memoriesFormed: personalityState?.sessionMemoriesFormed ?? 0,
           jokesCreated: personalityState?.sessionJokesCreated ?? 0,
-        });
+        }, directorNotes);
+      } else {
+        // AutoMemory off: director notes STILL apply — manual Forge must see
+        // the streamer's directives even without the memory engine.
+        memoryContext = formatDirectorNotesContext(directorNotes);
       }
 
       // First Message Mode (manual Forge): if the bot the user will send as is
@@ -326,47 +341,19 @@ export function TheForge() {
     playSfx('variant_close');
   };
 
-  // ── Hold-to-Clear: 1.25s hold animates from red → orange → yellow, then clears all variants
-  const HOLD_DURATION_MS = 1250;
-  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const holdRafRef = useRef<number>(0);
-  const [holdProgress, setHoldProgress] = useState(0);
-
-  const startHold = () => {
-    // Clear any in-flight timer/raf from a previous attempt
-    if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
-    if (holdRafRef.current) { cancelAnimationFrame(holdRafRef.current); }
-    const start = performance.now();
-    const tick = (now: number) => {
-      const elapsed = now - start;
-      const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
-      setHoldProgress(progress);
-      if (progress < 1) {
-        holdRafRef.current = requestAnimationFrame(tick);
-      }
-    };
-    holdRafRef.current = requestAnimationFrame(tick);
-    holdTimerRef.current = setTimeout(() => {
+  // ── Hold-to-Clear: 1.25s hold animates from red → orange → yellow, then clears all variants.
+  // Shared deterministic controller (src/lib/holdToClear.ts) — the old
+  // duplicated timer/RAF logic could leave a stale final RAF frame stuck at
+  // "Clearing..." after completion; the generation guard in the controller
+  // makes that impossible.
+  const { progress: holdProgress, start: startHold, cancel: cancelHold } = useHoldToConfirm({
+    durationMs: 1250,
+    onConfirm: () => {
       setVariants([]);
-      setHoldProgress(0);
-      holdTimerRef.current = null;
       playSfx('clear_context');
       toast.success("All forged variants cleared.");
-    }, HOLD_DURATION_MS);
-  };
-
-  const cancelHold = () => {
-    if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
-    if (holdRafRef.current) { cancelAnimationFrame(holdRafRef.current); }
-    setHoldProgress(0);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-      if (holdRafRef.current) cancelAnimationFrame(holdRafRef.current);
-    };
-  }, []);
+    },
+  });
 
   // Interpolate hold color: red (#ef4444) → orange (#f97316) → yellow (#eab308)
   const holdColor = useMemo(() => {

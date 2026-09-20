@@ -383,3 +383,26 @@ export function countPostSendEngagement(
   const total = linesAfter + mentionsAfter * 2 + reactionsAfter;
   return { linesAfter, mentionsAfter, reactionsAfter, total };
 }
+
+/**
+ * Whether an AutoForge decision's action_payload was actually delivered.
+ *
+ * Shared by the desktop AutoForge HUD and the mobile CORE telemetry Send
+ * button so "sent vs unsent" can never drift between the two surfaces.
+ *
+ * Payload matching is the strongest currently available decision-level
+ * signal (decision logs don't carry a per-decision sent flag in all paths):
+ * it compares against the sending identity's own delivered history, so a
+ * historically identical chat line from a DIFFERENT session does not
+ * converge here — and after a successful manual send the payload lands in
+ * that same history, which is what flips the button to its Sent state.
+ */
+export function isDecisionPayloadSent(
+  payload: string | undefined | null,
+  sentMessages: ReadonlyArray<{ message: string }>,
+): boolean {
+  const p = (payload ?? "").toLowerCase().trim();
+  if (!p) return false;
+  return sentMessages.some((m) => (m.message ?? "").toLowerCase().trim() === p);
+}
+

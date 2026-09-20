@@ -1,0 +1,52 @@
+
+> madchatter@2.1.0 test
+> node scripts/run-tests.mjs
+
+PASS src\hooks\useNowTick.test.ts
+PASS src\lib\aiScheduler.test.ts
+PASS src\lib\antiRepetition.test.ts
+PASS src\lib\autoForgeCore.test.ts
+PASS src\lib\botCoordinator.test.ts
+PASS src\lib\channelLearning.test.ts
+PASS src\lib\conversationThread.test.ts
+PASS src\lib\coreAutoCheck.test.ts
+PASS src\lib\coreMobile.test.ts
+PASS src\lib\coreMode.test.ts
+PASS src\lib\coreProviderSummary.test.ts
+PASS src\lib\coreReadiness.test.ts
+PASS src\lib\customProvider.test.ts
+PASS src\lib\emDashSanitize.test.ts
+PASS src\lib\emojiSanitize.test.ts
+PASS src\lib\episodicMemory.test.ts
+PASS src\lib\holdToClear.test.ts
+PASS src\lib\intelligenceIntegration.test.ts
+PASS src\lib\keys.test.ts
+PASS src\lib\localBridge.test.ts
+PASS src\lib\memoryContinuity.test.ts
+PASS src\lib\memoryRetrieval.test.ts
+PASS src\lib\ollamaHealth.test.ts
+PASS src\lib\perceptionLiveness.test.ts
+PASS src\lib\personalityEngine.test.ts
+PASS src\lib\prompts.test.ts
+PASS src\lib\r34lLearning.test.ts
+PASS src\lib\rateLimiter.test.ts
+PASS src\lib\roomModel.test.ts
+PASS src\lib\roomRead.test.ts
+PASS src\lib\semanticCoordination.test.ts
+PASS src\lib\sentiment.test.ts
+PASS src\lib\sessionScope.test.ts
+PASS src\lib\spokenCallout.test.ts
+PASS src\lib\trial.test.ts
+PASS src\lib\visionProvider.test.ts
+PASS src\store.director.test.ts
+PASS src\store.learning.test.ts
+PASS src\store.multibot.test.ts
+PASS src\store.r34l.test.ts
+PASS scripts/check-channel-switch.mjs
+PASS scripts/check-manual-send.mjs
+PASS scripts/check-platform-send.mjs
+PASS scripts/check-rule-engine.mjs
+PASS scripts/check-send-cancellation.mjs
+
+45/45 suites passed; 0 failed.
+E=0 

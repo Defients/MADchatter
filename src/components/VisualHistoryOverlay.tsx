@@ -171,6 +171,33 @@ export function VisualHistoryOverlay() {
                                       Latest
                                     </span>
                                   )}
+                                  {/* Analysis status badge — makes it obvious
+                                      whether this archived entry contains a
+                                      real vision observation. The archive is
+                                      history; only the latest analyzed
+                                      visualContextTags are live perception. */}
+                                  {(() => {
+                                    const first = entry.tags[0] ?? "";
+                                    if (first.includes("vision failed")) {
+                                      return (
+                                        <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+                                          Vision Failed
+                                        </span>
+                                      );
+                                    }
+                                    if (first.startsWith("Captured")) {
+                                      return (
+                                        <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/5 text-gray-500 border border-white/10">
+                                          No Analysis
+                                        </span>
+                                      );
+                                    }
+                                    return (
+                                      <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                        Analyzed
+                                      </span>
+                                    );
+                                  })()}
                                 </div>
                                 <TooltipProvider delay={1000}>
                                   <Tooltip>

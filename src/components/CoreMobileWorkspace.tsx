@@ -28,6 +28,7 @@ import {
   X,
   Send,
   Loader2,
+  CheckCircle2,
   LogIn,
   LogOut,
   ChevronDown,
@@ -49,13 +50,15 @@ import {
   GripHorizontal,
   Check,
 } from "lucide-react";
-import { useAppStore, selectMultiBotActive } from "../store";
+import { useAppStore, selectMultiBotActive, MOBILE_DIRECTOR_NOTE_LIMIT } from "../store";
 import { useCoreReadiness } from "../hooks/useCoreReadiness";
 import { useNowTick } from "../hooks/useNowTick";
 import { useEffectiveMode, useStudioAvailable } from "../hooks/useMediaQuery";
 import { useEffectiveAutoForgeDecision } from "../hooks/useEffectiveAutoForgeDecision";
 import { getCoreProviderSummary } from "../lib/coreProviderSummary";
 import { getActiveProvider, getKeys, setActiveProvider, saveKeys, getProviderWithKey } from "../lib/keys";
+import { useHoldToConfirm } from "../hooks/useHoldToConfirm";
+import { isDecisionPayloadSent } from "../lib/autoForgeCore";
 import { sendManualMessage } from "../lib/manualSend";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
@@ -557,35 +560,16 @@ export function CoreMobileWorkspace(props: {
                     {lastAutoForgeDecision.reason}
                   </div>
                   {lastAutoForgeDecision.action_payload && (
-                    <div className="text-[10px] text-emerald-300 font-sans italic bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20 flex items-center justify-between gap-2">
-                      <span className="line-clamp-2">"{lastAutoForgeDecision.action_payload}"</span>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const text = lastAutoForgeDecision.action_payload;
-                          const ch = streamMetadata.channelName;
-                          if (!text || !ch) return;
-                          try {
-                            await sendManualMessage({
-                              message: text,
-                              channel: ch,
-                              source: "manual",
-                              botId: lastDecisionBot?.id,
-                            });
-                            toast.success("Decision sent to chat!");
-                            playSfx("send_message");
-                          } catch (e: any) {
-                            toast.error(e.message || "Failed to send");
-                          }
-                        }}
-                        title="Send this decision's message to chat (bypasses Dry Run)"
-                        aria-label="Send decision message to chat"
-                        className="shrink-0 px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 transition-colors flex items-center gap-1 text-[10px] font-bold not-italic"
-                      >
-                        <Send className="w-3 h-3" />
-                        <span>Send</span>
-                      </button>
-                    </div>
+                    <DecisionSendButton
+                      payload={lastAutoForgeDecision.action_payload}
+                      botId={lastDecisionBot?.id}
+                      botSentMessages={lastDecisionBot?.runtime.sentMessages}
+                      onSent={(text) => {
+                        // TTS after successful delivery only — a failed send
+                        // never speaks. speakMessage owns its own enable check.
+                        speakMessage(text);
+                      }}
+                    />
                   )}
                 </div>
               ) : (
@@ -850,14 +834,18 @@ function MobileContextTab(props: {
     setThumbSnapLoading(true);
     playSfx("forge_start");
     const toastId = toast.loading("Fetching stream preview…");
+    let dataUrl: string | null = null;
     try {
-      const dataUrl = await fetchStreamThumbnailDataUrl(platform, channel, 1280, 720);
+      dataUrl = await fetchStreamThumbnailDataUrl(platform, channel, 1280, 720);
       if (!dataUrl) {
         toast.error("Couldn't fetch the stream preview. The stream may be offline.", { id: toastId });
         return;
       }
-      // Store the raw snapshot immediately so the history sheet shows it.
-      setVisualSnapshot(dataUrl, ["Captured"], "manual");
+      // Store the raw capture in the CURRENT snapshot state (skipHistory —
+      // this is not the canonical record yet). One physical Snap must produce
+      // exactly ONE history entry, created below with the real analysis
+      // outcome (analyzed / no analysis / vision failed).
+      setVisualSnapshot(dataUrl, ["Captured"], "manual", undefined, true);
       toast.loading("Analyzing stream frame…", { id: toastId });
       const provider = getActiveProvider();
       const data = await visionRequest(dataUrl, provider, null);
@@ -883,6 +871,11 @@ function MobileContextTab(props: {
       // Perception Liveness: semantic-stage failure with a stable reason code
       // (stream offline fetch failure vs provider failure).
       perception.noteVisionSemantic({ ok: false, code: classifyVisionError(e) });
+      // If the capture itself succeeded but vision failed, record the canonical
+      // history entry with the real outcome (one Snap = one entry).
+      if (dataUrl) {
+        setVisualSnapshot(dataUrl, ["Captured — vision failed"], "manual");
+      }
       toast.error(e.message || "Failed to analyze stream frame", { id: toastId });
       playSfx("error");
     } finally {
@@ -1497,42 +1490,18 @@ function MobileForgeTab(props: {
   const lastTokenUsage = useAppStore((s) => s.lastTokenUsage);
   const setLastTokenUsage = useAppStore((s) => s.setLastTokenUsage);
 
-  // Hold-to-Clear state (1.25s)
-  const HOLD_DURATION_MS = 1250;
-  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const holdRafRef = useRef<number>(0);
-  const [holdProgress, setHoldProgress] = useState(0);
-
-  const startHold = () => {
-    if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-    if (holdRafRef.current) cancelAnimationFrame(holdRafRef.current);
-    const start = performance.now();
-    const tick = (now: number) => {
-      const elapsed = now - start;
-      const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
-      setHoldProgress(progress);
-      if (progress < 1) {
-        holdRafRef.current = requestAnimationFrame(tick);
-      }
-    };
-    holdRafRef.current = requestAnimationFrame(tick);
-    holdTimerRef.current = setTimeout(() => {
+  // Hold-to-Clear state (1.25s) — shared deterministic controller
+  // (src/lib/holdToClear.ts via useHoldToConfirm). The old duplicated
+  // timer/RAF logic could leave a stale final RAF frame stuck at
+  // "Clearing…" after completion; the generation guard makes that impossible.
+  const { progress: holdProgress, start: startHold, cancel: cancelHold } = useHoldToConfirm({
+    durationMs: 1250,
+    onConfirm: () => {
       setVariants([]);
-      setHoldProgress(0);
-      holdTimerRef.current = null;
       playSfx("clear_context");
       toast.success("All variants cleared.");
-    }, HOLD_DURATION_MS);
-  };
-
-  const cancelHold = () => {
-    if (holdTimerRef.current) {
-      clearTimeout(holdTimerRef.current);
-      holdTimerRef.current = null;
-    }
-    if (holdRafRef.current) cancelAnimationFrame(holdRafRef.current);
-    setHoldProgress(0);
-  };
+    },
+  });
 
   const holdColor = useMemo(() => {
     const p = holdProgress;
@@ -2023,6 +1992,274 @@ const USABLE_CLOUD_PROVIDERS = [
   },
 ] as const;
 
+/**
+ * Mobile CORE decision Send button — Send → Sending… → ✓ Sent.
+ *
+ * One decision payload can be manually sent exactly once: after a successful
+ * send (or while one is in flight) the button disables so rapid taps can
+ * never produce duplicate platform sends. Delivery accounting remains the
+ * single source of truth: `isDecisionPayloadSent` checks the sending
+ * identity's own delivered history (shared with the desktop AutoForge HUD),
+ * so the Sent state survives remounts and reflects desktop-sent payloads too.
+ */
+function DecisionSendButton({
+  payload,
+  botId,
+  botSentMessages,
+  onSent,
+}: {
+  payload: string;
+  botId?: string;
+  botSentMessages?: ReadonlyArray<{ message: string }>;
+  onSent?: (text: string) => void;
+}) {
+  const channel = useAppStore((s) => s.streamMetadata.channelName);
+  const legacySentMessages = useAppStore((s) => s.sentMessages);
+  const [sendState, setSendState] = useState<"idle" | "sending" | "sent">("idle");
+  const alreadySent = isDecisionPayloadSent(
+    payload,
+    botId ? (botSentMessages ?? []) : legacySentMessages,
+  );
+
+  const handleSend = async () => {
+    const text = payload.trim();
+    if (!text || !channel) return;
+    // In-flight + already-delivered protection: UI-level enforcement on top
+    // of sendManualMessage's own pending-send defense.
+    if (sendState !== "idle" || alreadySent) return;
+    setSendState("sending");
+    try {
+      await sendManualMessage({ message: text, channel, source: "manual", botId });
+      setSendState("sent");
+      toast.success("Decision sent to chat!");
+      playSfx("send_message");
+      onSent?.(text);
+    } catch (e: any) {
+      // Failed delivery — re-arm the button, never speak.
+      setSendState("idle");
+      toast.error(e.message || "Failed to send");
+    }
+  };
+
+  const disabled = alreadySent || sendState !== "idle";
+  const label = sendState === "sending" ? "Sending…"
+    : (sendState === "sent" || alreadySent) ? "✓ Sent"
+    : "Send";
+
+  return (
+    <div className="text-[10px] text-emerald-300 font-sans italic bg-emerald-500/10 p-1.5 rounded border border-emerald-500/20 flex items-center justify-between gap-2">
+      <span className="line-clamp-2">"{payload}"</span>
+      <button
+        type="button"
+        onClick={handleSend}
+        disabled={disabled}
+        title={disabled
+          ? (alreadySent ? "This decision was already delivered" : "Sending…")
+          : "Send this decision's message to chat (bypasses Dry Run)"}
+        aria-label={
+          sendState === "sending" ? "Sending decision message"
+          : (sendState === "sent" || alreadySent) ? "Decision message sent"
+          : "Send decision message to chat"
+        }
+        className={cn(
+          "shrink-0 px-2 py-1 rounded-md border transition-colors flex items-center gap-1 text-[10px] font-bold not-italic",
+          disabled
+            ? "bg-white/5 text-gray-500 border-white/10 opacity-70 cursor-not-allowed"
+            : "bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30",
+        )}
+      >
+        {sendState === "sending" ? (
+          <Loader2 className="w-3 h-3 animate-spin" />
+        ) : (sendState === "sent" || alreadySent) ? (
+          <CheckCircle2 className="w-3 h-3" />
+        ) : (
+          <Send className="w-3 h-3" />
+        )}
+        <span>{label}</span>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Mobile Director — compact single-bot surface over the EXISTING director
+ * notes system (no parallel "mobile thoughts" architecture). Up to 3 active
+ * thoughts (MOBILE_DIRECTOR_NOTE_LIMIT, aligned with the PRIORITY 1–3
+ * emphasis in formatDirectorNotesContext). "Until canceled" is the default
+ * (and only) mobile duration; desktop keeps the richer duration options.
+ * Notes are addable, dismissible, and reorderable (▲/▼ buttons — reliable
+ * on touch). They flow into manual Forge AND AutoForge via
+ * formatDirectorNotesContext / formatMemoryContext, with or without
+ * AutoMemory enabled.
+ */
+function MobileDirectorPanel() {
+  const directorNotes = useAppStore((s) => s.directorNotes);
+  const addDirectorNoteMobile = useAppStore((s) => s.addDirectorNoteMobile);
+  const removeDirectorNote = useAppStore((s) => s.removeDirectorNote);
+  const reorderDirectorNotes = useAppStore((s) => s.reorderDirectorNotes);
+  const [expanded, setExpanded] = useState(false);
+  const [text, setText] = useState("");
+
+  const now = Date.now();
+  const activeNotes = directorNotes.filter((n) => n.expiresAt == null || n.expiresAt > now);
+  const atLimit = activeNotes.length >= MOBILE_DIRECTOR_NOTE_LIMIT;
+
+  const handleAdd = () => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const err = addDirectorNoteMobile(trimmed);
+    if (err) {
+      toast.error(err);
+      playSfx("error");
+      return;
+    }
+    setText("");
+    playSfx("memory_add");
+  };
+
+  const move = (index: number, delta: -1 | 1) => {
+    const ids = activeNotes.map((n) => n.id);
+    const target = index + delta;
+    if (target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    reorderDirectorNotes(ids);
+  };
+
+  return (
+    <div>
+      <div
+        onClick={() => { setExpanded(!expanded); playSfx(expanded ? "hud_close" : "hud_open"); }}
+        className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
+        role="button"
+        aria-expanded={expanded}
+        aria-label={`Director notes, ${activeNotes.length} of ${MOBILE_DIRECTOR_NOTE_LIMIT} active`}
+      >
+        <div className="flex flex-col min-w-0 pr-2">
+          <span className="text-gray-300">Director · {activeNotes.length}/{MOBILE_DIRECTOR_NOTE_LIMIT}</span>
+          <span className="text-[9px] text-gray-600 truncate">
+            Private directives that steer Forge and AutoForge
+          </span>
+        </div>
+        {expanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+      </div>
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-2 pt-1 pb-2">
+              {/* Add input — disabled at the 3-note limit */}
+              <div className="flex gap-1.5">
+                <input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); handleAdd(); }
+                  }}
+                  disabled={atLimit}
+                  maxLength={200}
+                  placeholder={atLimit ? `Max ${MOBILE_DIRECTOR_NOTE_LIMIT} active thoughts` : "e.g. talk about the boss fight"}
+                  className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-gray-200 placeholder:text-gray-600 outline-none focus:border-purple-500/40 disabled:opacity-50"
+                  aria-label="New director note"
+                />
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  disabled={atLimit || !text.trim()}
+                  aria-label="Add director note"
+                  className={cn(
+                    "shrink-0 px-2.5 rounded-lg border text-[10px] font-bold transition-colors touch-target",
+                    atLimit || !text.trim()
+                      ? "bg-white/5 border-white/10 text-gray-600 cursor-not-allowed"
+                      : "bg-purple-500/20 border-purple-500/40 text-purple-200 hover:bg-purple-500/30",
+                  )}
+                >
+                  Add
+                </button>
+              </div>
+              {atLimit && (
+                <div className="text-[9px] text-amber-400/80">
+                  Limit is {MOBILE_DIRECTOR_NOTE_LIMIT} active thoughts — remove or reorder one to add another.
+                </div>
+              )}
+              {/* Active notes — order is priority (PRIORITY 1–3) */}
+              {activeNotes.map((n, i) => (
+                <DirectorNoteRow
+                  key={n.id}
+                  note={n}
+                  index={i}
+                  isFirst={i === 0}
+                  isLast={i === activeNotes.length - 1}
+                  onMoveUp={() => move(i, -1)}
+                  onMoveDown={() => move(i, 1)}
+                  onRemove={() => { removeDirectorNote(n.id); playSfx("memory_remove"); }}
+                />
+              ))}
+              {activeNotes.length === 0 && (
+                <div className="text-[9px] text-gray-600 italic">
+                  No active thoughts. Directives persist until canceled and are never sent to chat.
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** One active mobile director thought: priority label, reorder, dismiss. */
+function DirectorNoteRow({ note, index, isFirst, isLast, onMoveUp, onMoveDown, onRemove }: {
+  note: { id: string; text: string };
+  index: number;
+  isFirst: boolean;
+  isLast: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 bg-black/30 border border-white/5 rounded-lg px-2 py-1.5">
+      <span className="text-[8px] font-mono font-bold text-purple-400 shrink-0">
+        {index < 3 ? `P${index + 1}` : "STD"}
+      </span>
+      <span className="flex-1 min-w-0 text-[10px] text-gray-300 break-words">{note.text}</span>
+      <div className="flex flex-col shrink-0">
+        <button
+          type="button"
+          onClick={onMoveUp}
+          disabled={isFirst}
+          aria-label="Raise priority"
+          className="text-gray-500 hover:text-white disabled:opacity-30 p-0.5"
+        >
+          <ChevronUp className="w-3 h-3" />
+        </button>
+        <button
+          type="button"
+          onClick={onMoveDown}
+          disabled={isLast}
+          aria-label="Lower priority"
+          className="text-gray-500 hover:text-white disabled:opacity-30 p-0.5"
+        >
+          <ChevronDown className="w-3 h-3" />
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="Remove director note"
+        className="shrink-0 text-gray-500 hover:text-red-400 p-0.5"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function MobileTuningTab(props: {
   readiness: ReturnType<typeof useCoreReadiness>;
   providerSummary: ReturnType<typeof getCoreProviderSummary>;
@@ -2388,6 +2625,10 @@ function MobileTuningTab(props: {
 
         {/* Toggles */}
         <div className="space-y-2 pt-1 border-t border-white/5">
+          {/* Director — compact single-bot surface over the existing
+              directorNotes system (max 3 active thoughts on mobile). */}
+          <MobileDirectorPanel />
+
           {/* TTS */}
           <div
             onClick={() => setTtsEnabled(!ttsEnabled)}
@@ -2424,18 +2665,39 @@ function MobileTuningTab(props: {
             </span>
           </div>
 
-          {/* R34L Typing — Ctrl+click toggles Frozen Learning */}
-          <div
-            onClick={(e) => {
-              if (e.ctrlKey || e.metaKey) setR34lLearningFrozen(!r34lLearningFrozen);
-              else setR34lEnabled(!r34lEnabled);
-            }}
-            className="flex items-center justify-between text-xs cursor-pointer py-1 touch-target"
-          >
-            <span className="text-gray-300">R34L Human Typing Emulation</span>
-            <span
+          {/* R34L Human Typing — true three-state control (tap cycle:
+              OFF → FROZEN → ON → OFF). No modifier keys required on touch:
+              gray = inactive (learned data preserved, not applied/updated),
+              yellow ❄ = apply-only (frozen learning), green = applying + learning. */}
+          <div className="flex items-center justify-between text-xs py-1 touch-target">
+            <div className="flex flex-col min-w-0 pr-2">
+              <span className="text-gray-300">R34L Human Typing Emulation</span>
+              <span className="text-[9px] text-gray-600 truncate">
+                {r34lLearningFrozen
+                  ? "Apply-only: uses learned style, collects nothing new"
+                  : r34lEnabled
+                    ? "Applying learned style and learning live chat"
+                    : "Inactive: learned style preserved, not applied or updated"}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (r34lLearningFrozen) {
+                  setR34lLearningFrozen(false);
+                  toast.success("R34L ON — applying learned style and learning new evidence");
+                } else if (r34lEnabled) {
+                  setR34lEnabled(false);
+                  toast.success("R34L OFF — learned style preserved, not applied or updated");
+                } else {
+                  setR34lLearningFrozen(true);
+                  toast.success("R34L FROZEN — applying learned style, collecting nothing new");
+                }
+                playSfx("palette_select");
+              }}
+              aria-label={`R34L mode: ${r34lLearningFrozen ? "FROZEN (apply only)" : r34lEnabled ? "ON (learning)" : "OFF"}. Tap to cycle OFF, FROZEN, ON.`}
               className={cn(
-                "text-[10px] font-bold px-2 py-0.5 rounded border",
+                "text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 transition-colors touch-target",
                 r34lLearningFrozen
                   ? "bg-yellow-500/20 border-yellow-500/40 text-yellow-300"
                   : r34lEnabled
@@ -2443,8 +2705,8 @@ function MobileTuningTab(props: {
                     : "bg-white/5 border-white/5 text-gray-500"
               )}
             >
-              {r34lLearningFrozen ? "FROZEN" : r34lEnabled ? "ON" : "OFF"}
-            </span>
+              {r34lLearningFrozen ? "❄ FROZEN" : r34lEnabled ? "ON" : "OFF"}
+            </button>
           </div>
           <R34lInlineDetails />
 
