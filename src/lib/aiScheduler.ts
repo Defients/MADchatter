@@ -97,6 +97,8 @@ export interface AIRequestMeta {
   preemptedByOp?: string;
   queueWaitMs?: number;
   durationMs?: number;
+  externalSignal?: AbortSignal;
+  externalAbortHandler?: () => void;
 }
 
 // ─── Telemetry ────────────────────────────────────────────────────────────────
@@ -186,6 +188,9 @@ export interface AIRequestOptions {
   /** Max time to wait for the Ollama slot before queue-timeout. Defaults to
       timeoutMs. See AIRequestMeta.queueTimeoutMs. */
   queueTimeoutMs?: number;
+  /** Optional caller lifecycle. Aborting it cancels active work and removes a
+   * queued Ollama request immediately instead of waiting for queue timeout. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -246,7 +251,14 @@ class AIScheduler {
       botId: options.botId,
       channel: options.channel,
       status: "queued",
+      externalSignal: options.signal,
     };
+
+    if (options.signal?.aborted) {
+      meta.status = "cancelled";
+      recordMetrics(meta);
+      throw new AIRequestCancelledError(options.operation, "caller aborted");
+    }
 
     // Dedup check: if a request with the same key is already in flight, skip.
     if (options.dedupeKey) {
@@ -255,6 +267,23 @@ class AIScheduler {
         throw new AIRequestCancelledError(options.operation, "duplicate request already in flight");
       }
       this.dedupeKeys.set(options.dedupeKey, id);
+    }
+
+    if (options.signal) {
+      meta.externalAbortHandler = () => {
+        if (meta.status !== "queued" && meta.status !== "active") return;
+        meta.status = "cancelled";
+        abortController.abort();
+        const pendingIndex = this.ollamaPending.findIndex((request) => request.id === meta.id);
+        if (pendingIndex >= 0) {
+          this.ollamaPending.splice(pendingIndex, 1);
+          const resolver = this.slotResolvers.get(meta.id);
+          this.slotResolvers.delete(meta.id);
+          resolver?.reject(new AIRequestCancelledError(options.operation, "caller aborted"));
+          this.startNextOllama();
+        }
+      };
+      options.signal.addEventListener("abort", meta.externalAbortHandler, { once: true });
     }
 
     const isOllama = options.provider === "ollama";
@@ -274,6 +303,7 @@ class AIScheduler {
           if (meta.dedupeKey) this.dedupeKeys.delete(meta.dedupeKey);
           meta.queueWaitMs = Date.now() - meta.enqueuedAt;
           recordMetrics(meta);
+          this.detachExternalSignal(meta);
           throw e;
         }
       }
@@ -420,6 +450,7 @@ class AIScheduler {
   // ── Cleanup ─────────────────────────────────────────────────────────────
 
   private cleanup(meta: AIRequestMeta) {
+    this.detachExternalSignal(meta);
     this.active.delete(meta.id);
     if (meta.dedupeKey) this.dedupeKeys.delete(meta.dedupeKey);
 
@@ -442,6 +473,14 @@ class AIScheduler {
     }
 
     recordMetrics(meta);
+  }
+
+  private detachExternalSignal(meta: AIRequestMeta) {
+    if (meta.externalSignal && meta.externalAbortHandler) {
+      meta.externalSignal.removeEventListener("abort", meta.externalAbortHandler);
+    }
+    meta.externalSignal = undefined;
+    meta.externalAbortHandler = undefined;
   }
 
   // ── Public helpers ──────────────────────────────────────────────────────

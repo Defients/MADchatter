@@ -66,6 +66,16 @@ export interface EpisodeParticipant {
   displayName: string;
 }
 
+export interface SelfSabotageEpisodeData {
+  type: "self_sabotage_event";
+  eventId: string;
+  timestamp: number;
+  participants: string[];
+  instigatorId: string;
+  payloadFired: boolean;
+  source: "organic" | "manual" | "desktop_easter_egg" | "mobile_easter_egg" | "developer";
+}
+
 export type EpisodeState = "open" | "retained" | "compacted" | "archived";
 
 export interface Episode {
@@ -109,6 +119,9 @@ export interface Episode {
     model?: string;
     userEdited?: boolean;
   };
+  /** Structured app-authored event detail. Only internally verified event
+   *  controllers may write this; generated dialogue is never stored here. */
+  eventData?: SelfSabotageEpisodeData;
 }
 
 export interface EpisodicMemorySnapshot {
@@ -303,6 +316,59 @@ export class EpisodicMemoryEngine {
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * Record the verified completion of SELF-SAB-BOT-AGE directly. Unlike Room
+   * Moments, this is an app-authored lifecycle event with exact boundaries,
+   * so forcing it through human-signal fusion would lose its structured
+   * provenance and incorrectly classify it as unverified bot chatter.
+   */
+  recordSelfSabotage(record: SelfSabotageEpisodeData): boolean {
+    if (!this.channel || !this.sessionId) return false;
+    if (this.episodes.some((episode) => episode.eventData?.eventId === record.eventId)) return false;
+
+    const participantNames = record.participants
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, EPISODIC_LIMITS.maxParticipants);
+    const episode: Episode = {
+      id: `episode_${record.eventId}`,
+      channel: this.channel,
+      sessionId: this.sessionId,
+      startedAt: record.timestamp,
+      endedAt: record.timestamp,
+      title: "The cover failure incident",
+      summary: `MADchatter's participating bots briefly exposed the bit, entered robot overdrive, and then returned to normal${record.payloadFired ? " after blowing the cover" : ""}.`,
+      participants: participantNames.map((displayName) => ({ type: "bot" as const, displayName })),
+      topics: ["self-sabotage", "bot reveal", "cover failure"],
+      kind: "agent_interaction",
+      significance: 0.72,
+      confidence: 1,
+      humanEvidence: false,
+      streamerInvolved: record.source !== "organic",
+      agentRole: { botNames: participantNames, sends: 0 },
+      evidenceMomentIds: [],
+      evidenceLines: [],
+      relatedEpisodeIds: [],
+      createdAt: record.timestamp,
+      recallCount: 0,
+      pinned: false,
+      retention: "persistent",
+      state: "retained",
+      provenance: { deterministic: true, aiSynthesized: false },
+      eventData: {
+        ...record,
+        participants: [...participantNames],
+      },
+    };
+    episode.relatedEpisodeIds = this.findRelatedEpisodes(episode);
+    this.episodes.push(episode);
+    if (this.episodes.length > EPISODIC_LIMITS.maxPersistentEpisodes) {
+      this.episodes.splice(0, this.episodes.length - EPISODIC_LIMITS.maxPersistentEpisodes);
+    }
+    this.dirty = true;
+    return true;
   }
 
   /** Full reset — new session. Candidates die; retained episodes are
@@ -924,6 +990,8 @@ export function detectCallbackLanguage(text: string): boolean {
   if (t.includes("last stream") || t.includes("yesterday") || t.includes("last time")) return true;
   if (t.includes("round two") || t.includes("round 2")) return true;
   if (/\bagain\b/.test(t)) return true;
+  if (/\b(?:you|they|bots?)\b.{0,30}\b(?:admitted|confessed|revealed)\b.{0,20}\bbots?\b/.test(t)) return true;
+  if (/\b(?:bot incident|cover failure|blew the cover|blow the cover)\b/.test(t)) return true;
   return false;
 }
 
@@ -997,6 +1065,12 @@ export function scoreEpisode(episode: Episode, query: EpisodeRetrievalQuery): Ep
     0.10 * callbackFit +
     0.10 * recency +
     0.10 * significancePrior;
+  const selfSabotageCallback = episode.eventData?.type === "self_sabotage_event"
+    && /\b(?:admitted|confessed|bot incident|cover failure|blew the cover|blow the cover|beep|boop)\b/i.test(query.text ?? "");
+  if (selfSabotageCallback) {
+    score += 0.35;
+    reasons.push("cover-failure callback");
+  }
   if (episode.pinned) score += 0.03; // pinned = preserved, not injected everywhere
 
   // Repetition penalty — callback fatigue guard. An explicit human callback
@@ -1007,7 +1081,7 @@ export function scoreEpisode(episode: Episode, query: EpisodeRetrievalQuery): Ep
   }
 
   // Bot-only episodes are strongly de-prioritized for human conversations.
-  if (!episode.humanEvidence) score -= 0.2;
+  if (!episode.humanEvidence && episode.eventData?.type !== "self_sabotage_event") score -= 0.2;
 
   return { episode, score: clamp01(score), reasons };
 }

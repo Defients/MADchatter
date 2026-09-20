@@ -57,7 +57,13 @@ export async function sendManualMessage({
     if (!dryRun) {
       // Manual sends bypass the global stop — this is the operator's own
       // explicit chat input (human intent outranks restraint, always).
-      await getPlatformSendFn(state.platform, sentBot?.id, { bypassGlobalStop: true })(destination, text);
+      await getPlatformSendFn(state.platform, sentBot?.id, {
+        bypassGlobalStop: true,
+        // Explicit operator sends remain available while a theatrical event
+        // owns automated speech. The event must never take control away from
+        // the human at the keyboard.
+        bypassEventFloor: true,
+      })(destination, text);
     }
     // Delivery may finish after navigation or an identity change. It cannot be
     // undone, but its old history must never be written into the new session.

@@ -8,6 +8,7 @@ import { getTwitchSession } from "../lib/twitch";
 import { getKickSession } from "../lib/kick";
 import { getJoystickSession } from "../lib/joystick";
 import { getPlatformSendFn } from "../lib/platformSend";
+import { botCoordinator } from "../lib/botCoordinator";
 import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
@@ -178,6 +179,9 @@ export function useAutoForge() {
   markActionBucketRef.current = markAutoForgeActionBucket;
 
   const checkAutoForge = async (force = false) => {
+    // Choreographed events temporarily own automated speech. Stand down before
+    // provider work; platformSend repeats this at delivery time for stale work.
+    if (botCoordinator.getEventFloorOwner()) return;
     // Multi-bot guard: the legacy single-bot loop stands down ONLY when
     // multi-bot is actively engaged (toggle on AND ≥2 bots authenticated).
     // With 0–1 authed bots the legacy loop keeps running so there's no dead zone.

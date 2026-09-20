@@ -129,6 +129,7 @@ export function useAutoForgeBot(botId: string) {
 
   const checkBot = async (force = false) => {
     const store = useAppStore.getState();
+    if (botCoordinator.getEventFloorOwner()) return;
     const supercharged = store.superchargeActive;
     if (isForgingRef.current) {
       // Watchdog: if a previous check's await never settled (hung SDK call,

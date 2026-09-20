@@ -7,6 +7,7 @@ import { useAppStore } from "../store";
 import { captureSessionScope, isSessionScopeCurrent } from "./sessionScope";
 import { throwIfSendCancelled } from "./sendCancellation";
 import { SendCancelledError } from "./sendCancellation";
+import { botCoordinator } from "./botCoordinator";
 
 export type PlatformSendFn = (channel: string, message: string, signal?: AbortSignal) => Promise<void>;
 
@@ -29,10 +30,14 @@ export type PlatformSendFn = (channel: string, message: string, signal?: AbortSi
 export function getPlatformSendFn(
   platform: Platform,
   botId?: string,
-  opts?: { bypassGlobalStop?: boolean },
+  opts?: { bypassGlobalStop?: boolean; bypassEventFloor?: boolean; eventOwner?: string },
 ): PlatformSendFn {
   return async (channel, message, signal) => {
     if (!opts?.bypassGlobalStop && useAppStore.getState().botsGlobalStop) {
+      throw new SendCancelledError();
+    }
+    const floorOwner = botCoordinator.getEventFloorOwner();
+    if (floorOwner && !opts?.bypassEventFloor && opts?.eventOwner !== floorOwner) {
       throw new SendCancelledError();
     }
     const scope = captureSessionScope();
@@ -55,6 +60,7 @@ export function getPlatformSendFn(
       const current = identity();
       if (!isSessionScopeCurrent(scope) || platform !== scope.platform ||
         (!opts?.bypassGlobalStop && useAppStore.getState().botsGlobalStop) ||
+        (!!botCoordinator.getEventFloorOwner() && !opts?.bypassEventFloor && opts?.eventOwner !== botCoordinator.getEventFloorOwner()) ||
         useAppStore.getState().multiBotEnabled !== initial.multiBotEnabled ||
         current?.username !== originalIdentity?.username || current?.userId !== originalIdentity?.userId) controller.abort();
     };

@@ -168,6 +168,17 @@ await runTest("reset clears pending requests", async () => {
   assert(won === false, "pending request should be resolved false on reset");
 });
 
+await runTest("event floor lease blocks ordinary bids and only its owner can release", async () => {
+  botCoordinator.reset();
+  assert(botCoordinator.acquireEventFloor("self_sabotage") === true, "event should acquire an empty floor");
+  assert(botCoordinator.acquireEventFloor("other_event") === false, "another event must not steal the floor");
+  const won = await botCoordinator.requestFloor("bot1", makeCandidate({ confidence: 1 }));
+  assert(won === false, "ordinary AutoForge bid must stand down during event lease");
+  assert(botCoordinator.releaseEventFloor("wrong_owner") === false, "wrong owner must not release lease");
+  assert(botCoordinator.releaseEventFloor("self_sabotage") === true, "lease owner should release floor");
+  assert(botCoordinator.getEventFloorOwner() === null, "event floor should be clear after release");
+});
+
 // ─── DEFAULT_FLOOR_GAP_MS ─────────────────────────────────────────────────────
 
 await runTest("DEFAULT_FLOOR_GAP_MS is 15 seconds", () => {

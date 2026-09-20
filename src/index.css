@@ -3902,3 +3902,57 @@
     transition: none;
   }
 }
+/* SELF-SAB-BOT-AGE is deliberately theatrical, never seizure-theatrical. */
+.self-sabotage-hud {
+  animation: self-sabotage-arrive 220ms ease-out both;
+}
+
+.self-sabotage-scanline {
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0,
+    transparent 4px,
+    rgba(34, 211, 238, 0.08) 5px,
+    transparent 6px
+  );
+  animation: self-sabotage-scan 4s linear infinite;
+}
+
+.self-sabotage-logo-glitch {
+  animation: self-sabotage-logo-glitch 240ms steps(2, end) both;
+}
+
+html.self-sabotage-active body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9980;
+  pointer-events: none;
+  border: 1px solid rgba(217, 70, 239, 0.32);
+  box-shadow: inset 0 0 36px rgba(217, 70, 239, 0.08);
+}
+
+@keyframes self-sabotage-arrive {
+  from { opacity: 0; transform: translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes self-sabotage-scan {
+  from { transform: translateY(-12px); }
+  to { transform: translateY(12px); }
+}
+
+@keyframes self-sabotage-logo-glitch {
+  0%, 100% { transform: translate(0); filter: none; }
+  25% { transform: translate(-2px, 1px); filter: hue-rotate(70deg); }
+  55% { transform: translate(2px, -1px); filter: hue-rotate(-70deg) saturate(1.7); }
+  80% { transform: translate(-1px, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .self-sabotage-hud,
+  .self-sabotage-scanline,
+  .self-sabotage-logo-glitch {
+    animation: none !important;
+  }
+}

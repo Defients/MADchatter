@@ -97,6 +97,7 @@ import {
   type MobileLengthOption,
 } from "../lib/mobileControls";
 import logoUrl from "../../madchatter-logo1.png";
+import { useSelfSabotageLogoTap } from "../hooks/useSelfSabotageLogoTap";
 
 // Color maps for sentiment
 const SENTIMENT_DOT_COLORS: Record<string, string> = {
@@ -146,6 +147,7 @@ export function CoreMobileWorkspace(props: {
   visualCaptureInterval: number;
   setVisualCaptureInterval: (v: number) => void;
 }) {
+  const { onLogoTap, logoGlitch } = useSelfSabotageLogoTap();
   const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
   const [mobileWelcomeOpen, setMobileWelcomeOpen] = useState(() => !hasSeenMobileWelcome());
   const [tuningOnboardingRequest, setTuningOnboardingRequest] = useState(0);
@@ -339,8 +341,9 @@ export function CoreMobileWorkspace(props: {
           <img
             src={logoUrl}
             alt="MADchatter"
-            className="h-7 w-auto forge-logo-glow select-none"
+            className={cn("h-7 w-auto forge-logo-glow select-none cursor-pointer", logoGlitch && "self-sabotage-logo-glitch")}
             style={{ opacity: 0.85 }}
+            onClick={onLogoTap}
           />
           <VersionBadge />
         </div>

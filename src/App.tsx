@@ -49,6 +49,9 @@ import type { ChatMessage } from './types';
 import { classifySentiment } from './lib/sentiment';
 import { requestNotificationPermission, notifyMention } from './lib/notifications';
 import { messageQueue, startQueueProcessor } from './lib/messageQueue';
+import { SelfSabotageHUD } from './components/SelfSabotageHUD';
+import { triggerSelfSabBotAge } from './lib/selfSabotage';
+import { isSelfSabotageShortcut } from './lib/selfSabotageTriggers';
 
 // Lazy-load heavy panels/overlays — only loaded when opened, reducing initial bundle on mobile.
 // The read connections are anonymous (Twitch justinfan) or broadcast the
@@ -656,6 +659,15 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.repeat || e.isComposing) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+
+      // Secret desktop activation. It intentionally uses the existing global
+      // shortcut architecture but never fires from a typing/editing surface.
+      if (isSelfSabotageShortcut(e) && !(target?.closest('input, textarea, select, [role="dialog"]') || target?.isContentEditable)) {
+        e.preventDefault();
+        void triggerSelfSabBotAge({ source: 'desktop_easter_egg', force: true });
+        return;
+      }
       // Toggle Command Palette (⌘K / Ctrl+K)
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -677,7 +689,6 @@ export default function App() {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
       // Skip single-key shortcuts when user is typing or using a dialog
-      const target = e.target as HTMLElement;
       if (target && (target.closest('input, textarea, select, [role="dialog"]') || target.isContentEditable)) {
         return;
       }
@@ -1081,6 +1092,7 @@ export default function App() {
       )}
 
       <AutoForgeHUD />
+      <SelfSabotageHUD />
       <Suspense fallback={null}><AutoForgeReport /></Suspense>
       <Suspense fallback={null}><MemoryPanel /></Suspense>
       <Suspense fallback={null}><AnalyticsPanel /></Suspense>

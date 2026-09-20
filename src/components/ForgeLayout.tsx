@@ -92,6 +92,7 @@ import { ActionTimeline } from "./ActionTimeline";
 import { RoomReadCard } from "./RoomReadCard";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger, ThemedTooltip } from "./ui/tooltip";
 import logoUrl from "../../madchatter-logo1.png";
+import { useSelfSabotageLogoTap } from "../hooks/useSelfSabotageLogoTap";
 import twitchLogoUrl from "../../assets/twitch-logo.png";
 import { UserAvatar, userDisplayName } from "./UserAvatar";
 import deffySigUrl from "/deffy-sig_whiteblack.png";
@@ -216,6 +217,7 @@ const isFHDViewport = () =>
 const getRightSizeDefault = () => (isFHDViewport() ? 29 : 24);
 
 export function ForgeLayout() {
+  const { onLogoTap: onMobileSabotageLogoTap, logoGlitch: mobileSabotageLogoGlitch } = useSelfSabotageLogoTap();
   const isMobile = useIsMobile();
   const chatConnection = useAppStore((s) => s.tmiReadState);
   const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
@@ -2646,7 +2648,13 @@ export function ForgeLayout() {
           {/* Compact Header — logo + login only */}
           <div className="forge-mobile-header shrink-0 border-b border-white/5 bg-[#121217]/90 backdrop-blur-md px-3 flex items-center justify-between gap-2 z-40 safe-top">
             <div className="flex items-center shrink-0 gap-2">
-              <img src={logoUrl} alt="MADchatter" className="relative z-10 h-[28px] w-auto forge-logo-glow cursor-pointer select-none" style={{ opacity: 0.8 }} />
+              <img
+                src={logoUrl}
+                alt="MADchatter"
+                className={cn("relative z-10 h-[28px] w-auto forge-logo-glow cursor-pointer select-none", mobileSabotageLogoGlitch && "self-sabotage-logo-glitch")}
+                style={{ opacity: 0.8 }}
+                onClick={onMobileSabotageLogoTap}
+              />
               <VersionBadge />
             </div>
             <div className="flex items-center gap-2 shrink-0">

@@ -56,6 +56,7 @@ class BotCoordinator {
   private listeners = new Set<SpeakerChosenListener>();
   private channel: string | null = null;
   private superchargeActive = false;
+  private eventFloorOwner: string | null = null;
 
   configure(opts: { floorGapMs?: number; bidWindowMs?: number }) {
     if (opts.floorGapMs !== undefined) this.floorGapMs = opts.floorGapMs;
@@ -91,6 +92,36 @@ class BotCoordinator {
     this.lastSpeakerBotId = null;
   }
 
+  /**
+   * Temporarily lease the speaking floor to a choreographed app event.
+   * Ordinary AutoForge bids stand down until the same owner releases it.
+   * Re-acquiring by the current owner is idempotent; a different owner can
+   * never steal a live lease.
+   */
+  acquireEventFloor(owner: string): boolean {
+    const normalized = owner.trim();
+    if (!normalized) return false;
+    if (this.eventFloorOwner && this.eventFloorOwner !== normalized) return false;
+    this.reset();
+    this.eventFloorOwner = normalized;
+    return true;
+  }
+
+  releaseEventFloor(owner: string): boolean {
+    if (this.eventFloorOwner !== owner) return false;
+    this.eventFloorOwner = null;
+    this.reset();
+    return true;
+  }
+
+  getEventFloorOwner(): string | null {
+    return this.eventFloorOwner;
+  }
+
+  isEventFloorOwner(owner: string): boolean {
+    return this.eventFloorOwner === owner;
+  }
+
   onSpeakerChosen(listener: SpeakerChosenListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -102,6 +133,7 @@ class BotCoordinator {
    * semantic bid, or the ensemble chose collective silence).
    */
   requestFloor(botId: string, candidate: BotCandidate): Promise<boolean> {
+    if (this.eventFloorOwner) return Promise.resolve(false);
     const now = Date.now();
 
     // Cooldown not elapsed → stand down this cycle.

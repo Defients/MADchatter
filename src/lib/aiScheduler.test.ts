@@ -398,6 +398,37 @@ async function testCancelProviderIsCancelledNotTimeout() {
   assert(!isSchedulerTimeout(error), "cancelled should NOT be reported as timeout");
 }
 
+async function testCallerSignalCancelsActive() {
+  const controller = new AbortController();
+  const tracker = makeAbortTrackingTask();
+  const promise = aiScheduler.execute(
+    tracker.task,
+    { operation: "caller-active", provider: "gemini", priority: "interactive", timeoutMs: 10_000, signal: controller.signal },
+  ).catch((e) => e);
+  controller.abort();
+  const error = await promise;
+  assert(error instanceof AIRequestCancelledError, `caller abort should classify as cancelled (got ${error?.message ?? error})`);
+  assert(tracker.wasAborted(), "caller abort should reach the provider task signal");
+}
+
+async function testCallerSignalPurgesQueued() {
+  const holder = aiScheduler.execute(
+    makeResolvingTask("holder", 120),
+    { operation: "caller-holder", provider: "ollama", priority: "critical", timeoutMs: 5_000 },
+  ).catch((e) => e);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const controller = new AbortController();
+  const queued = aiScheduler.execute(
+    makeResolvingTask("must-not-run", 10),
+    { operation: "caller-queued", provider: "ollama", priority: "background", timeoutMs: 5_000, signal: controller.signal },
+  ).catch((e) => e);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  controller.abort();
+  const error = await queued;
+  assert(error instanceof AIRequestCancelledError, `queued caller abort should cancel immediately (got ${error?.message ?? error})`);
+  await holder;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -417,6 +448,8 @@ async function main() {
   await runTest("Queued request deadline (no infinite wait)", testQueuedRequestDeadline);
   await runTest("cancelBot purges pending queue", testCancelBotPurgesPending);
   await runTest("cancelProvider reports cancelled not timeout", testCancelProviderIsCancelledNotTimeout);
+  await runTest("caller signal cancels active request", testCallerSignalCancelsActive);
+  await runTest("caller signal purges queued request", testCallerSignalPurgesQueued);
   await runTest("Ollama reasoning disabled by default", testOllamaReasoningDisabled);
   await runTest("Cloud providers don't get Ollama fields", testCloudNoReasoningField);
   await runTest("Token budgets scale correctly", testTokenBudgets);

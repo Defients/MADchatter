@@ -308,6 +308,13 @@ export interface GenerateChatParams {
    *  to the system prompt so this bot's next message feels like a natural
    *  entrance. Additive only — never alters the bot's persona. */
   firstMessageMode?: boolean;
+  /** Ephemeral, call-scoped system instruction for a controller-owned event.
+   *  Appended last so it can temporarily supersede conflicting persona rules
+   *  without mutating or persisting the persona itself. */
+  temporarySystemDirective?: string;
+  /** Caller lifecycle cancellation. Used by controller-owned events so no
+   * queued or active generation survives abort/reset. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -467,7 +474,7 @@ ${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMO
 ${effortDirective}
 ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count} suggestion${params.count > 1 ? "s" : ""}. Do not generate more or fewer than ${params.count}.` : ""}`;
 
-  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "");
+  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.temporarySystemDirective ? `\n\n${params.temporarySystemDirective.trim()}` : "");
   let generatedJsonStr = "";
 
   const forgeTimeout = getOperationTimeout("forge", provider);
@@ -495,7 +502,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
           abortSignal: signal,
         },
       }),
-      { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+      { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername, signal: params.signal },
     );
     generatedJsonStr = response.text || "{}";
     if (response.usageMetadata) {
@@ -539,7 +546,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
           ],
           ...ollamaOpts,
         }, { signal }),
-        { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+        { operation: `generateChat/${provider}`, provider, model, priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername, signal: params.signal },
       );
     let response;
     try {
@@ -577,7 +584,7 @@ ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count
         system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
         messages: [{ role: "user", content }],
       }, { signal }),
-      { operation: `generateChat/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername },
+      { operation: `generateChat/${provider}`, provider, model: "claude-haiku-4-5-20251001", priority: forgePriority, timeoutMs: forgeTimeout, channel: params.streamMetadata?.channelName, botId: params.botUsername, signal: params.signal },
     );
     generatedJsonStr = (response.content.find((c: any) => c.type === "text") as any)?.text || "";
     if (response.usage) {
