@@ -1,169 +1,131 @@
 # Friend Trial Worker
 
-A Cloudflare Worker that gives invited users temporary MADchatter access through a server-held Groq API key — without requiring them to bring their own key. The Groq credential never leaves Worker secret storage.
+Cloudflare Worker for MADchatter's keyless Friend Trial. Groq credentials remain in Worker secret storage; mobile Trial sessions receive a server-authoritative weighted daily allowance backed by a Durable Object.
 
 ## Architecture
 
-```
-MADchatter (Neocities)  ──HTTPS──▶  Cloudflare Worker  ──GROQ_API_KEY──▶  Groq
+```text
+Mobile MADchatter
+  ├─ POST /trial/session + anonymous installation UUID
+  │    └─ Turnstile/invite verification → signed session with opaque quota id
+  ├─ GET /trial/usage
+  │    └─ per-client Durable Object → authoritative balance
+  └─ POST /trial/chat
+       ├─ validate session, origin, rate limits, and payload
+       ├─ atomically reserve 1 text use or 2 vision uses
+       ├─ server-controlled request → Groq
+       └─ commit success or refund upstream failure
 ```
 
-The Worker exposes three endpoints:
+The Durable Object name is a keyed HMAC of a locally generated anonymous UUID. The raw UUID is not stored in Durable Object storage, returned by the Worker, or written to application logs. Reissuing a session for the same browser installation resolves to the same ledger and does not reset usage.
+
+## Endpoints
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/trial/status` | GET | Public, non-sensitive trial availability |
-| `/trial/session` | POST | Turnstile (+ optional invite) → signed session token |
-| `/trial/chat` | POST | Validated, rate-limited inference via Groq |
+| `/trial/status` | GET | Public, non-sensitive availability and generic product policy |
+| `/trial/session` | POST | Turnstile plus optional invite and anonymous client id → signed session |
+| `/trial/usage` | GET | Authenticated authoritative mobile allowance; non-mobile sessions return `limited: false` |
+| `/trial/chat` | POST | Validated, rate-limited inference with atomic quota reservation |
 
-The Worker constructs the upstream payload entirely server-side. The client cannot control the upstream URL, model, Authorization header, or output token ceiling.
+Successful limited chat responses remain OpenAI-compatible and add:
 
-## Prerequisites
+```text
+X-MADchatter-Trial-Used
+X-MADchatter-Trial-Remaining
+X-MADchatter-Trial-Limit
+X-MADchatter-Trial-Reset-At
+```
 
-- A Cloudflare account
-- Wrangler CLI (`npm install -g wrangler` or use `npx`)
-- A Groq API key (disposable; set a hard spending cap in the Groq console)
-- A Cloudflare Turnstile widget (site key + secret key)
+Exhaustion returns HTTP `429`, error code `TRIAL_DAILY_LIMIT_REACHED`, the current `usage` object, and a reset-based `Retry-After`. It does not invalidate the session.
+
+## Quota policy
+
+- Mobile allowance: `30` weighted uses by default (`TRIAL_MOBILE_DAILY_LIMIT`).
+- Text inference: `1` use.
+- Vision inference: `2` uses, determined from the validated request server-side.
+- Reset boundary: `12:00 PM America/New_York`, calculated with timezone data so EST, EDT, and 23/25-hour DST days remain correct.
+- Reservation is atomic and occurs before the Groq call.
+- Successful inference commits the reservation; upstream 429, timeout, and failure refund it.
+- A short pending-reservation lease repairs interrupted requests that never reach commit/refund.
+- Durable Object/storage failure fails closed before paid inference.
+- Existing rate-limit bindings remain independent short-window abuse controls.
 
 ## Configuration
 
-### Public variables (in `wrangler.jsonc` → `vars`)
-
-These are non-secret and safe to commit:
+Public, non-secret variables live in `wrangler.jsonc`:
 
 | Variable | Example | Purpose |
 |---|---|---|
 | `TRIAL_ENABLED` | `false` | Master kill switch |
-| `TRIAL_END_AT` | `2026-09-17T03:59:59Z` | Auto-expiry timestamp (ISO 8601) |
-| `TRIAL_MODEL` | `llama-3.3-70b-versatile` | Server-controlled Groq model |
-| `TRIAL_MAX_OUTPUT_TOKENS` | `2048` | Hard output token ceiling |
-| `TRIAL_SESSION_TTL_SECONDS` | `10800` | Session token lifetime (3 hours) |
-| `TRIAL_REQUIRE_INVITE` | `false` | Enable invite-code gate |
-| `ALLOWED_ORIGINS` | `https://madchatter.fun` | Comma-separated allowed origins |
-| `TURNSTILE_SITE_KEY` | `0x4AAAAAAA...` | Public Turnstile site key |
+| `TRIAL_END_AT` | `2026-09-17T03:59:59Z` | Campaign expiry instant |
+| `TRIAL_MODEL` | `openai/gpt-oss-120b` | Server-controlled text model |
+| `TRIAL_VISION_MODEL` | `qwen/qwen3.6-27b` | Optional server-controlled vision model |
+| `TRIAL_MAX_OUTPUT_TOKENS` | `2048` | Output ceiling |
+| `TRIAL_SESSION_TTL_SECONDS` | `10800` | Signed session lifetime |
+| `TRIAL_MOBILE_DAILY_LIMIT` | `30` | Weighted daily mobile allowance |
+| `TRIAL_REQUIRE_INVITE` | `false` | Invite-code gate |
+| `ALLOWED_ORIGINS` | `https://madchatter.fun` | Exact comma-separated origins |
+| `TURNSTILE_SITE_KEY` | `0x4AAAAAAA...` | Public Turnstile key |
 | `TURNSTILE_EXPECTED_HOSTNAME` | `madchatter.fun` | Turnstile hostname validation |
 
-### Secrets (set via `wrangler secret put` — never in source)
-
-| Secret name | Purpose |
-|---|---|
-| `GROQ_API_KEY` | The funded Groq API key |
-| `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile server-side secret |
-| `TRIAL_SESSION_SECRET` | HMAC signing key for session tokens |
-| `TRIAL_INVITE_CODE` | (Optional) Required only when `TRIAL_REQUIRE_INVITE=true` |
-
-## Local development
+Secrets must be set with Wrangler and never committed:
 
 ```bash
-cd workers/friend-trial
-npm install
-cp .dev.vars.example .dev.vars
-# Edit .dev.vars with placeholder values (never real production keys)
-npm run dev
-```
-
-For local Turnstile testing, use Cloudflare's official test keys (already in `.dev.vars.example`):
-- Always-pass secret: `1x0000000000000000000000000000000AA`
-- Always-fail secret: `2x0000000000000000000000000000000AA`
-
-## Deployment
-
-```bash
-cd workers/friend-trial
-npm install
-
-# Login to Cloudflare (one-time)
-npx wrangler login
-
-# Set secrets (never commit these — paste when prompted)
 npx wrangler secret put GROQ_API_KEY
 npx wrangler secret put TURNSTILE_SECRET_KEY
 npx wrangler secret put TRIAL_SESSION_SECRET
-# Only if TRIAL_REQUIRE_INVITE=true:
+# Only when TRIAL_REQUIRE_INVITE=true:
 npx wrangler secret put TRIAL_INVITE_CODE
-
-# Deploy
-npx wrangler deploy
 ```
 
-Note the deployed Worker URL (e.g. `https://friend-trial.<account>.workers.dev`).
+`wrangler.jsonc` binds `TRIAL_USAGE` to `TrialUsageDurableObject` and includes the `v1-trial-usage` SQLite-class migration. Preserve the migration tag after it has shipped; later storage changes need a new migration tag.
 
-## Frontend configuration
+## Local development and verification
 
-In MADchatter's Settings panel, under the "Friend Trial" provider tab:
-1. Set the **Worker URL** to the deployed Worker URL
-2. Set the **Turnstile Site Key** (public key from your Turnstile widget)
-3. Click **Start Friend Trial**
+```bash
+cd workers/friend-trial
+npm install
+copy .dev.vars.example .dev.vars   # Windows; use cp on macOS/Linux
+npm run dev
 
-Alternatively, set these via Vite env variables in `.env`:
+npm run lint
+npm test
+npm run types
+npm run dry-run
 ```
+
+The test harness mocks Turnstile, Groq, rate limits, and serialized Durable Object storage. No Groq credits or production secrets are used.
+
+Frontend public configuration remains:
+
+```text
 VITE_TRIAL_WORKER_URL=https://friend-trial.<account>.workers.dev
 VITE_TURNSTILE_SITE_KEY=0x4AAAAAAA...
 ```
 
-Then rebuild and deploy the static site to Neocities.
+## Deployment checklist
 
-## Creating a Turnstile widget
+Deployment is intentionally separate from local implementation and validation:
 
-1. Go to the Cloudflare dashboard → Turnstile
-2. Add a widget with hostname `madchatter.fun`
-3. Copy the **site key** (public) → set in MADchatter frontend config
-4. Copy the **secret key** (private) → `wrangler secret put TURNSTILE_SECRET_KEY`
+1. Review `TRIAL_ENABLED` and set a future `TRIAL_END_AT` for the intended campaign.
+2. Confirm all secrets are present in the target Cloudflare environment.
+3. Confirm the `TRIAL_USAGE` Durable Object binding and `v1-trial-usage` migration are included.
+4. Run all four local verification commands above.
+5. Deploy with `npx wrangler deploy` only when explicitly authorized.
+6. Smoke-test `/trial/status`, mobile activation, `/trial/usage`, one text request, one vision request (if enabled), exhaustion, and reset behavior.
 
-## Trial Day operation
+The checked-in campaign end date may already be in the past. This patch does not silently re-enable the Trial or deploy anything.
 
-### Enable
+## Security and privacy model
 
-1. Set `TRIAL_ENABLED=true` in `wrangler.jsonc` (or via `wrangler` dashboard)
-2. Set `TRIAL_END_AT` to the desired end time
-3. Deploy: `npx wrangler deploy`
-4. Verify: `curl https://friend-trial.<account>.workers.dev/trial/status`
-
-### Test
-
-1. Open `https://madchatter.fun`
-2. Settings → Friend Trial → set Worker URL + Turnstile site key
-3. Click "Start Friend Trial"
-4. Complete the Turnstile challenge
-5. Use MADchatter normally (Forge, AutoForge, etc.)
-
-### Disable (kill switch)
-
-Set `TRIAL_ENABLED=false` and deploy, or set `TRIAL_END_AT` to a past timestamp. Existing BYOK users are unaffected.
-
-### Expire
-
-The trial auto-expires when `TRIAL_END_AT` passes. The Worker rejects all trial requests; the frontend clears the stale session and offers BYOK.
-
-### Rotate secrets
-
-```bash
-npx wrangler secret put GROQ_API_KEY          # new disposable key
-npx wrangler secret put TRIAL_SESSION_SECRET  # new HMAC secret
-npx wrangler secret put TURNSTILE_SECRET_KEY # if Turnstile secret changed
-```
-
-After the event, rotate the disposable Groq key in the Groq console or delete it.
-
-## Testing
-
-```bash
-# Worker tests (mocked upstream — no real Groq credits spent)
-cd workers/friend-trial
-npm test
-
-# Frontend trial tests
-cd ../..
-npx tsx src/lib/trial.test.ts
-```
-
-## Security model
-
-- `GROQ_API_KEY` exists only as a Worker secret binding — never in frontend source, static assets, localStorage, config files, or git history.
-- The Worker constructs the upstream payload from an explicit input allowlist. The client cannot control the upstream URL, model, Authorization header, or token ceiling.
-- CORS is strict (exact origin match, `Vary: Origin`, no `*`) but is not the primary security boundary.
-- Turnstile is validated server-side through Cloudflare's siteverify flow.
-- Session tokens are stateless HMAC-signed (Web Crypto), short-lived, and verified on every inference request.
-- Rate limiting uses Cloudflare's native Worker rate-limiting bindings (per-IP for session bootstrap, per-session + per-IP for inference).
-- Upstream errors are sanitized — raw provider diagnostic bodies are never relayed to the client.
-- Trial is text-only — images are stripped client-side and rejected server-side.
+- The Groq key exists only as a Worker secret binding.
+- The client cannot control the upstream URL, model, authorization header, quota cost, or output ceiling.
+- Turnstile is verified server-side; CORS is strict but is not treated as the primary security boundary.
+- Session tokens are short-lived HMAC credentials. Version 2 embeds only a random session id, an opaque quota id, server-derived client class, and timestamps.
+- Pre-quota version 1 session tokens are intentionally rejected after deployment; affected users reactivate through the existing Friend Trial flow.
+- The browser keeps one random anonymous installation UUID in localStorage. Clearing site data creates a new identity; this is a privacy-conscious lightweight control, not durable account identity.
+- Mobile classification is derived from User-Agent at activation. It is sufficient for product segmentation but is not strong device attestation.
+- No raw anonymous UUID, IP address, prompt, image, quota balance, or provider response is deliberately logged. Existing logs use short session/IP prefixes and safe error categories.
+- Upstream diagnostic bodies are never relayed to clients.
+- Vision inputs accept only validated inline image data when `TRIAL_VISION_MODEL` is configured; otherwise images are stripped in the client and rejected by the Worker.

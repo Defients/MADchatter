@@ -393,6 +393,11 @@ interface AppState {
   /** Cached Friend Trial status from the Worker (runtime-only, not persisted). */
   trialStatus: import("./lib/trial").TrialStatus | null;
   setTrialStatus: (status: import("./lib/trial").TrialStatus | null) => void;
+  /** Authoritative Worker usage cached for UI/gating; runtime-only. */
+  trialUsage: import("./lib/trial").TrialUsage | null;
+  setTrialUsage: (usage: import("./lib/trial").TrialUsage | null) => void;
+  trialUsageLoading: boolean;
+  setTrialUsageLoading: (loading: boolean) => void;
 
   streamMetadata: {
     channelName: string;
@@ -1265,6 +1270,10 @@ export const useAppStore = create<AppState>()(
       bumpTrialTick: () => set((state) => ({ trialTick: state.trialTick + 1 })),
       trialStatus: null,
       setTrialStatus: (status) => set({ trialStatus: status }),
+      trialUsage: null,
+      setTrialUsage: (usage) => set({ trialUsage: usage }),
+      trialUsageLoading: false,
+      setTrialUsageLoading: (loading) => set({ trialUsageLoading: loading }),
 
       streamMetadata: {
         channelName: "",

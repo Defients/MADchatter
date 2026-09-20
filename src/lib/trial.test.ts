@@ -32,21 +32,26 @@ globalThis.sessionStorage = {
 // ── Mock fetch ────────────────────────────────────────────────────────────────
 
 let mockFetchResponse: { status: number; body: any } = { status: 200, body: {} };
+let mockResponseHeaders: Record<string, string> = {};
 let capturedFetchUrl: string = "";
 let capturedFetchInit: any = null;
+let fetchCalls = 0;
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: any, init?: any) => {
   const url = typeof input === "string" ? input : input?.url || "";
   capturedFetchUrl = url;
   capturedFetchInit = init;
-  return {
+  fetchCalls += 1;
+  const response = {
     ok: mockFetchResponse.status >= 200 && mockFetchResponse.status < 300,
     status: mockFetchResponse.status,
-    headers: new Headers({ "Content-Type": "application/json" }),
+    headers: new Headers({ "Content-Type": "application/json", ...mockResponseHeaders }),
     json: async () => mockFetchResponse.body,
     text: async () => JSON.stringify(mockFetchResponse.body),
   } as any;
+  response.clone = () => response;
+  return response;
 }) as any;
 
 // ── Import after mocks are in place ──────────────────────────────────────────
@@ -56,7 +61,9 @@ const {
   isTrialSessionValid, getTrialWorkerUrl, setTrialWorkerUrl,
   getTrialTurnstileSiteKey, setTrialTurnstileSiteKey, isTrialConfigured,
   fetchTrialStatus, createTrialSession, createTrialFetch, trialSupportsVision,
-  resetTrialVisionCapability,
+  resetTrialVisionCapability, fetchTrialUsage, getCachedTrialUsage,
+  getOrCreateTrialClientId, getTrialUsageTone, isTrialDailyLimitError,
+  shouldPauseTrialAutomation,
 } = await import("./trial.ts");
 
 // ── Test runner ──────────────────────────────────────────────────────────────
@@ -79,8 +86,10 @@ function reset() {
   for (const k of Object.keys(memStore)) delete memStore[k];
   for (const k of Object.keys(sessionStore)) delete sessionStore[k];
   mockFetchResponse = { status: 200, body: {} };
+  mockResponseHeaders = {};
   capturedFetchUrl = "";
   capturedFetchInit = null;
+  fetchCalls = 0;
   resetTrialVisionCapability();
 }
 
@@ -174,6 +183,16 @@ async function main() {
     assert.strictEqual(result.token, "session-token");
     assert.ok(capturedFetchUrl.endsWith("/trial/session"));
     assert.strictEqual(JSON.parse(capturedFetchInit.body).turnstileToken, "turnstile-token");
+    assert.match(JSON.parse(capturedFetchInit.body).clientId, /^[0-9a-f-]{36}$/i);
+  });
+
+  await test("anonymous client id is stable and contains no account identity", () => {
+    reset();
+    const first = getOrCreateTrialClientId();
+    const second = getOrCreateTrialClientId();
+    assert.strictEqual(first, second);
+    assert.match(first, /^[0-9a-f-]{36}$/i);
+    assert.strictEqual(Object.keys(memStore).length, 1);
   });
 
   await test("createTrialSession includes invite code when provided", async () => {
@@ -207,6 +226,94 @@ async function main() {
     });
     assert.ok(capturedFetchUrl.endsWith("/trial/chat"), `expected /trial/chat, got ${capturedFetchUrl}`);
     assert.strictEqual(capturedFetchInit.headers.Authorization, "Bearer test-token");
+  });
+
+  await test("successful chat headers update canonical usage without wrapping the response", async () => {
+    reset();
+    setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+    setTrialSession("test-token", Math.floor(Date.now() / 1000) + 3600);
+    mockFetchResponse = { status: 200, body: { choices: [{ message: { content: "hi" } }] } };
+    mockResponseHeaders = {
+      "X-MADchatter-Trial-Used": "12",
+      "X-MADchatter-Trial-Remaining": "18",
+      "X-MADchatter-Trial-Limit": "30",
+      "X-MADchatter-Trial-Reset-At": new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    const response = await createTrialFetch()("https://x/v1/chat/completions", { method: "POST", body: "{}" });
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(getCachedTrialUsage()?.remaining, 18);
+  });
+
+  await test("usage endpoint refreshes the canonical mobile allowance", async () => {
+    reset();
+    setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+    setTrialSession("test-token", Math.floor(Date.now() / 1000) + 3600);
+    const usage = { used: 20, remaining: 10, limit: 30, resetAt: new Date(Date.now() + 3_600_000).toISOString() };
+    mockFetchResponse = { status: 200, body: { ok: true, limited: true, usage } };
+    assert.deepStrictEqual(await fetchTrialUsage(), usage);
+    assert.ok(capturedFetchUrl.endsWith("/trial/usage"));
+    assert.strictEqual(capturedFetchInit.headers.Authorization, "Bearer test-token");
+  });
+
+  await test("daily exhaustion is actionable, preserves session, and blocks repeat chat calls locally", async () => {
+    reset();
+    setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+    setTrialSession("test-token", Math.floor(Date.now() / 1000) + 3600);
+    const usage = { used: 30, remaining: 0, limit: 30, resetAt: new Date(Date.now() + 3_600_000).toISOString() };
+    mockFetchResponse = { status: 429, body: { ok: false, error: { code: "TRIAL_DAILY_LIMIT_REACHED" }, usage } };
+    const trialFetch = createTrialFetch();
+    await assert.rejects(() => trialFetch("https://x/v1/chat/completions", { method: "POST", body: "{}" }), isTrialDailyLimitError);
+    assert.strictEqual(getTrialToken(), "test-token");
+    const callsAfterAuthority = fetchCalls;
+    await assert.rejects(() => trialFetch("https://x/v1/chat/completions", { method: "POST", body: "{}" }), isTrialDailyLimitError);
+    assert.strictEqual(fetchCalls, callsAfterAuthority, "known exhaustion must not hammer the Worker");
+  });
+
+  await test("usage meter thresholds cover 30, 18, 10, 5, 1, and 0 remaining", () => {
+    assert.deepStrictEqual(
+      [30, 18, 10, 5, 1, 0].map(getTrialUsageTone),
+      ["healthy", "watch", "low", "critical", "critical", "empty"],
+    );
+  });
+
+  await test("AutoForge pauses only an exhausted active Trial provider", () => {
+    const usage = { used: 30, remaining: 0, limit: 30, resetAt: new Date(Date.now() + 3_600_000).toISOString() };
+    assert.strictEqual(shouldPauseTrialAutomation("trial", usage), true);
+    assert.strictEqual(shouldPauseTrialAutomation("groq", usage), false);
+    assert.strictEqual(shouldPauseTrialAutomation("trial", { ...usage, used: 29, remaining: 1 }), false);
+  });
+
+  await test("expired cached usage refreshes automatically and allows Trial work again", async () => {
+    reset();
+    const originalNow = Date.now;
+    let now = Date.parse("2026-09-20T15:59:58Z");
+    Date.now = () => now;
+    try {
+      setTrialWorkerUrl("https://friend-trial.example.workers.dev");
+      setTrialSession("test-token", Math.floor((now + 3_600_000) / 1000));
+      mockFetchResponse = { status: 200, body: { choices: [] } };
+      mockResponseHeaders = {
+        "X-MADchatter-Trial-Used": "30",
+        "X-MADchatter-Trial-Remaining": "0",
+        "X-MADchatter-Trial-Limit": "30",
+        "X-MADchatter-Trial-Reset-At": "2026-09-20T16:00:00.000Z",
+      };
+      const trialFetch = createTrialFetch();
+      await trialFetch("https://x/v1/chat/completions", { method: "POST", body: "{}" });
+      now = Date.parse("2026-09-20T16:00:01Z");
+      mockResponseHeaders = {};
+      mockFetchResponse = { status: 200, body: {
+        ok: true,
+        limited: true,
+        usage: { used: 0, remaining: 30, limit: 30, resetAt: "2026-09-21T16:00:00.000Z" },
+      } };
+      const callsBefore = fetchCalls;
+      await trialFetch("https://x/v1/chat/completions", { method: "POST", body: "{}" });
+      assert.strictEqual(fetchCalls, callsBefore + 2, "reset should refresh usage then perform chat");
+      assert.strictEqual(getCachedTrialUsage()?.remaining, 30);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   await test("createTrialFetch passes through non-chat requests", async () => {

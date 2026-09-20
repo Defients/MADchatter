@@ -24,7 +24,7 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 export type ChatValidation =
-  | { ok: true; payload: UpstreamPayload }
+  | { ok: true; payload: UpstreamPayload; hasImage: boolean }
   | { ok: false; code: TrialErrorCode; status: number };
 
 /** A validated content part — either text or an inline image_url. */
@@ -223,7 +223,7 @@ export async function validateChatRequest(
     ...(responseFormat ? { response_format: responseFormat } : {}),
   };
 
-  return { ok: true, payload };
+  return { ok: true, payload, hasImage };
 }
 
 /** Result of the upstream call. */

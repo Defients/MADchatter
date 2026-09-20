@@ -14,7 +14,9 @@
  */
 import type { SessionPayload } from "./types";
 
-const TOKEN_VERSION = 1;
+// v2 intentionally invalidates pre-quota sessions. Missing qid/clientClass
+// must never become an unlimited mobile session by accident.
+const TOKEN_VERSION = 2;
 const TEXT_ENC = new TextEncoder();
 const TEXT_DEC = new TextDecoder();
 
@@ -60,12 +62,15 @@ function randomId(byteLen = 18): string {
 export async function createSessionToken(
   secret: string,
   ttlSeconds: number,
+  quota: { qid: string; clientClass: "mobile" | "other" },
 ): Promise<{ token: string; expiresAt: number }> {
   const now = Date.now();
   const exp = now + ttlSeconds * 1000;
   const payload: SessionPayload = {
     v: TOKEN_VERSION,
     sid: randomId(),
+    qid: quota.qid,
+    clientClass: quota.clientClass,
     iat: Math.floor(now / 1000),
     exp: Math.floor(exp / 1000),
   };
@@ -108,6 +113,9 @@ export async function verifySessionToken(
   if (
     typeof payload.v !== "number" ||
     typeof payload.sid !== "string" ||
+    typeof payload.qid !== "string" ||
+    !/^[A-Za-z0-9_-]{32,64}$/.test(payload.qid) ||
+    (payload.clientClass !== "mobile" && payload.clientClass !== "other") ||
     typeof payload.iat !== "number" ||
     typeof payload.exp !== "number"
   ) {
@@ -130,6 +138,23 @@ export async function verifySessionToken(
   if (payload.exp <= nowSec) return { ok: false, code: "SESSION_EXPIRED" };
 
   return { ok: true, payload };
+}
+
+/** Deterministic opaque quota identity; raw browser UUID never enters storage. */
+export async function deriveQuotaId(secret: string, clientId: string): Promise<string> {
+  const key = await importHmacKey(secret);
+  const digest = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, TEXT_ENC.encode(`trial-quota:${clientId}`)),
+  );
+  return base64urlEncode(digest);
+}
+
+/** Conservative product classification, bound into the signed session. */
+export function classifyTrialClient(userAgent: string | null): "mobile" | "other" {
+  const ua = userAgent || "";
+  return /Android|iPhone|iPod|iPad|IEMobile|Opera Mini|Mobile/i.test(ua)
+    ? "mobile"
+    : "other";
 }
 
 /** Extract a short hash prefix of the session id for sanitized logging. */

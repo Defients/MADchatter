@@ -33,6 +33,53 @@ const TRIAL_TOKEN_KEY = "madchatter_trial_token";
 const TRIAL_EXPIRY_KEY = "madchatter_trial_expiry";
 const TRIAL_WORKER_URL_KEY = "madchatter_trial_worker_url";
 const TRIAL_TURNSTILE_SITE_KEY_KEY = "madchatter_trial_turnstile_site_key";
+const TRIAL_CLIENT_ID_KEY = "madchatter_trial_client_id";
+
+export interface TrialUsage {
+  used: number;
+  remaining: number;
+  limit: number;
+  resetAt: string;
+}
+
+let cachedTrialUsage: TrialUsage | null = null;
+
+function isTrialUsage(value: unknown): value is TrialUsage {
+  if (!value || typeof value !== "object") return false;
+  const usage = value as Record<string, unknown>;
+  return Number.isInteger(usage.used) && (usage.used as number) >= 0 &&
+    Number.isInteger(usage.remaining) && (usage.remaining as number) >= 0 &&
+    Number.isInteger(usage.limit) && (usage.limit as number) > 0 &&
+    (usage.used as number) + (usage.remaining as number) === usage.limit &&
+    typeof usage.resetAt === "string" &&
+    !Number.isNaN(Date.parse(usage.resetAt));
+}
+
+function publishTrialUsage(usage: TrialUsage | null): void {
+  cachedTrialUsage = usage;
+  void import("../store").then(({ useAppStore }) => {
+    useAppStore.getState().setTrialUsage(usage);
+  }).catch(() => {});
+}
+
+export function getCachedTrialUsage(): TrialUsage | null {
+  return cachedTrialUsage;
+}
+
+/** Stable anonymous installation identifier. It contains no personal data. */
+export function getOrCreateTrialClientId(): string {
+  try {
+    const existing = localStorage.getItem(TRIAL_CLIENT_ID_KEY);
+    if (existing && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(existing)) return existing;
+    const created = crypto.randomUUID();
+    localStorage.setItem(TRIAL_CLIENT_ID_KEY, created);
+    return created;
+  } catch {
+    // Storage denial means identity cannot survive reload, but a valid UUID is
+    // still required for this activation attempt.
+    return crypto.randomUUID();
+  }
+}
 
 /** Default Worker URL — override via VITE_TRIAL_WORKER_URL or localStorage. */
 const VITE_ENV = (import.meta as any).env || {};
@@ -91,6 +138,7 @@ export function setTrialSession(token: string, expiresAt: number): void {
     sessionStorage.setItem(TRIAL_TOKEN_KEY, token);
     sessionStorage.setItem(TRIAL_EXPIRY_KEY, String(expiresAt));
   } catch {}
+  publishTrialUsage(null);
 }
 
 export function clearTrialSession(): void {
@@ -98,6 +146,7 @@ export function clearTrialSession(): void {
     sessionStorage.removeItem(TRIAL_TOKEN_KEY);
     sessionStorage.removeItem(TRIAL_EXPIRY_KEY);
   } catch {}
+  publishTrialUsage(null);
 }
 
 /** Client-side precheck — the server is authoritative on expiry. */
@@ -120,6 +169,7 @@ export interface TrialStatus {
   modelLabel?: string;
   supportsVision?: boolean;
   visionModelLabel?: string;
+  mobileDailyLimit?: number;
 }
 
 export async function fetchTrialStatus(workerUrl: string): Promise<TrialStatus> {
@@ -151,7 +201,11 @@ export async function createTrialSession(
     const resp = await fetch(`${workerUrl}/trial/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ turnstileToken, ...(inviteCode ? { inviteCode } : {}) }),
+      body: JSON.stringify({
+        turnstileToken,
+        clientId: getOrCreateTrialClientId(),
+        ...(inviteCode ? { inviteCode } : {}),
+      }),
     });
     const data = await resp.json().catch(() => ({ ok: false }));
     if (data.ok && data.session) {
@@ -161,6 +215,73 @@ export async function createTrialSession(
   } catch {
     return { ok: false, error: "NETWORK_ERROR" };
   }
+}
+
+export async function fetchTrialUsage(workerUrl = getTrialWorkerUrl()): Promise<TrialUsage | null> {
+  const token = getTrialToken();
+  if (!workerUrl || !token) {
+    publishTrialUsage(null);
+    return null;
+  }
+  const resp = await fetch(`${workerUrl}/trial/usage`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.status === 401) {
+    clearTrialSession();
+    throw new Error("Friend Trial session expired. Please reactivate Friend Trial.");
+  }
+  if (!resp.ok) throw new Error("Could not refresh Friend Trial usage.");
+  const data = await resp.json().catch(() => null) as { limited?: boolean; usage?: unknown } | null;
+  const usage = data?.limited && isTrialUsage(data.usage) ? data.usage : null;
+  publishTrialUsage(usage);
+  return usage;
+}
+
+export function parseTrialUsageHeaders(headers: Headers): TrialUsage | null {
+  const used = Number(headers.get("X-MADchatter-Trial-Used"));
+  const remaining = Number(headers.get("X-MADchatter-Trial-Remaining"));
+  const limit = Number(headers.get("X-MADchatter-Trial-Limit"));
+  const resetAt = headers.get("X-MADchatter-Trial-Reset-At") || "";
+  const usage = { used, remaining, limit, resetAt };
+  return isTrialUsage(usage) ? usage : null;
+}
+
+export class TrialDailyLimitError extends Error {
+  readonly code = "TRIAL_DAILY_LIMIT_REACHED";
+  constructor(public readonly usage: TrialUsage) {
+    super("Today's Friend Trial is used up. It resets at 12:00 PM ET, or you can switch to your own AI provider.");
+    this.name = "TrialDailyLimitError";
+  }
+}
+
+export function isTrialDailyLimitError(error: unknown): error is TrialDailyLimitError {
+  return error instanceof TrialDailyLimitError ||
+    (!!error && typeof error === "object" && (error as { code?: string }).code === "TRIAL_DAILY_LIMIT_REACHED");
+}
+
+export function trialUsageIsExhausted(usage: TrialUsage | null = cachedTrialUsage): boolean {
+  return !!usage && usage.remaining <= 0 && Date.parse(usage.resetAt) > Date.now();
+}
+
+/** Shared guard for autonomous Trial work; manual calls still get an actionable error. */
+export function shouldPauseTrialAutomation(activeProvider: string, usage: TrialUsage | null): boolean {
+  return activeProvider === TRIAL_PROVIDER && trialUsageIsExhausted(usage);
+}
+
+export function trialResetRetryAt(usage: TrialUsage | null = cachedTrialUsage): number {
+  return usage ? Math.max(Date.now() + 1_000, Date.parse(usage.resetAt) + 1_000) : Date.now() + 60_000;
+}
+
+export type TrialUsageTone = "healthy" | "watch" | "low" | "critical" | "empty";
+
+/** Presentation threshold shared by the compact mobile allowance meter and tests. */
+export function getTrialUsageTone(remaining: number): TrialUsageTone {
+  if (remaining <= 0) return "empty";
+  if (remaining <= 5) return "critical";
+  if (remaining <= 10) return "low";
+  if (remaining <= 20) return "watch";
+  return "healthy";
 }
 
 // ── Trial fetch override ──────────────────────────────────────────────────────
@@ -219,6 +340,19 @@ export function createTrialFetch(): typeof fetch {
       throw new Error("Friend Trial session expired. Please reactivate Friend Trial.");
     }
 
+    if (cachedTrialUsage && Date.parse(cachedTrialUsage.resetAt) <= Date.now()) {
+      publishTrialUsage(null);
+      try {
+        await fetchTrialUsage(workerUrl);
+      } catch {
+        // The server remains authoritative. A refresh transport failure must
+        // not invent allowance; proceed and let /trial/chat enforce safely.
+      }
+    }
+    if (trialUsageIsExhausted()) {
+      throw new TrialDailyLimitError(cachedTrialUsage!);
+    }
+
     // Parse the OpenAI-format body. Forward multimodal content unchanged when
     // the Worker supports vision; otherwise strip images (text-only trial).
     const rawBody = init?.body ? JSON.parse(init.body as string) : {};
@@ -234,6 +368,17 @@ export function createTrialFetch(): typeof fetch {
       },
       body: JSON.stringify(forwardedBody),
     });
+
+    const headerUsage = parseTrialUsageHeaders(resp.headers);
+    if (headerUsage) publishTrialUsage(headerUsage);
+
+    if (resp.status === 429) {
+      const data = await resp.clone().json().catch(() => null) as { error?: { code?: string }; usage?: unknown } | null;
+      if (data?.error?.code === "TRIAL_DAILY_LIMIT_REACHED" && isTrialUsage(data.usage)) {
+        publishTrialUsage(data.usage);
+        throw new TrialDailyLimitError(data.usage);
+      }
+    }
 
     // On 401, clear the stale session so the UI can offer reactivation.
     if (resp.status === 401) {

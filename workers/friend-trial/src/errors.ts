@@ -14,6 +14,7 @@ const SAFE_MESSAGES: Record<TrialErrorCode, string> = {
   TURNSTILE_FAILED: "Human verification failed. Please try again.",
   INVITE_INVALID: "The invite code is not valid.",
   RATE_LIMITED: "Too many requests. Please slow down and try again shortly.",
+  TRIAL_DAILY_LIMIT_REACHED: "Today's Friend Trial allowance has been used.",
   INVALID_REQUEST: "The request could not be processed.",
   PAYLOAD_TOO_LARGE: "The request payload is too large.",
   UPSTREAM_RATE_LIMITED: "Friend Trial is temporarily busy. Try again shortly.",
@@ -25,7 +26,7 @@ const SAFE_MESSAGES: Record<TrialErrorCode, string> = {
 export function errorResponse(
   code: TrialErrorCode,
   status: number,
-  opts?: { retryAfterSeconds?: number; origin?: string | null },
+  opts?: { retryAfterSeconds?: number; origin?: string | null; usage?: import("./types").TrialUsage },
 ): Response {
   const body: TrialErrorBody = {
     ok: false,
@@ -37,6 +38,7 @@ export function errorResponse(
         : {}),
     },
   };
+  if (opts?.usage) body.usage = opts.usage;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",

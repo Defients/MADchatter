@@ -71,6 +71,9 @@ import { refineSuggestion, visionRequest } from "../lib/ai";
 import { resolveCurrentR34lAdaptation } from "../lib/r34lAdaptation";
 import { R34lInlineDetails } from "./R34lReadout";
 import { MobileIntentRange } from "./MobileIntentRange";
+import { MobileWelcomeOverlay } from "./MobileWelcomeOverlay";
+import { MobileFriendTrialCard } from "./MobileFriendTrialCard";
+import { acknowledgeMobileWelcome, hasSeenMobileWelcome } from "../lib/mobileOnboarding";
 import { perception, classifyVisionError } from "../lib/perceptionLiveness";
 import { fetchStreamThumbnailDataUrl } from "../lib/streamThumbnail";
 import { cn } from "../lib/utils";
@@ -143,6 +146,9 @@ export function CoreMobileWorkspace(props: {
   setVisualCaptureInterval: (v: number) => void;
 }) {
   const [mobileTab, setMobileTab] = useState<"context" | "forge" | "tuning">("forge");
+  const [mobileWelcomeOpen, setMobileWelcomeOpen] = useState(() => !hasSeenMobileWelcome());
+  const [tuningOnboardingRequest, setTuningOnboardingRequest] = useState(0);
+  const tuningScrollRef = useRef<HTMLDivElement>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
   // null follows the newest entry. A key pins the page the operator chose, so
@@ -305,6 +311,19 @@ export function CoreMobileWorkspace(props: {
     });
   }, []);
 
+  const dismissWelcomeToTuning = useCallback(() => {
+    acknowledgeMobileWelcome();
+    setMobileWelcomeOpen(false);
+    setMobileTab("tuning");
+    // A first-run handoff should expose providers even if this browser tab had
+    // previously retained the session-scoped disclosure as collapsed.
+    try { sessionStorage.setItem("core-mobile-provider-collapsed", "0"); } catch { /* private mode */ }
+    setTuningOnboardingRequest((request) => request + 1);
+    requestAnimationFrame(() => {
+      if (tuningScrollRef.current) tuningScrollRef.current.scrollTop = 0;
+    });
+  }, []);
+
   return (
     <div className="flex flex-col h-dvh w-full bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-10 select-text">
       {/* ─── Hidden TheForge loop instance to handle forge-trigger and auto-send events ─── */}
@@ -432,6 +451,8 @@ export function CoreMobileWorkspace(props: {
             activeUser={props.activeUser}
             activeLogin={props.activeLogin}
             activeLogout={props.activeLogout}
+            scrollRef={tuningScrollRef}
+            onboardingRequest={tuningOnboardingRequest}
           />
         </div>
       </main>
@@ -741,6 +762,10 @@ export function CoreMobileWorkspace(props: {
           <span className="text-[11px]">Tuning</span>
         </button>
       </nav>
+
+      {mobileWelcomeOpen && (
+        <MobileWelcomeOverlay onDismissToTuning={dismissWelcomeToTuning} />
+      )}
     </div>
   );
 }
@@ -2398,6 +2423,8 @@ function MobileTuningTab(props: {
   activeUser: CoreMobileWorkspaceProps["activeUser"];
   activeLogin: () => void;
   activeLogout: () => void;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  onboardingRequest: number;
 }) {
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
@@ -2437,6 +2464,12 @@ function MobileTuningTab(props: {
     catch { /* private mode */ }
   }, [providerSectionExpanded]);
 
+  useEffect(() => {
+    if (props.onboardingRequest <= 0) return;
+    setProviderSectionExpanded(true);
+    try { sessionStorage.setItem("core-mobile-provider-collapsed", "0"); } catch { /* private mode */ }
+  }, [props.onboardingRequest]);
+
   const toggleProviderSection = () => {
     if (providerSectionExpanded) {
       const collapsed = collapseMobileProviderDisclosure();
@@ -2475,7 +2508,7 @@ function MobileTuningTab(props: {
   };
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-3.5 font-sans pb-8">
+    <div ref={props.scrollRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-3.5 font-sans pb-8">
       {/* ─── 1. Platform & Channel Connection ─── */}
       <div className="p-3 rounded-xl bg-[#121218] border border-white/5 space-y-2.5">
         <div className="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center gap-1.5">
@@ -2569,6 +2602,7 @@ function MobileTuningTab(props: {
 
         {providerSectionExpanded && (
           <div className="space-y-3">
+          <MobileFriendTrialCard />
           {/* Notice if Ollama was active from desktop */}
           {activeProvider === "ollama" && (
           <div className="p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 flex items-start gap-2 text-xs">

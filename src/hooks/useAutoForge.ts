@@ -12,6 +12,7 @@ import { playMessageSound } from "../lib/sound";
 import { speakMessage } from "../lib/tts";
 import { playSfx } from "../lib/sfx";
 import { getActiveProvider, getApiKey } from "../lib/keys";
+import { isTrialDailyLimitError, shouldPauseTrialAutomation, trialResetRetryAt } from "../lib/trial";
 import { formatChatLog } from "../lib/chatUtils";
 import { retrieveRelevantMemories, formatMemoryContext, formatDirectorNotesContext } from "../lib/memoryRetrieval";
 import { boostMemory, boostJoke } from "../lib/memoryEngine";
@@ -234,6 +235,11 @@ export function useAutoForge() {
     const guard = createAutoForgeExecutionGuard(() => !selectMultiBotActive(useAppStore.getState()));
     try {
       const activeProvider = getActiveProvider();
+
+      if (shouldPauseTrialAutomation(activeProvider, live.trialUsage)) {
+        setAutoForgeNextActionMs(trialResetRetryAt(live.trialUsage));
+        return;
+      }
 
       // Only the user-selected provider is used — no cross-provider fallback.
       // If the selected provider isn't configured, skip quietly rather than
@@ -1436,7 +1442,9 @@ export function useAutoForge() {
     } catch (e: any) {
       const errMsg = e?.message || 'Unknown error';
       const isMissingKey = errMsg.includes('No API key configured');
-      if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
+      if (isTrialDailyLimitError(e)) {
+        setAutoForgeNextActionMs(trialResetRetryAt(e.usage));
+      } else if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
         // Intentional yield or queue timeout — not a failure. The scheduler
         // either preempted/cancelled this work for higher-priority traffic,
         // or the request waited too long for the Ollama slot (too many bots
@@ -1484,6 +1492,7 @@ export function useAutoForge() {
   const checkMentionsOnly = async () => {
     const state = useAppStore.getState();
     if (!state.smartRepliesEnabled || !canGenerateSmartReplies()) return;
+    if (shouldPauseTrialAutomation(getActiveProvider(), state.trialUsage)) return;
 
     const botUsername = state.platform === "kick"
       ? (getKickSession()?.username || "").toLowerCase()

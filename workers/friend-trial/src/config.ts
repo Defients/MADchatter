@@ -14,6 +14,7 @@ export interface ParsedConfig {
   visionModel: string;
   maxOutputTokens: number;
   sessionTtlSeconds: number;
+  mobileDailyLimit: number;
   requireInvite: boolean;
   allowedOrigins: string[];
   turnstileSiteKey: string;
@@ -92,6 +93,7 @@ export function parseConfig(env: TrialEnv): ConfigValidation {
     visionModel,
     maxOutputTokens: parseMaxTokens(env.TRIAL_MAX_OUTPUT_TOKENS),
     sessionTtlSeconds: parseTtl(env.TRIAL_SESSION_TTL_SECONDS),
+    mobileDailyLimit: parseDailyLimit(env.TRIAL_MOBILE_DAILY_LIMIT),
     requireInvite: parseBool(env.TRIAL_REQUIRE_INVITE),
     allowedOrigins,
     turnstileSiteKey: (env.TURNSTILE_SITE_KEY ?? "").trim(),
@@ -117,6 +119,12 @@ function parseTtl(v: string | undefined): number {
   return Math.min(n, 24 * 60 * 60); // cap at 24h
 }
 
+function parseDailyLimit(v: string | undefined): number {
+  const n = parseInt((v ?? "").trim(), 10);
+  if (!Number.isFinite(n) || n < 1) return 30;
+  return Math.min(n, 10_000);
+}
+
 /** Build the public status response body from parsed config. */
 export function buildStatusBody(c: ParsedConfig, available: boolean, reason: string | null) {
   return {
@@ -127,6 +135,7 @@ export function buildStatusBody(c: ParsedConfig, available: boolean, reason: str
       ...(c.endsAtIso ? { endsAt: c.endsAtIso } : {}),
       requiresTurnstile: true,
       requiresInviteCode: c.requireInvite,
+      mobileDailyLimit: c.mobileDailyLimit,
       ...(c.model && available ? { modelLabel: c.model } : {}),
       ...(c.visionModel && available ? { supportsVision: true, visionModelLabel: c.visionModel } : {}),
     },

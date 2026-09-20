@@ -38,6 +38,8 @@ export interface TrialVars {
   TRIAL_MAX_OUTPUT_TOKENS: string;
   /** Trial session lifetime in seconds. */
   TRIAL_SESSION_TTL_SECONDS: string;
+  /** Server-authoritative daily allowance for mobile Friend Trial sessions. */
+  TRIAL_MOBILE_DAILY_LIMIT: string;
   /** "true" requires an invite code during session creation. */
   TRIAL_REQUIRE_INVITE: string;
   /** Comma-separated exact origin allowlist (no wildcards in production). */
@@ -58,7 +60,12 @@ export interface TrialRateLimits {
   TRIAL_INFERENCE_IP: RateLimit;
 }
 
-export interface TrialEnv extends TrialSecrets, TrialVars, TrialRateLimits {}
+export interface TrialDurableObjects {
+  /** Atomic per-anonymous-client usage ledger. */
+  TRIAL_USAGE: DurableObjectNamespace;
+}
+
+export interface TrialEnv extends TrialSecrets, TrialVars, TrialRateLimits, TrialDurableObjects {}
 
 /** Stable, user-facing error codes. Never relay upstream diagnostics. */
 export type TrialErrorCode =
@@ -71,6 +78,7 @@ export type TrialErrorCode =
   | "TURNSTILE_FAILED"
   | "INVITE_INVALID"
   | "RATE_LIMITED"
+  | "TRIAL_DAILY_LIMIT_REACHED"
   | "INVALID_REQUEST"
   | "PAYLOAD_TOO_LARGE"
   | "UPSTREAM_RATE_LIMITED"
@@ -85,7 +93,19 @@ export interface TrialErrorBody {
     message: string;
     retryAfterSeconds?: number;
   };
+  usage?: TrialUsage;
 }
+
+export interface TrialUsage {
+  used: number;
+  remaining: number;
+  limit: number;
+  resetAt: string;
+}
+
+export type TrialUsageResponse =
+  | { ok: true; limited: true; usage: TrialUsage }
+  | { ok: true; limited: false; usage: null };
 
 /** Public status response (GET /trial/status). */
 export interface TrialStatusResponse {
@@ -103,6 +123,8 @@ export interface TrialStatusResponse {
     supportsVision?: boolean;
     /** Optional user-facing vision model label. */
     visionModelLabel?: string;
+    /** Generic product policy only; never an individual's balance. */
+    mobileDailyLimit?: number;
   };
 }
 
@@ -119,6 +141,10 @@ export interface TrialSessionResponse {
 export interface SessionPayload {
   v: number;
   sid: string;
+  /** Opaque keyed hash of the anonymous installation id. */
+  qid: string;
+  /** Trusted server-derived product classification. */
+  clientClass: "mobile" | "other";
   iat: number;
   exp: number;
 }

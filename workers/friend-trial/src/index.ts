@@ -4,6 +4,7 @@
  * Routes:
  *   GET  /trial/status   — public, non-sensitive trial availability
  *   POST /trial/session   — Turnstile (+ optional invite) → signed session
+ *   GET  /trial/usage     — authenticated authoritative mobile allowance
  *   POST /trial/chat       — validated, rate-limited inference via Groq
  *
  * Security model:
@@ -19,12 +20,17 @@ import { checkOrigin, handlePreflight, withCors } from "./cors";
 import { errorResponse } from "./errors";
 import {
   createSessionToken,
+  classifyTrialClient,
+  deriveQuotaId,
   verifySessionToken,
   sessionHashPrefix,
 } from "./session";
 import { verifyTurnstile } from "./turnstile";
 import { callUpstream, getClientIp, validateChatRequest } from "./chat";
-import type { TrialEnv, TrialStatusResponse, TrialSessionResponse } from "./types";
+import { TRIAL_TEXT_COST, TRIAL_VISION_COST } from "./quota";
+import type { TrialEnv, TrialStatusResponse, TrialSessionResponse, TrialUsage, TrialUsageResponse } from "./types";
+
+export { TrialUsageDurableObject } from "./usageDurableObject";
 
 export default {
   async fetch(request: Request, env: TrialEnv): Promise<Response> {
@@ -48,6 +54,9 @@ export default {
     }
     if (url.pathname === "/trial/session" && request.method === "POST") {
       return handleSession(request, env, config, available, reason, requestId);
+    }
+    if (url.pathname === "/trial/usage" && request.method === "GET") {
+      return handleUsage(request, env, config, requestId);
     }
     if (url.pathname === "/trial/chat" && request.method === "POST") {
       return handleChat(request, env, config, available, reason, requestId);
@@ -123,7 +132,7 @@ async function handleSession(
   }
 
   // Parse body.
-  let body: { turnstileToken?: string; inviteCode?: string };
+  let body: { turnstileToken?: string; inviteCode?: string; clientId?: string };
   try {
     const raw = await request.text();
     body = raw ? JSON.parse(raw) : {};
@@ -131,6 +140,10 @@ async function handleSession(
     return withCors(errorResponse("INVALID_REQUEST", 400, { origin }), origin);
   }
   if (!body || typeof body !== "object") {
+    return withCors(errorResponse("INVALID_REQUEST", 400, { origin }), origin);
+  }
+  const clientId = typeof body.clientId === "string" ? body.clientId.trim().toLowerCase() : "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(clientId)) {
     return withCors(errorResponse("INVALID_REQUEST", 400, { origin }), origin);
   }
 
@@ -154,14 +167,53 @@ async function handleSession(
   }
 
   // Create signed session token.
-  const { token, expiresAt } = await createSessionToken(env.TRIAL_SESSION_SECRET, config.sessionTtlSeconds);
+  const qid = await deriveQuotaId(env.TRIAL_SESSION_SECRET, clientId);
+  const clientClass = classifyTrialClient(request.headers.get("User-Agent"));
+  const { token, expiresAt } = await createSessionToken(
+    env.TRIAL_SESSION_SECRET,
+    config.sessionTtlSeconds,
+    { qid, clientClass },
+  );
   const resBody: TrialSessionResponse = { ok: true, session: { token, expiresAt: Math.floor(expiresAt / 1000) } };
   console.log(JSON.stringify({
-    requestId, route: "trial/session", status: 200, ipHash: hashPrefix(ipKey),
+    requestId, route: "trial/session", status: 200, ipHash: hashPrefix(ipKey), clientClass,
   }));
   return withCors(new Response(JSON.stringify(resBody), {
     status: 200,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Request-ID": requestId },
+  }), origin);
+}
+
+// ── GET /trial/usage ────────────────────────────────────────────────────────
+async function handleUsage(
+  request: Request,
+  env: TrialEnv,
+  config: ParsedConfig | null,
+  requestId: string,
+): Promise<Response> {
+  if (!config) return errorResponse("TRIAL_DISABLED", 503);
+  const origin = checkOrigin(request, config);
+  if (!origin) return withCors(errorResponse("ORIGIN_FORBIDDEN", 403), request.headers.get("Origin") || "");
+  const session = await verifyBearerSession(request, env);
+  if (!session.ok) return withCors(errorResponse(session.code, 401, { origin }), origin);
+
+  let body: TrialUsageResponse;
+  if (session.payload.clientClass !== "mobile") {
+    body = { ok: true, limited: false, usage: null };
+  } else {
+    try {
+      body = {
+        ok: true,
+        limited: true,
+        usage: await getUsage(env, session.payload.qid, config.mobileDailyLimit),
+      };
+    } catch (error) {
+      console.error(JSON.stringify({ requestId, route: "trial/usage", error: safeError(error) }));
+      return withCors(errorResponse("INTERNAL_ERROR", 503, { origin }), origin);
+    }
+  }
+  return withCors(Response.json(body, {
+    headers: { "Cache-Control": "no-store", "X-Request-ID": requestId },
   }), origin);
 }
 
@@ -184,9 +236,7 @@ async function handleChat(
   }
 
   // Session verification (Authorization: Bearer <token>).
-  const auth = request.headers.get("Authorization") || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  const session = await verifySessionToken(env.TRIAL_SESSION_SECRET, token);
+  const session = await verifyBearerSession(request, env);
   if (!session.ok) {
     return withCors(errorResponse(session.code, 401, { origin }), origin);
   }
@@ -209,9 +259,36 @@ async function handleChat(
     return withCors(errorResponse(validation.code, validation.status, { origin }), origin);
   }
 
+  let reservation: { reservationId: string; usage: TrialUsage } | null = null;
+  if (session.payload.clientClass === "mobile") {
+    const cost = validation.hasImage ? TRIAL_VISION_COST : TRIAL_TEXT_COST;
+    try {
+      const reserved = await reserveUsage(env, session.payload.qid, cost, config.mobileDailyLimit);
+      if (!reserved.allowed || !reserved.reservationId) {
+        const retryAfterSeconds = Math.max(1, Math.ceil((Date.parse(reserved.usage.resetAt) - Date.now()) / 1000));
+        return withCors(errorResponse("TRIAL_DAILY_LIMIT_REACHED", 429, {
+          origin,
+          retryAfterSeconds,
+          usage: reserved.usage,
+        }), origin);
+      }
+      reservation = { reservationId: reserved.reservationId, usage: reserved.usage };
+    } catch (error) {
+      console.error(JSON.stringify({ requestId, route: "trial/chat", error: safeError(error), stage: "reserve" }));
+      return withCors(errorResponse("INTERNAL_ERROR", 503, { origin }), origin);
+    }
+  }
+
   // Call upstream Groq.
   const upstream = await callUpstream(env, validation.payload);
   if (!upstream.ok) {
+    if (reservation) {
+      try {
+        await finishUsage(env, session.payload.qid, reservation.reservationId, config.mobileDailyLimit, true);
+      } catch (error) {
+        console.error(JSON.stringify({ requestId, route: "trial/chat", error: safeError(error), stage: "refund" }));
+      }
+    }
     console.log(JSON.stringify({
       requestId, route: "trial/chat", status: upstream.status, sid,
       error: upstream.code, ipHash: hashPrefix(ipKey),
@@ -225,6 +302,23 @@ async function handleChat(
   // Pass the OpenAI-compatible response body through. Sanitize headers so no
   // upstream auth/diagnostic material leaks.
   const upstreamBody = await upstream.response.text();
+  let finalUsage = reservation?.usage ?? null;
+  if (reservation) {
+    try {
+      finalUsage = await finishUsage(
+        env,
+        session.payload.qid,
+        reservation.reservationId,
+        config.mobileDailyLimit,
+        false,
+      );
+    } catch (error) {
+      // Reservation already counted the successful inference. A commit only
+      // clears its refund lease; preserve the successful OpenAI response and
+      // use the authoritative reservation result in the headers.
+      console.error(JSON.stringify({ requestId, route: "trial/chat", error: safeError(error), stage: "commit" }));
+    }
+  }
   console.log(JSON.stringify({
     requestId, route: "trial/chat", status: 200, sid, ipHash: hashPrefix(ipKey),
   }));
@@ -234,6 +328,67 @@ async function handleChat(
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "X-Request-ID": requestId,
+      ...(finalUsage ? usageHeaders(finalUsage) : {}),
     },
   }), origin);
+}
+
+type VerifiedSession = Awaited<ReturnType<typeof verifySessionToken>>;
+
+async function verifyBearerSession(request: Request, env: TrialEnv): Promise<VerifiedSession> {
+  const auth = request.headers.get("Authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  return verifySessionToken(env.TRIAL_SESSION_SECRET, token);
+}
+
+function usageStub(env: TrialEnv, qid: string): DurableObjectStub {
+  const id = env.TRIAL_USAGE.idFromName(qid);
+  return env.TRIAL_USAGE.get(id);
+}
+
+async function durableJson<T>(response: Response): Promise<T> {
+  if (!response.ok) throw new Error(`usage store returned ${response.status}`);
+  return response.json<T>();
+}
+
+async function getUsage(env: TrialEnv, qid: string, limit: number): Promise<TrialUsage> {
+  const response = await usageStub(env, qid).fetch(`https://trial-usage/usage?limit=${limit}`);
+  return (await durableJson<{ ok: true; usage: TrialUsage }>(response)).usage;
+}
+
+async function reserveUsage(env: TrialEnv, qid: string, cost: number, limit: number) {
+  const response = await usageStub(env, qid).fetch("https://trial-usage/reserve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cost, limit }),
+  });
+  return durableJson<{ allowed: boolean; reservationId?: string; usage: TrialUsage }>(response);
+}
+
+async function finishUsage(
+  env: TrialEnv,
+  qid: string,
+  reservationId: string,
+  limit: number,
+  refund: boolean,
+): Promise<TrialUsage> {
+  const response = await usageStub(env, qid).fetch(`https://trial-usage/${refund ? "refund" : "commit"}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reservationId, limit }),
+  });
+  return (await durableJson<{ ok: true; usage: TrialUsage }>(response)).usage;
+}
+
+function usageHeaders(usage: TrialUsage): Record<string, string> {
+  return {
+    "X-MADchatter-Trial-Used": String(usage.used),
+    "X-MADchatter-Trial-Remaining": String(usage.remaining),
+    "X-MADchatter-Trial-Limit": String(usage.limit),
+    "X-MADchatter-Trial-Reset-At": usage.resetAt,
+  };
+}
+
+function safeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

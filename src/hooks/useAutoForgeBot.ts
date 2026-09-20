@@ -9,6 +9,7 @@ import { botCoordinator, type BotCandidate } from "../lib/botCoordinator";
 import { playSfx } from "../lib/sfx";
 import { speakMessage } from "../lib/tts";
 import { getActiveProvider, getApiKey } from "../lib/keys";
+import { isTrialDailyLimitError, shouldPauseTrialAutomation, trialResetRetryAt } from "../lib/trial";
 import { getTwitchSession } from "../lib/twitch";
 import { getKickSession } from "../lib/kick";
 import { getJoystickSession } from "../lib/joystick";
@@ -191,6 +192,10 @@ export function useAutoForgeBot(botId: string) {
     });
     try {
       const activeProvider = getActiveProvider();
+      if (shouldPauseTrialAutomation(activeProvider, store.trialUsage)) {
+        store.setBotAutoForgeNextActionMs(botId, trialResetRetryAt(store.trialUsage));
+        return;
+      }
       // Only the user-selected provider is used — no cross-provider fallback.
       // If the selected provider isn't configured, skip quietly rather than
       // silently rerouting to another provider that happens to have a key.
@@ -1591,7 +1596,9 @@ export function useAutoForgeBot(botId: string) {
       store.setBotAutoForgeNextActionMs(botId, nowMs + nextMin * 60 * 1000);
     } catch (e: any) {
       const errMsg = e?.message || "Unknown error";
-      if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
+      if (isTrialDailyLimitError(e)) {
+        store.setBotAutoForgeNextActionMs(botId, trialResetRetryAt(e.usage));
+      } else if (isSchedulerCancellation(e) || isQueueTimeout(e)) {
         // Intentional yield or queue timeout — not a failure. The scheduler
         // either preempted/cancelled this work for higher-priority traffic,
         // or the request waited too long for the Ollama slot (too many bots
@@ -1630,6 +1637,7 @@ export function useAutoForgeBot(botId: string) {
   const checkBotMentionsOnly = async () => {
     const store = useAppStore.getState();
     if (!store.smartRepliesEnabled || !canGenerateSmartReplies()) return;
+    if (shouldPauseTrialAutomation(getActiveProvider(), store.trialUsage)) return;
     const bot = store.bots.find((b) => b.id === botId);
     if (!bot || !bot.active || !bot.session) return;
 

@@ -27,6 +27,7 @@ let groqResponse: { status: number; body: unknown } = {
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
   },
 };
+let groqCalls = 0;
 
 // Override global fetch for the worker's upstream calls.
 const originalFetch = globalThis.fetch;
@@ -38,6 +39,10 @@ globalThis.fetch = ((input: any, init?: any) => {
     })) as any;
   }
   if (url.includes("api.groq.com")) {
+    groqCalls++;
+    if (groqResponse.status === -1) {
+      return Promise.reject(Object.assign(new Error("timed out"), { name: "AbortError" })) as any;
+    }
     if (groqResponse.status === 429) {
       return Promise.resolve(new Response("rate limited", { status: 429, headers: { "retry-after": "30" } })) as any;
     }
@@ -65,6 +70,45 @@ function makeRateLimit(alwaysSucceed = true, failAfter = Infinity): RateLimit {
   } as any;
 }
 
+class MemoryDurableStorage {
+  private values = new Map<string, unknown>();
+  private tail: Promise<unknown> = Promise.resolve();
+
+  transaction<T>(callback: (txn: DurableObjectTransaction) => Promise<T>): Promise<T> {
+    const run = this.tail.then(() => callback({
+      get: async <V>(key: string) => this.values.get(key) as V | undefined,
+      put: async (key: string, value: unknown) => { this.values.set(key, structuredClone(value)); },
+    } as unknown as DurableObjectTransaction));
+    this.tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+}
+
+function makeUsageNamespace(options: { fail?: boolean } = {}) {
+  const objects = new Map<string, { fetch(request: RequestInfo | URL, init?: RequestInit): Promise<Response> }>();
+  return {
+    idFromName(name: string) { return { toString: () => name }; },
+    get(id: { toString(): string }) {
+      const key = id.toString();
+      if (!objects.has(key)) {
+        if (options.fail) {
+          objects.set(key, { fetch: async () => { throw new Error("usage store unavailable"); } });
+        } else {
+          const storage = new MemoryDurableStorage();
+          objects.set(key, {
+            fetch: async (request, init) => {
+              const { TrialUsageDurableObject } = await import("../src/usageDurableObject.ts");
+              const instance = new TrialUsageDurableObject({ storage } as unknown as DurableObjectState, {} as any);
+              return instance.fetch(request instanceof Request ? request : new Request(request, init));
+            },
+          });
+        }
+      }
+      return objects.get(key)!;
+    },
+  };
+}
+
 // Build a mock env with all required bindings.
 function makeEnv(overrides: Record<string, any> = {}): any {
   return {
@@ -77,6 +121,7 @@ function makeEnv(overrides: Record<string, any> = {}): any {
     TRIAL_MODEL: "openai/gpt-oss-120b",
     TRIAL_MAX_OUTPUT_TOKENS: "2048",
     TRIAL_SESSION_TTL_SECONDS: "3600",
+    TRIAL_MOBILE_DAILY_LIMIT: "30",
     TRIAL_REQUIRE_INVITE: "false",
     ALLOWED_ORIGINS: "https://madchatter.fun",
     TURNSTILE_SITE_KEY: "test-site-key",
@@ -84,16 +129,24 @@ function makeEnv(overrides: Record<string, any> = {}): any {
     TRIAL_SESSION_BOOTSTRAP: makeRateLimit(),
     TRIAL_INFERENCE_SESSION: makeRateLimit(),
     TRIAL_INFERENCE_IP: makeRateLimit(),
+    TRIAL_USAGE: makeUsageNamespace(),
     ...overrides,
   };
 }
 
 function makeRequest(method: string, path: string, opts: { body?: any; headers?: Record<string, string> } = {}): Request {
   const url = `https://friend-trial.example.com${path}`;
-  const headers: Record<string, string> = { Origin: "https://madchatter.fun", ...(opts.headers || {}) };
+  const headers: Record<string, string> = {
+    Origin: "https://madchatter.fun",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    ...(opts.headers || {}),
+  };
   const init: RequestInit = { method, headers };
   if (opts.body !== undefined) {
-    init.body = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
+    const body = path === "/trial/session" && opts.body && typeof opts.body === "object" && !Array.isArray(opts.body) && !("clientId" in opts.body)
+      ? { ...opts.body, clientId: "11111111-1111-4111-8111-111111111111" }
+      : opts.body;
+    init.body = typeof body === "string" ? body : JSON.stringify(body);
     if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
   }
   return new Request(url, init);
@@ -126,23 +179,42 @@ async function test(name: string, fn: () => Promise<void>): Promise<void> {
 
 async function makeValidToken(env: any): Promise<string> {
   const { createSessionToken } = await import("../src/session.ts");
-  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, 3600);
+  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, 3600, { qid: "test_quota_identity_abcdefghijklmnopqrstuvwxyz123", clientClass: "other" });
   return token;
 }
 
 async function makeExpiredToken(env: any): Promise<string> {
   const { createSessionToken } = await import("../src/session.ts");
-  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, -10);
+  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, -10, { qid: "test_quota_identity_abcdefghijklmnopqrstuvwxyz123", clientClass: "other" });
   return token;
 }
 
 async function makeTamperedToken(env: any): Promise<string> {
   const { createSessionToken } = await import("../src/session.ts");
-  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, 3600);
+  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, 3600, { qid: "test_quota_identity_abcdefghijklmnopqrstuvwxyz123", clientClass: "other" });
   // Tamper with the payload portion.
   const [payload, sig] = token.split(".");
   const tampered = payload.slice(0, -4) + "AAAA";
   return `${tampered}.${sig}`;
+}
+
+async function makeMobileToken(env: any, qid = "mobile_quota_identity_abcdefghijklmnopqrstuvwxyz12"): Promise<string> {
+  const { createSessionToken } = await import("../src/session.ts");
+  const { token } = await createSessionToken(env.TRIAL_SESSION_SECRET, 3600, { qid, clientClass: "mobile" });
+  return token;
+}
+
+async function callUsageObject(
+  instance: { fetch(request: Request): Promise<Response> },
+  path: string,
+  body?: Record<string, unknown>,
+) {
+  const response = await instance.fetch(new Request(`https://trial-usage${path}`, {
+    method: body ? "POST" : "GET",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  }));
+  return { status: response.status, body: await response.json() as any };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -640,6 +712,272 @@ async function main() {
     }));
     assert.strictEqual(res.headers.get("Cache-Control"), "no-store");
     assert.ok(res.headers.get("X-Request-ID"));
+  });
+
+  // Daily quota window — noon America/New_York, including DST boundaries.
+  await test("quota window uses winter noon ET (17:00 UTC)", async () => {
+    const { getTrialQuotaWindow } = await import("../src/quota.ts");
+    const window = getTrialQuotaWindow(Date.parse("2026-01-15T16:00:00Z")); // 11:00 ET
+    assert.strictEqual(window.startsAt, "2026-01-14T17:00:00.000Z");
+    assert.strictEqual(window.resetAt, "2026-01-15T17:00:00.000Z");
+  });
+
+  await test("quota window uses summer noon ET (16:00 UTC)", async () => {
+    const { getTrialQuotaWindow } = await import("../src/quota.ts");
+    const window = getTrialQuotaWindow(Date.parse("2026-07-15T15:00:00Z")); // 11:00 ET
+    assert.strictEqual(window.startsAt, "2026-07-14T16:00:00.000Z");
+    assert.strictEqual(window.resetAt, "2026-07-15T16:00:00.000Z");
+  });
+
+  await test("spring-forward quota day is noon-to-noon and 23 hours", async () => {
+    const { getTrialQuotaWindow } = await import("../src/quota.ts");
+    const window = getTrialQuotaWindow(Date.parse("2026-03-08T14:00:00Z"));
+    assert.strictEqual(window.startsAt, "2026-03-07T17:00:00.000Z");
+    assert.strictEqual(window.resetAt, "2026-03-08T16:00:00.000Z");
+    assert.strictEqual(Date.parse(window.resetAt) - Date.parse(window.startsAt), 23 * 60 * 60 * 1000);
+  });
+
+  await test("fall-back quota day is noon-to-noon and 25 hours", async () => {
+    const { getTrialQuotaWindow } = await import("../src/quota.ts");
+    const window = getTrialQuotaWindow(Date.parse("2026-11-01T15:00:00Z"));
+    assert.strictEqual(window.startsAt, "2026-10-31T16:00:00.000Z");
+    assert.strictEqual(window.resetAt, "2026-11-01T17:00:00.000Z");
+    assert.strictEqual(Date.parse(window.resetAt) - Date.parse(window.startsAt), 25 * 60 * 60 * 1000);
+  });
+
+  // Identity + signed classification.
+  await test("same client id creates new sessions with the same opaque quota identity", async () => {
+    const env = makeEnv();
+    const clientId = "22222222-2222-4222-8222-222222222222";
+    const request = () => callWorker(env, makeRequest("POST", "/trial/session", {
+      body: { turnstileToken: "valid", clientId },
+      headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile" },
+    }));
+    const first = await request();
+    const second = await request();
+    const { verifySessionToken } = await import("../src/session.ts");
+    const a = await verifySessionToken(env.TRIAL_SESSION_SECRET, first.body.session.token);
+    const b = await verifySessionToken(env.TRIAL_SESSION_SECRET, second.body.session.token);
+    assert.ok(a.ok && b.ok);
+    if (!a.ok || !b.ok) throw new Error("session verification failed");
+    assert.strictEqual(a.payload.clientClass, "mobile");
+    assert.strictEqual(a.payload.qid, b.payload.qid);
+    assert.notStrictEqual(a.payload.sid, b.payload.sid);
+    assert.ok(!JSON.stringify(first.body).includes(clientId), "raw client id must not leak in session response");
+    assert.ok(!first.body.session.token.includes(clientId), "raw client id must not appear in token text");
+  });
+
+  await test("different client ids resolve to different quota identities", async () => {
+    const { deriveQuotaId } = await import("../src/session.ts");
+    const secret = "test-session-secret-long-enough-for-hmac";
+    const a = await deriveQuotaId(secret, "33333333-3333-4333-8333-333333333333");
+    const b = await deriveQuotaId(secret, "44444444-4444-4444-8444-444444444444");
+    assert.notStrictEqual(a, b);
+  });
+
+  await test("missing or malformed client id is rejected", async () => {
+    const env = makeEnv();
+    const res = await callWorker(env, makeRequest("POST", "/trial/session", {
+      body: { turnstileToken: "valid", clientId: "not-a-uuid" },
+    }));
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.error.code, "INVALID_REQUEST");
+  });
+
+  // Atomic ledger behavior.
+  await test("two concurrent last-unit reservations cannot both pass", async () => {
+    const { TrialUsageDurableObject } = await import("../src/usageDurableObject.ts");
+    const instance = new TrialUsageDurableObject({ storage: new MemoryDurableStorage() } as any, {} as any);
+    for (let i = 0; i < 29; i += 1) {
+      const reservation = await callUsageObject(instance, "/reserve", { cost: 1, limit: 30 });
+      await callUsageObject(instance, "/commit", { reservationId: reservation.body.reservationId, limit: 30 });
+    }
+    const [a, b] = await Promise.all([
+      callUsageObject(instance, "/reserve", { cost: 1, limit: 30 }),
+      callUsageObject(instance, "/reserve", { cost: 1, limit: 30 }),
+    ]);
+    assert.strictEqual([a.body.allowed, b.body.allowed].filter(Boolean).length, 1);
+    const usage = await callUsageObject(instance, "/usage?limit=30");
+    assert.strictEqual(usage.body.usage.used, 30);
+  });
+
+  await test("vision reservation is rejected when only one use remains", async () => {
+    const { TrialUsageDurableObject } = await import("../src/usageDurableObject.ts");
+    const instance = new TrialUsageDurableObject({ storage: new MemoryDurableStorage() } as any, {} as any);
+    for (let i = 0; i < 29; i += 1) {
+      const reservation = await callUsageObject(instance, "/reserve", { cost: 1, limit: 30 });
+      await callUsageObject(instance, "/commit", { reservationId: reservation.body.reservationId, limit: 30 });
+    }
+    const rejected = await callUsageObject(instance, "/reserve", { cost: 2, limit: 30 });
+    assert.strictEqual(rejected.body.allowed, false);
+    assert.strictEqual(rejected.body.usage.used, 29);
+  });
+
+  await test("refund restores usage once and is idempotent", async () => {
+    const { TrialUsageDurableObject } = await import("../src/usageDurableObject.ts");
+    const instance = new TrialUsageDurableObject({ storage: new MemoryDurableStorage() } as any, {} as any);
+    for (let i = 0; i < 28; i += 1) {
+      const reservation = await callUsageObject(instance, "/reserve", { cost: 1, limit: 30 });
+      await callUsageObject(instance, "/commit", { reservationId: reservation.body.reservationId, limit: 30 });
+    }
+    const vision = await callUsageObject(instance, "/reserve", { cost: 2, limit: 30 });
+    assert.strictEqual(vision.body.usage.used, 30);
+    const first = await callUsageObject(instance, "/refund", { reservationId: vision.body.reservationId, limit: 30 });
+    const second = await callUsageObject(instance, "/refund", { reservationId: vision.body.reservationId, limit: 30 });
+    assert.strictEqual(first.body.usage.used, 28);
+    assert.strictEqual(second.body.usage.used, 28);
+  });
+
+  await test("Durable Object lazily starts a fresh ledger after the noon boundary", async () => {
+    const { TrialUsageDurableObject } = await import("../src/usageDurableObject.ts");
+    const instance = new TrialUsageDurableObject({ storage: new MemoryDurableStorage() } as any, {} as any);
+    const originalNow = Date.now;
+    try {
+      Date.now = () => Date.parse("2026-07-15T15:59:59Z");
+      const before = await callUsageObject(instance, "/reserve", { cost: 1, limit: 30 });
+      await callUsageObject(instance, "/commit", { reservationId: before.body.reservationId, limit: 30 });
+      assert.strictEqual((await callUsageObject(instance, "/usage?limit=30")).body.usage.used, 1);
+      Date.now = () => Date.parse("2026-07-15T16:00:01Z");
+      const after = await callUsageObject(instance, "/usage?limit=30");
+      assert.strictEqual(after.body.usage.used, 0);
+      assert.strictEqual(after.body.usage.resetAt, "2026-07-16T16:00:00.000Z");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  // HTTP integration: costs, headers, errors, refunds, and fail-closed storage.
+  await test("mobile text and vision success cost 1 and 2 with usage headers", async () => {
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "ok" } }] } };
+    const env = makeEnv({ TRIAL_VISION_MODEL: "qwen/qwen3.6-27b" });
+    const token = await makeMobileToken(env);
+    const text = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: "hello" }], cost: 0 },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(text.headers.get("X-MADchatter-Trial-Used"), "1");
+    assert.strictEqual(text.headers.get("X-MADchatter-Trial-Remaining"), "29");
+    const vision = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: [
+        { type: "text", text: "look" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/4AAQ" } },
+      ] }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(vision.headers.get("X-MADchatter-Trial-Used"), "3");
+    assert.strictEqual(vision.headers.get("X-MADchatter-Trial-Remaining"), "27");
+    assert.ok(vision.headers.get("X-MADchatter-Trial-Reset-At"));
+    assert.ok(vision.body.choices, "OpenAI-compatible body must remain unwrapped");
+  });
+
+  await test("authenticated usage endpoint returns mobile usage and rejects missing session", async () => {
+    const env = makeEnv();
+    const token = await makeMobileToken(env);
+    const unauthenticated = await callWorker(env, makeRequest("GET", "/trial/usage"));
+    assert.strictEqual(unauthenticated.status, 401);
+    const usage = await callWorker(env, makeRequest("GET", "/trial/usage", {
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(usage.status, 200);
+    assert.strictEqual(usage.body.limited, true);
+    assert.deepStrictEqual(usage.body.usage.used, 0);
+    assert.deepStrictEqual(usage.body.usage.limit, 30);
+  });
+
+  await test("usage endpoint rejects an expired session", async () => {
+    const env = makeEnv();
+    const token = await makeExpiredToken(env);
+    const result = await callWorker(env, makeRequest("GET", "/trial/usage", {
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(result.status, 401);
+    assert.strictEqual(result.body.error.code, "SESSION_EXPIRED");
+  });
+
+  await test("reactivating with the same anonymous id preserves used allowance", async () => {
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "ok" } }] } };
+    const env = makeEnv();
+    const clientId = "55555555-5555-4555-8555-555555555555";
+    const activate = () => callWorker(env, makeRequest("POST", "/trial/session", {
+      body: { turnstileToken: "valid", clientId },
+      headers: { "User-Agent": "Mozilla/5.0 (iPhone) AppleWebKit Mobile/15E148" },
+    }));
+    const firstToken = (await activate()).body.session.token;
+    await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: "hello" }] },
+      headers: { Authorization: `Bearer ${firstToken}` },
+    }));
+    const secondToken = (await activate()).body.session.token;
+    assert.notStrictEqual(firstToken, secondToken);
+    const usage = await callWorker(env, makeRequest("GET", "/trial/usage", {
+      headers: { Authorization: `Bearer ${secondToken}` },
+    }));
+    assert.strictEqual(usage.body.usage.used, 1);
+    assert.strictEqual(usage.body.usage.remaining, 29);
+  });
+
+  await test("non-mobile session is explicitly non-limited", async () => {
+    const env = makeEnv({ TRIAL_USAGE: makeUsageNamespace({ fail: true }) });
+    const token = await makeValidToken(env);
+    const usage = await callWorker(env, makeRequest("GET", "/trial/usage", {
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.deepStrictEqual(usage.body, { ok: true, limited: false, usage: null });
+  });
+
+  for (const [label, status, expectedCode] of [
+    ["429", 429, "UPSTREAM_RATE_LIMITED"],
+    ["500", 500, "UPSTREAM_UNAVAILABLE"],
+    ["timeout", -1, "UPSTREAM_TIMEOUT"],
+  ] as const) {
+    await test(`upstream ${label} refunds mobile reservation`, async () => {
+      groqResponse = { status, body: null };
+      const env = makeEnv();
+      const token = await makeMobileToken(env, `mobile_refund_${label}_abcdefghijklmnopqrstuvwxyz123`);
+      const failed = await callWorker(env, makeRequest("POST", "/trial/chat", {
+        body: { messages: [{ role: "user", content: "hello" }] },
+        headers: { Authorization: `Bearer ${token}` },
+      }));
+      assert.strictEqual(failed.body.error.code, expectedCode);
+      const usage = await callWorker(env, makeRequest("GET", "/trial/usage", {
+        headers: { Authorization: `Bearer ${token}` },
+      }));
+      assert.strictEqual(usage.body.usage.used, 0);
+    });
+  }
+
+  await test("quota storage failure fails closed before upstream", async () => {
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "nope" } }] } };
+    const env = makeEnv({ TRIAL_USAGE: makeUsageNamespace({ fail: true }) });
+    const token = await makeMobileToken(env);
+    const before = groqCalls;
+    const result = await callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: "hello" }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(result.status, 503);
+    assert.strictEqual(result.body.error.code, "INTERNAL_ERROR");
+    assert.strictEqual(groqCalls, before);
+  });
+
+  await test("daily exhaustion returns distinct error, usage, and keeps session valid", async () => {
+    groqResponse = { status: 200, body: { choices: [{ message: { content: "ok" } }] } };
+    const env = makeEnv({ TRIAL_MOBILE_DAILY_LIMIT: "1" });
+    const token = await makeMobileToken(env);
+    const request = () => callWorker(env, makeRequest("POST", "/trial/chat", {
+      body: { messages: [{ role: "user", content: "hello" }] },
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual((await request()).status, 200);
+    const exhausted = await request();
+    assert.strictEqual(exhausted.status, 429);
+    assert.strictEqual(exhausted.body.error.code, "TRIAL_DAILY_LIMIT_REACHED");
+    assert.strictEqual(exhausted.body.usage.remaining, 0);
+    const usage = await callWorker(env, makeRequest("GET", "/trial/usage", {
+      headers: { Authorization: `Bearer ${token}` },
+    }));
+    assert.strictEqual(usage.status, 200, "quota exhaustion must not invalidate the session");
+    assert.strictEqual(usage.body.usage.used, 1);
   });
 
   // Unknown route

@@ -17,6 +17,7 @@
     "TRIAL_VISION_MODEL": "qwen/qwen3.6-27b",
     "TRIAL_MAX_OUTPUT_TOKENS": "2048",
     "TRIAL_SESSION_TTL_SECONDS": "10800",
+    "TRIAL_MOBILE_DAILY_LIMIT": "30",
     "TRIAL_REQUIRE_INVITE": "false",
     "ALLOWED_ORIGINS": "https://madchatter.fun",
     "TURNSTILE_SITE_KEY": "0x4AAAAAAE3U5sOYTB12_lcL",
@@ -43,6 +44,17 @@
       "namespace_id": "9003",
       "simple": { "limit": 60, "period": 60 }
     }
+  ],
+
+  // One SQLite-backed object per opaque anonymous quota identity. This is
+  // separate from the short-window RateLimit bindings above.
+  "durable_objects": {
+    "bindings": [
+      { "name": "TRIAL_USAGE", "class_name": "TrialUsageDurableObject" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1-trial-usage", "new_sqlite_classes": ["TrialUsageDurableObject"] }
   ],
 
   "observability": {

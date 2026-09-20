@@ -26,6 +26,12 @@ export function corsHeaders(origin: string): Record<string, string> {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Expose-Headers": [
+      "X-MADchatter-Trial-Used",
+      "X-MADchatter-Trial-Remaining",
+      "X-MADchatter-Trial-Limit",
+      "X-MADchatter-Trial-Reset-At",
+    ].join(", "),
     "Access-Control-Max-Age": "600",
     Vary: "Origin",
   };

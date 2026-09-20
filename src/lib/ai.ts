@@ -2,7 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey, getKeys, openAiCompatEndpoint, isOpenAICompatibleProvider, TRIAL_PROVIDER } from "./keys";
-import { trialSupportsVision } from "./trial";
+import { createTrialFetch, isTrialDailyLimitError, trialSupportsVision } from "./trial";
 import { getTwitchSession } from "./twitch";
 import {
   resolveVisionConfig,
@@ -45,8 +45,6 @@ import {
   isQueueTimeout,
   type AIRequestPriority,
 } from "./aiScheduler";
-import { createTrialFetch } from "./trial";
-
 /**
  * Resolve the custom `fetch` override for a provider, if one is needed.
  * - Ollama: rewrites to the native /api/chat endpoint (existing behavior).
@@ -1835,6 +1833,10 @@ DECIDE NOW.`;
       // fallback provider; that would defeat the yield. Rethrow so the caller
       // can reschedule quietly.
       if (isSchedulerCancellation(e)) throw e;
+      // Daily exhaustion is an authoritative Trial policy result, not a
+      // provider outage. Never poison health or spill autonomous work into a
+      // BYOK fallback when the user selected Friend Trial.
+      if (isTrialDailyLimitError(e)) throw e;
       // Queue timeout: the request waited too long for the Ollama slot (too
       // many bots queued). This is a capacity issue, NOT a provider failure —
       // don't poison provider health or trigger cooldown. Rethrow so the
