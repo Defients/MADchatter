@@ -2,6 +2,11 @@
 
 All notable changes to MADchatter are documented here. Dates are in YYYY-MM-DD format.
 
+## [2.1.2] — 2026-09-20
+
+### Changed
+- Version bump to 2.1.2
+
 ## [Unreleased] — 2026-09-16
 
 Internal polish pass: no new features, no behaviour or API changes, no version bump.

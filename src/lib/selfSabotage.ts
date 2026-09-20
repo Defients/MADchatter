@@ -252,6 +252,16 @@ const runtime: SelfSabotageRuntime = {
     ] as const));
     return Object.fromEntries(entries);
   },
+  getAudienceContext() {
+    const snapshot = selfSabotageController.getSnapshot();
+    const since = Math.max(snapshot.startedAt ?? 0, Date.now() - 60_000);
+    const human = useAppStore.getState().chatLog.filter((line) => !line.selfSent && line.timestamp >= since);
+    const reaction = /\b(bot|ai|lmao|lol|what|exposed|caught|sus|robot|clanker)\b|\?{2,}|!{2,}/i;
+    return {
+      recentHumanChatRate: human.length,
+      relevantHumanReaction: human.slice(-8).some((line) => reaction.test(line.text)),
+    };
+  },
   async send(participant, message, signal) {
     if (signal.aborted || !botCoordinator.isEventFloorOwner(SELF_SABOTAGE_FLOOR_OWNER)) return false;
     const state = useAppStore.getState();
@@ -308,10 +318,16 @@ const runtime: SelfSabotageRuntime = {
   acquireFloor: (owner) => botCoordinator.acquireEventFloor(owner),
   releaseFloor(owner) {
     const state = useAppStore.getState();
-    const resumeAt = Date.now() + 15_000;
+    const aborted = selfSabotageController.getSnapshot().cancellationState === "cancelled";
+    // A post-scene quarantine discards late AutoForge completions and delayed
+    // follow-ups rather than dumping a backlog on the punchline.
+    // Explicit cancellation releases immediately; it must not leave a hidden
+    // suppression lock behind.
+    const quarantineMs = aborted ? 0 : 30_000;
+    const resumeAt = Date.now() + quarantineMs;
     state.setAutoForgeNextActionMs(resumeAt);
     for (const bot of state.bots) state.setBotAutoForgeNextActionMs(bot.id, resumeAt);
-    botCoordinator.releaseEventFloor(owner);
+    botCoordinator.releaseEventFloor(owner, quarantineMs);
   },
   observeInvalidation(onInvalid) {
     const initial = useAppStore.getState();
@@ -319,12 +335,15 @@ const runtime: SelfSabotageRuntime = {
     const platform = initial.platform;
     const channel = initial.streamMetadata.channelName;
     const multiBotEnabled = initial.multiBotEnabled;
+    const interfaceMode = initial.interfaceMode;
     const dryRun = initial.autoForgeDryRun;
     const unsubscribe = useAppStore.subscribe((state) => {
       if (state.sessionRevision !== revision || state.platform !== platform || state.streamMetadata.channelName !== channel) {
         onInvalid("session_changed");
       } else if (multiBotEnabled && !state.multiBotEnabled) {
         onInvalid("multi_bot_disabled");
+      } else if (state.interfaceMode !== interfaceMode) {
+        onInvalid("interface_mode_changed");
       } else if (state.autoForgeDryRun !== dryRun) {
         onInvalid("delivery_mode_changed");
       } else if (state.botsGlobalStop) {
@@ -380,4 +399,14 @@ export async function triggerSelfSabBotAge(options: SelfSabotageStartOptions): P
 
 export function abortSelfSabotage(reason = "operator_abort"): boolean {
   return selfSabotageController.abort(reason);
+}
+
+/** Developer-facing, content-safe pacing receipt. Generated dialogue is
+ * intentionally excluded; the timeline contains only timing and identity. */
+export function getSelfSabotageDebug() {
+  return {
+    snapshot: selfSabotageController.getSnapshot(),
+    timeline: selfSabotageController.getTimeline(),
+    arbitration: botCoordinator.getEventFloorDebug(),
+  };
 }

@@ -37,7 +37,8 @@ export function getPlatformSendFn(
       throw new SendCancelledError();
     }
     const floorOwner = botCoordinator.getEventFloorOwner();
-    if (floorOwner && !opts?.bypassEventFloor && opts?.eventOwner !== floorOwner) {
+    if (!opts?.bypassEventFloor && opts?.eventOwner !== floorOwner && botCoordinator.isAutonomousSpeechSuppressed()) {
+      botCoordinator.noteBlockedAutonomous(floorOwner === null);
       throw new SendCancelledError();
     }
     const scope = captureSessionScope();
@@ -60,7 +61,7 @@ export function getPlatformSendFn(
       const current = identity();
       if (!isSessionScopeCurrent(scope) || platform !== scope.platform ||
         (!opts?.bypassGlobalStop && useAppStore.getState().botsGlobalStop) ||
-        (!!botCoordinator.getEventFloorOwner() && !opts?.bypassEventFloor && opts?.eventOwner !== botCoordinator.getEventFloorOwner()) ||
+        (!opts?.bypassEventFloor && opts?.eventOwner !== botCoordinator.getEventFloorOwner() && botCoordinator.isAutonomousSpeechSuppressed()) ||
         useAppStore.getState().multiBotEnabled !== initial.multiBotEnabled ||
         current?.username !== originalIdentity?.username || current?.userId !== originalIdentity?.userId) controller.abort();
     };

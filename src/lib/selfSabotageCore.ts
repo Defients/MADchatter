@@ -23,6 +23,17 @@ export type SelfSabotageState =
   | "AFTERSHOCK"
   | "ABORTED";
 
+/** Audience-facing dramatic shape. The legacy controller states remain for
+ * HUD copy/compatibility; this is the pacing authority. */
+export type SelfSabotagePhase =
+  | "idle"
+  | "setup"
+  | "tension"
+  | "exposure"
+  | "cascade"
+  | "capstone"
+  | "cooldown";
+
 export type SelfSabotageTriggerSource =
   | "organic"
   | "manual"
@@ -55,21 +66,25 @@ export const SELF_SABOTAGE_CONFIG = {
     mobileRetriggerLockMs: 2_000,
   },
   timing: {
-    maxEventDurationMs: 60_000,
-    normalBeatDelayMs: 700,
-    impossibleGapMs: 220,
-    overdriveBeatDelayMs: 550,
+    maxEventDurationMs: 120_000,
+    setupDelayMs: [3_000, 5_500],
+    tensionDelayMs: [2_500, 4_500],
+    exposureDelayMs: [2_000, 3_800],
+    cascadeDelayMs: [1_500, 3_000],
+    capstoneDelayMs: [2_500, 4_000],
+    capstoneSilenceMs: [4_000, 8_000],
+    hardWindowMs: 4_000,
+    hardWindowMaxMessages: 2,
     payloadReadyTimeoutMs: 8_000,
-    resetDisplayMs: 900,
+    resetDisplayMs: 600,
     aftershockDisplayMs: 1_600,
   },
   limits: {
     maxParticipants: 5,
-    maxTotalMessages: 38,
-    maxMessagesPerBot: 10,
-    maxOverdriveBurst: 6,
-    maxDogpileSpeakers: 3,
-    maxContagionSpeakers: 3,
+    maxTotalMessages: 18,
+    maxMessagesPerBot: 7,
+    maxCascadeSpeakers: 2,
+    maxTensionSpeakers: 2,
   },
   organic: {
     enabled: false,
@@ -194,6 +209,7 @@ export interface SelfSabotageCooldownInfo {
 
 export interface SelfSabotageSnapshot {
   state: SelfSabotageState;
+  phase: SelfSabotagePhase;
   active: boolean;
   eventId: string | null;
   source: SelfSabotageTriggerSource | null;
@@ -212,6 +228,22 @@ export interface SelfSabotageSnapshot {
   abortReason: string | null;
   cooldown: SelfSabotageCooldownInfo;
   mobile: boolean;
+}
+
+export interface SelfSabotageAudienceContext {
+  recentHumanChatRate: number;
+  relevantHumanReaction: boolean;
+}
+
+export interface SelfSabotageTimelineEntry {
+  eventId: string;
+  phase: SelfSabotagePhase;
+  speaker: string;
+  scheduledAt: number;
+  sentAt: number | null;
+  delayMs: number;
+  reason: string;
+  humanReactionDetected: boolean;
 }
 
 export interface SelfSabotageAnalyticsRecord {
@@ -254,6 +286,7 @@ export interface SelfSabotageRuntime {
     source: SelfSabotageTriggerSource;
   }): void;
   recordAnalytics(record: SelfSabotageAnalyticsRecord): void;
+  getAudienceContext?(): SelfSabotageAudienceContext;
 }
 
 const ACTIVE_STATES = new Set<SelfSabotageState>([
@@ -286,6 +319,7 @@ export function canTransitionSelfSabotage(from: SelfSabotageState, to: SelfSabot
 function dormantSnapshot(lastCompletedAt: number | null, now: number): SelfSabotageSnapshot {
   return {
     state: "DORMANT",
+    phase: "idle",
     active: false,
     eventId: null,
     source: null,
@@ -308,6 +342,32 @@ function dormantSnapshot(lastCompletedAt: number | null, now: number): SelfSabot
     },
     mobile: false,
   };
+}
+
+const PHASE_RANGES: Record<Exclude<SelfSabotagePhase, "idle" | "cooldown">, readonly [number, number]> = {
+  setup: SELF_SABOTAGE_CONFIG.timing.setupDelayMs,
+  tension: SELF_SABOTAGE_CONFIG.timing.tensionDelayMs,
+  exposure: SELF_SABOTAGE_CONFIG.timing.exposureDelayMs,
+  cascade: SELF_SABOTAGE_CONFIG.timing.cascadeDelayMs,
+  capstone: SELF_SABOTAGE_CONFIG.timing.capstoneDelayMs,
+};
+
+/** Pure pacing policy used by the director and deterministic tests. */
+export function calculateSelfSabotageDelay(args: {
+  phase: Exclude<SelfSabotagePhase, "idle" | "cooldown">;
+  previousMessageLength: number;
+  audience: SelfSabotageAudienceContext;
+  random: number;
+  participantCount: number;
+}): number {
+  const [min, max] = PHASE_RANGES[args.phase];
+  const jitter = min + (max - min) * Math.max(0, Math.min(1, args.random));
+  const reading = Math.max(0, Math.min(1_800, args.previousMessageLength * 20));
+  const reactionFactor = args.audience.relevantHumanReaction ? 0.82 : 1;
+  const busyChat = args.audience.recentHumanChatRate >= 20 ? 900
+    : args.audience.recentHumanChatRate >= 10 ? 450 : 0;
+  const castTax = args.participantCount >= 5 ? 250 : 0;
+  return Math.round(Math.max(min, (jitter + reading + busyChat + castTax) * reactionFactor));
 }
 
 class EventAbortError extends Error {}
@@ -397,6 +457,9 @@ export class SelfSabotageController {
   private packets: Record<string, SelfSabotageDialoguePacket> = {};
   private lastCompletedAt: number | null = null;
   private analyticsRecordedForEvent = false;
+  private timeline: SelfSabotageTimelineEntry[] = [];
+  private sentAt: number[] = [];
+  private lastMessageLength = 0;
 
   constructor(
     private readonly runtime: SelfSabotageRuntime,
@@ -414,6 +477,10 @@ export class SelfSabotageController {
 
   getAnalyticsHistory(): SelfSabotageAnalyticsRecord[] {
     return this.analytics.map((record) => ({ ...record }));
+  }
+
+  getTimeline(): SelfSabotageTimelineEntry[] {
+    return this.timeline.map((entry) => ({ ...entry }));
   }
 
   isActive(): boolean {
@@ -448,9 +515,13 @@ export class SelfSabotageController {
       this.abortController = new AbortController();
       this.perBotCounts.clear();
       this.packets = {};
+      this.timeline = [];
+      this.sentAt = [];
+      this.lastMessageLength = 0;
       this.analyticsRecordedForEvent = false;
       this.snapshot = {
         state: "DORMANT",
+        phase: "idle",
         active: true,
         eventId,
         source: options.source,
@@ -547,12 +618,49 @@ export class SelfSabotageController {
   }
 
   private timing(base: number): number {
-    const responsive = this.snapshot.mobile ? base * 0.55 : base;
-    return Math.max(0, Math.round(responsive * this.timingScale));
+    return Math.max(0, Math.round(base * this.timingScale));
   }
 
   private async pause(ms: number): Promise<void> {
     await abortableDelay(this.timing(ms), this.signal());
+  }
+
+  private setPhase(phase: SelfSabotagePhase): void {
+    if (this.snapshot.phase === phase) return;
+    this.snapshot = { ...this.snapshot, phase, phaseStartedAt: this.runtime.now() };
+    this.emit();
+  }
+
+  private audience(): SelfSabotageAudienceContext {
+    return this.runtime.getAudienceContext?.() ?? { recentHumanChatRate: 0, relevantHumanReaction: false };
+  }
+
+  private async waitForBeat(
+    phase: Exclude<SelfSabotagePhase, "idle" | "cooldown">,
+    speaker: SelfSabotageParticipant,
+    reason: string,
+  ): Promise<void> {
+    const audience = this.audience();
+    let delayMs = calculateSelfSabotageDelay({
+      phase,
+      previousMessageLength: this.lastMessageLength,
+      audience,
+      random: this.runtime.random(),
+      participantCount: this.snapshot.participants.length,
+    });
+    const now = this.runtime.now();
+    this.sentAt = this.sentAt.filter((timestamp) => now - timestamp < SELF_SABOTAGE_CONFIG.timing.hardWindowMs);
+    if (this.sentAt.length >= SELF_SABOTAGE_CONFIG.timing.hardWindowMaxMessages) {
+      delayMs = Math.max(delayMs, SELF_SABOTAGE_CONFIG.timing.hardWindowMs - (now - this.sentAt[0]) + 25);
+    }
+    const entry: SelfSabotageTimelineEntry = {
+      eventId: this.snapshot.eventId!, phase, speaker: speaker.username,
+      scheduledAt: now + delayMs, sentAt: null, delayMs, reason,
+      humanReactionDetected: audience.relevantHumanReaction,
+    };
+    this.timeline.push(entry);
+    if (this.timeline.length > 80) this.timeline.splice(0, this.timeline.length - 80);
+    await this.pause(delayMs);
   }
 
   private participant(id: string): SelfSabotageParticipant | undefined {
@@ -606,6 +714,15 @@ export class SelfSabotageController {
     if (!liveParticipant) return false;
     const count = this.perBotCounts.get(liveParticipant.id) ?? 0;
     if (this.snapshot.remainingMessageBudget <= 0 || count >= SELF_SABOTAGE_CONFIG.limits.maxMessagesPerBot) return false;
+    let pendingTimeline = [...this.timeline].reverse().find((entry) => entry.sentAt === null && entry.speaker === liveParticipant.username);
+    if (!pendingTimeline) {
+      pendingTimeline = {
+        eventId: this.snapshot.eventId!, phase: this.snapshot.phase,
+        speaker: liveParticipant.username, scheduledAt: this.runtime.now(), sentAt: null,
+        delayMs: 0, reason: "initial_setup", humanReactionDetected: false,
+      };
+      this.timeline.push(pendingTimeline);
+    }
     this.snapshot = { ...this.snapshot, currentSpeakerId: liveParticipant.id };
     this.emit();
     let sent = false;
@@ -623,6 +740,10 @@ export class SelfSabotageController {
       }
     }
     if (!sent) return false;
+    const sentAt = this.runtime.now();
+    this.sentAt.push(sentAt);
+    this.lastMessageLength = message.length;
+    if (pendingTimeline) pendingTimeline.sentAt = sentAt;
     this.perBotCounts.set(liveParticipant.id, count + 1);
     this.snapshot = {
       ...this.snapshot,
@@ -650,26 +771,18 @@ export class SelfSabotageController {
       const count = this.perBotCounts.get(participant.id) ?? 0;
       return count < SELF_SABOTAGE_CONFIG.limits.maxMessagesPerBot;
     }).slice(0, this.snapshot.remainingMessageBudget);
-    const results = await Promise.all(recipients.map(async (participant) => {
+    let sentCount = 0;
+    for (const participant of recipients) {
       try {
-        return await this.runtime.send(participant, SELF_SABOTAGE_PAYLOAD, this.signal());
+        await this.waitForBeat("capstone", participant, "serial_payload_capstone");
+        if (await this.send(participant, SELF_SABOTAGE_PAYLOAD)) sentCount += 1;
       } catch (error) {
         if (this.signal().aborted) throw new EventAbortError("aborted");
         console.warn(`[SELF-SAB-BOT-AGE] payload send failed for ${participant.username}`, error);
-        return false;
       }
-    }));
-    let sentCount = 0;
-    results.forEach((sent, index) => {
-      if (!sent) return;
-      const participant = recipients[index];
-      this.perBotCounts.set(participant.id, (this.perBotCounts.get(participant.id) ?? 0) + 1);
-      sentCount += 1;
-    });
+    }
     this.snapshot = {
       ...this.snapshot,
-      messagesSent: this.snapshot.messagesSent + sentCount,
-      remainingMessageBudget: Math.max(0, this.snapshot.remainingMessageBudget - sentCount),
       payloadFired: sentCount > 0,
       payloadFiring: false,
     };
@@ -692,78 +805,73 @@ export class SelfSabotageController {
       ]);
       this.signal();
 
+      this.setPhase("setup");
       this.transition("ANNOUNCEMENT");
       let instigator = this.participant(this.snapshot.instigatorId!)!;
       await this.send(instigator, this.packet(instigator).announcement);
-      await this.pause(SELF_SABOTAGE_CONFIG.timing.normalBeatDelayMs);
 
       const others = () => this.snapshot.participants.filter((participant) => participant.id !== this.snapshot.instigatorId);
       if (others().length > 0) {
         this.transition("DOGPILE");
-        const dogpileCount = this.snapshot.mobile ? 1 : Math.min(SELF_SABOTAGE_CONFIG.limits.maxDogpileSpeakers, others().length);
-        for (const participant of others().slice(0, dogpileCount)) {
+        const dogpileCount = Math.min(
+          this.snapshot.mobile ? 1 : (this.runtime.random() < 0.7 ? 1 : 2),
+          SELF_SABOTAGE_CONFIG.limits.maxTensionSpeakers,
+          others().length,
+        );
+        for (const [index, participant] of others().slice(0, dogpileCount).entries()) {
+          await this.waitForBeat(index === 0 ? "setup" : "tension", participant, "skeptic_notices_setup");
+          this.setPhase("tension");
           await this.send(participant, this.packet(participant).dogpile, 4);
-          await this.pause(SELF_SABOTAGE_CONFIG.timing.normalBeatDelayMs);
         }
       }
 
       this.transition("HESITATION");
       instigator = this.participant(this.snapshot.instigatorId!)!;
+      await this.waitForBeat("tension", instigator, "instigator_attempts_retreat");
       await this.send(instigator, this.packet(instigator).hesitation, 4);
-      if (!this.snapshot.mobile && others()[0]) {
-        await this.pause(450);
-        await this.send(others()[0], this.packet(others()[0]).hesitation, 2);
-      }
-      await this.pause(450);
 
+      this.setPhase("exposure");
       this.transition("IMPOSSIBLE_SEND");
       instigator = this.participant(this.snapshot.instigatorId!)!;
       const impossible = this.packet(instigator);
+      await this.waitForBeat("exposure", instigator, "instigator_says_too_much");
       await this.send(instigator, impossible.impossibleA, 8);
-      await this.pause(SELF_SABOTAGE_CONFIG.timing.impossibleGapMs);
-      await this.send(instigator, impossible.impossibleB, 14);
-      await this.pause(500);
+      const exposureResponder = others()[0];
+      if (exposureResponder) {
+        await this.waitForBeat("exposure", exposureResponder, "skeptic_identifies_slip");
+        await this.send(exposureResponder, this.packet(exposureResponder).hesitation, 5);
+      } else {
+        await this.waitForBeat("exposure", instigator, "solo_self_correction");
+        await this.send(instigator, impossible.impossibleB, 10);
+      }
 
+      this.setPhase("cascade");
       this.transition("CONTAGION");
       const contagionTargets = others().length > 0
-        ? others().slice(0, this.snapshot.mobile ? 1 : SELF_SABOTAGE_CONFIG.limits.maxContagionSpeakers)
+        ? others().slice(0, this.snapshot.mobile ? 1 : SELF_SABOTAGE_CONFIG.limits.maxCascadeSpeakers)
         : [instigator];
       for (const participant of contagionTargets) {
+        await this.waitForBeat("cascade", participant, "controlled_accusation_cascade");
         await this.send(participant, this.packet(participant).contagion, 7);
-        await this.pause(SELF_SABOTAGE_CONFIG.timing.normalBeatDelayMs);
       }
 
       this.transition("CONFESSION_CASCADE");
       instigator = this.participant(this.snapshot.instigatorId!)!;
+      await this.waitForBeat("cascade", instigator, "instigator_confession");
       await this.send(instigator, this.packet(instigator).confession, 16);
       this.markConfessed(instigator.id);
-      const confessors = others();
-      if (confessors[0] && !this.snapshot.mobile) {
-        await this.send(confessors[0], "quick announcement", 3);
-        const responder = confessors[1] ?? instigator;
-        await this.pause(300);
-        await this.send(responder, "NO", 2);
-      }
+      const confessors = others().slice(0, this.snapshot.mobile ? 1 : SELF_SABOTAGE_CONFIG.limits.maxCascadeSpeakers);
       for (const participant of confessors) {
-        if (participant.role === "HOLDOUT" && !this.snapshot.mobile) {
-          await this.send(participant, "I am absolutely not a bot.", 5);
-          await this.pause(SELF_SABOTAGE_CONFIG.timing.impossibleGapMs);
-        }
+        await this.waitForBeat("cascade", participant, "supporting_confession");
         await this.send(participant, this.packet(participant).confession, 12);
         this.markConfessed(participant.id);
-        await this.pause(SELF_SABOTAGE_CONFIG.timing.normalBeatDelayMs);
       }
 
+      this.setPhase("capstone");
       this.transition("OVERDRIVE", { coverIntegrity: 0 });
-      const overdriveCount = Math.min(
-        this.snapshot.mobile ? 2 : SELF_SABOTAGE_CONFIG.limits.maxOverdriveBurst,
-        Math.max(2, this.snapshot.participants.length + 1),
-      );
-      for (let index = 0; index < overdriveCount; index++) {
-        const participant = this.snapshot.participants[index % this.snapshot.participants.length];
-        await this.send(participant, this.packet(participant).overdrive, 0);
-        await this.pause(SELF_SABOTAGE_CONFIG.timing.overdriveBeatDelayMs);
-      }
+      const capstoneSpeaker = confessors[0] ?? instigator;
+      await this.waitForBeat("capstone", capstoneSpeaker, "final_absurd_reaction");
+      await this.send(capstoneSpeaker, this.packet(capstoneSpeaker).overdrive, 0);
 
       this.transition("PAYLOAD_READY", { payloadArmed: true });
       const firePayload = await new Promise<boolean>((resolve) => {
@@ -779,21 +887,19 @@ export class SelfSabotageController {
 
       if (firePayload && this.snapshot.state === "PAYLOAD_FIRED") {
         await this.sendPayload();
-        await this.pause(500);
       } else if (this.snapshot.state === "PAYLOAD_READY") {
         this.transition("RESET", { payloadArmed: false });
       }
 
       if (this.snapshot.state === "PAYLOAD_FIRED") this.transition("RESET");
       await this.pause(SELF_SABOTAGE_CONFIG.timing.resetDisplayMs);
-
-      // Anticlimactic on purpose. It remains inside the lease, is optional,
-      // and disappears entirely when the event has exhausted its budget.
-      const aftershockSpeaker = this.participant(this.snapshot.instigatorId!) ?? this.snapshot.participants[0];
-      if (aftershockSpeaker && this.snapshot.remainingMessageBudget > 0 && this.runtime.random() < 0.55) {
-        await this.send(aftershockSpeaker, this.packet(aftershockSpeaker).aftershock);
-      }
       this.transition("AFTERSHOCK");
+
+      // Silence is the last directed beat. The floor remains leased throughout
+      // so no stale autonomous result can step on the punchline.
+      this.setPhase("cooldown");
+      const [silenceMin, silenceMax] = SELF_SABOTAGE_CONFIG.timing.capstoneSilenceMs;
+      await this.pause(silenceMin + (silenceMax - silenceMin) * this.runtime.random());
 
       const completedAt = this.runtime.now();
       this.runtime.recordAftershock({
@@ -806,8 +912,7 @@ export class SelfSabotageController {
       });
       this.recordAnalytics(false, completedAt);
       this.lastCompletedAt = completedAt;
-      await this.pause(SELF_SABOTAGE_CONFIG.timing.aftershockDisplayMs);
-      this.transition("DORMANT");
+      this.transition("DORMANT", { phase: "idle" });
     } catch (error) {
       if (!this.snapshot.active) return;
       if (this.snapshot.state !== "ABORTED") {

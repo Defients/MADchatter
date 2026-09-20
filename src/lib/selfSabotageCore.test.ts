@@ -4,6 +4,7 @@ import {
   SelfSabotageController,
   assignSelfSabotageRoles,
   calculateBotSuspicionScore,
+  calculateSelfSabotageDelay,
   canTransitionSelfSabotage,
   chooseSelfSabotageInstigator,
   type SelfSabotageAnalyticsRecord,
@@ -72,6 +73,35 @@ async function waitForState(controller: SelfSabotageController, state: string): 
 assert.equal(canTransitionSelfSabotage("DORMANT", "ELIGIBLE"), true);
 assert.equal(canTransitionSelfSabotage("ANNOUNCEMENT", "OVERDRIVE"), false, "invalid phase skips are rejected");
 
+const shortBeat = calculateSelfSabotageDelay({
+  phase: "tension", previousMessageLength: 5,
+  audience: { recentHumanChatRate: 0, relevantHumanReaction: false },
+  random: 0, participantCount: 3,
+});
+const longBeat = calculateSelfSabotageDelay({
+  phase: "tension", previousMessageLength: 120,
+  audience: { recentHumanChatRate: 0, relevantHumanReaction: false },
+  random: 0, participantCount: 3,
+});
+assert.ok(longBeat > shortBeat, "long dialogue must receive extra reading time");
+const reactedBeat = calculateSelfSabotageDelay({
+  phase: "tension", previousMessageLength: 5,
+  audience: { recentHumanChatRate: 3, relevantHumanReaction: true },
+  random: 0.8, participantCount: 3,
+});
+const unreactedBeat = calculateSelfSabotageDelay({
+  phase: "tension", previousMessageLength: 5,
+  audience: { recentHumanChatRate: 3, relevantHumanReaction: false },
+  random: 0.8, participantCount: 3,
+});
+assert.ok(reactedBeat < unreactedBeat, "human reaction may modestly accelerate a beat");
+const busyBeat = calculateSelfSabotageDelay({
+  phase: "cascade", previousMessageLength: 5,
+  audience: { recentHumanChatRate: 25, relevantHumanReaction: false },
+  random: 0, participantCount: 3,
+});
+assert.ok(busyBeat > 1_500, "busy chat must add breathing room");
+
 const accused = calculateBotSuspicionScore({
   id: "a", username: "gremlin", label: "Gremlin",
   recentChat: [{ user: "viewer", text: "gremlin are you a bot? you type like AI" }],
@@ -106,6 +136,9 @@ for (const count of [1, 2, 3, 5]) {
   const perBot = new Map<string, number>();
   test.sends.forEach((send) => perBot.set(send.id, (perBot.get(send.id) ?? 0) + 1));
   assert.ok([...perBot.values()].every((value) => value <= 10), `${count}-bot event must honor per-bot budget`);
+  if (count >= 5) {
+    assert.ok(new Set(test.sends.map((send) => send.id)).size <= 4, "large casts should not become a roll call");
+  }
 }
 
 const payload = harness(3);

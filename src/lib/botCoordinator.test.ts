@@ -175,8 +175,20 @@ await runTest("event floor lease blocks ordinary bids and only its owner can rel
   const won = await botCoordinator.requestFloor("bot1", makeCandidate({ confidence: 1 }));
   assert(won === false, "ordinary AutoForge bid must stand down during event lease");
   assert(botCoordinator.releaseEventFloor("wrong_owner") === false, "wrong owner must not release lease");
-  assert(botCoordinator.releaseEventFloor("self_sabotage") === true, "lease owner should release floor");
+  assert(botCoordinator.releaseEventFloor("self_sabotage", 0) === true, "lease owner should release floor");
   assert(botCoordinator.getEventFloorOwner() === null, "event floor should be clear after release");
+});
+
+await runTest("post-event quarantine drops stale autonomous bids", async () => {
+  botCoordinator.reset();
+  assert(botCoordinator.acquireEventFloor("self_sabotage") === true, "event should acquire floor");
+  assert(botCoordinator.releaseEventFloor("self_sabotage", 30_000) === true, "event should enter quarantine");
+  const won = await botCoordinator.requestFloor("bot1", makeCandidate({ confidence: 1 }));
+  assert(won === false, "stale post-scene bid must not dump after floor release");
+  assert(botCoordinator.getEventFloorDebug().droppedStaleMessages > 0, "drop should be observable");
+  // Clear the singleton quarantine for subsequent suites/importers.
+  assert(botCoordinator.acquireEventFloor("test_cleanup") === true, "test cleanup should acquire floor");
+  assert(botCoordinator.releaseEventFloor("test_cleanup", 0) === true, "test cleanup should clear quarantine");
 });
 
 // ─── DEFAULT_FLOOR_GAP_MS ─────────────────────────────────────────────────────

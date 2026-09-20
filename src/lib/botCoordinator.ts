@@ -57,6 +57,9 @@ class BotCoordinator {
   private channel: string | null = null;
   private superchargeActive = false;
   private eventFloorOwner: string | null = null;
+  private autonomousResumeAt = 0;
+  private blockedAutonomousMessages = 0;
+  private droppedStaleMessages = 0;
 
   configure(opts: { floorGapMs?: number; bidWindowMs?: number }) {
     if (opts.floorGapMs !== undefined) this.floorGapMs = opts.floorGapMs;
@@ -107,11 +110,30 @@ class BotCoordinator {
     return true;
   }
 
-  releaseEventFloor(owner: string): boolean {
+  releaseEventFloor(owner: string, cooldownMs = 30_000): boolean {
     if (this.eventFloorOwner !== owner) return false;
     this.eventFloorOwner = null;
+    this.autonomousResumeAt = Date.now() + Math.max(0, cooldownMs);
     this.reset();
     return true;
+  }
+
+  isAutonomousSpeechSuppressed(now = Date.now()): boolean {
+    return this.eventFloorOwner !== null || now < this.autonomousResumeAt;
+  }
+
+  noteBlockedAutonomous(staleAfterScene = false): void {
+    this.blockedAutonomousMessages += 1;
+    if (staleAfterScene) this.droppedStaleMessages += 1;
+  }
+
+  getEventFloorDebug() {
+    return {
+      owner: this.eventFloorOwner,
+      autonomousResumeAt: this.autonomousResumeAt,
+      blockedNormalMessages: this.blockedAutonomousMessages,
+      droppedStaleMessages: this.droppedStaleMessages,
+    };
   }
 
   getEventFloorOwner(): string | null {
@@ -133,7 +155,10 @@ class BotCoordinator {
    * semantic bid, or the ensemble chose collective silence).
    */
   requestFloor(botId: string, candidate: BotCandidate): Promise<boolean> {
-    if (this.eventFloorOwner) return Promise.resolve(false);
+    if (this.isAutonomousSpeechSuppressed()) {
+      this.noteBlockedAutonomous(this.eventFloorOwner === null);
+      return Promise.resolve(false);
+    }
     const now = Date.now();
 
     // Cooldown not elapsed → stand down this cycle.
