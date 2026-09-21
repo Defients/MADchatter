@@ -128,8 +128,30 @@ export function useAutoForgeBot(botId: string) {
 
   const checkBot = async (force = false) => {
     const store = useAppStore.getState();
-    if (botCoordinator.getEventFloorOwner()) return;
     const supercharged = store.superchargeActive;
+    if (!store.multiBotEnabled) return;
+    const bot = store.bots.find((b) => b.id === botId);
+    if (!bot || !bot.active || !bot.session) {
+      if (force) toast.info("Bot must be active and signed in to force a check.");
+      return;
+    }
+    if (!store.autoForgeEnabled) {
+      if (force) toast.info("Enable AutoForge to use Force.");
+      return;
+    }
+    const runtime = bot.runtime;
+    const intervalDeadlineAttempt = !force && !supercharged && store.autoForgeAutoCheckMode === "interval";
+    if (intervalDeadlineAttempt) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      const nowMs = Date.now();
+      if (runtime.autoForgeNextActionMs <= 0) {
+        store.setBotAutoForgeNextActionMs(botId, nowMs + store.autoForgeAutoCheckIntervalMs);
+        return;
+      }
+      if (nowMs < runtime.autoForgeNextActionMs) return;
+      store.recordBotAutoForgeCheckAttempt(botId, nowMs);
+    }
+    if (botCoordinator.getEventFloorOwner()) return;
     if (isForgingRef.current) {
       // Watchdog: if a previous check's await never settled (hung SDK call,
       // dead-socket send, etc.) the flag would wedge this bot forever — the
@@ -143,16 +165,7 @@ export function useAutoForgeBot(botId: string) {
         return;
       }
     }
-    if (!store.multiBotEnabled || store.botsGlobalStop) return;
-    const bot = store.bots.find((b) => b.id === botId);
-    if (!bot || !bot.active || !bot.session) {
-      if (force) toast.info("Bot must be active and signed in to force a check.");
-      return;
-    }
-    if (!store.autoForgeEnabled) {
-      if (force) toast.info("Enable AutoForge to use Force.");
-      return;
-    }
+    if (store.botsGlobalStop) return;
     // Self-heal a wedged manual-forge flag. If a forge request hung without
     // settling, isForging would gate every bot check + force forever.
     if (store.isForging && (store.forgeStartedAtMs === null || Date.now() - store.forgeStartedAtMs > FORGE_WATCHDOG_MS)) {
@@ -168,8 +181,7 @@ export function useAutoForgeBot(botId: string) {
     // force bypasses the isForging gate — the scheduler arbitrates contention
     // (the decide queues behind the critical forge on Ollama, or runs
     // concurrently on cloud providers).
-    const runtime = bot.runtime;
-    if (!force && Date.now() < runtime.autoForgeNextActionMs) return;
+    if (!force && !intervalDeadlineAttempt && Date.now() < runtime.autoForgeNextActionMs) return;
 
     isForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
@@ -426,7 +438,7 @@ export function useAutoForgeBot(botId: string) {
       // Cheap local heuristic — never skips mentions or spikes. Saves tokens
       // and GPU cycles during dead/offline periods. Supercharge mode bypasses
       // it entirely — the user asked for maximum engagement.
-      if (!force && !supercharged) {
+      if (!force && !supercharged && !intervalDeadlineAttempt) {
         const vibe = vibeCheck({
           isMentioned,
           activitySpike,
@@ -1617,7 +1629,7 @@ export function useAutoForgeBot(botId: string) {
     let botInterval: ReturnType<typeof setInterval> | undefined;
     const startTimer = setTimeout(() => {
       tick();
-      botInterval = setInterval(tick, 15000);
+      botInterval = setInterval(tick, 1000);
     }, staggerMs);
 
     const onForce = (e: Event) => {
@@ -1631,6 +1643,17 @@ export function useAutoForgeBot(botId: string) {
       if (bot && bot.active && bot.session) checkBot(true);
     };
     window.addEventListener("autoforge-force-check", onForce);
+
+    const onForegroundResume = () => {
+      if (document.visibilityState !== "visible") return;
+      const store = useAppStore.getState();
+      const current = store.bots.find((candidate) => candidate.id === botId);
+      if (!store.autoForgeEnabled || !store.autoForgeAutoCheckEnabled || store.autoForgeAutoCheckMode !== "interval") return;
+      if (!store.streamMetadata.channelName || !current?.active || !current.session || current.runtime.autoForgeNextActionMs <= 0) return;
+      if (Date.now() >= current.runtime.autoForgeNextActionMs) checkBot();
+    };
+    document.addEventListener("visibilitychange", onForegroundResume);
+    window.addEventListener("pageshow", onForegroundResume);
 
     // Supercharge teardown — when the user disables Supercharge, reset this
     // bot's pacing state so it returns to normal cadence immediately instead
@@ -1651,6 +1674,8 @@ export function useAutoForgeBot(botId: string) {
       clearTimeout(startTimer);
       if (botInterval) clearInterval(botInterval);
       window.removeEventListener("autoforge-force-check", onForce);
+      document.removeEventListener("visibilitychange", onForegroundResume);
+      window.removeEventListener("pageshow", onForegroundResume);
       window.removeEventListener("easter-egg-supercharge", onSupercharge);
       if (followupTimerRef.current) {
         clearTimeout(followupTimerRef.current);

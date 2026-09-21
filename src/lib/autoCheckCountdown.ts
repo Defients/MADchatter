@@ -55,7 +55,7 @@ export interface CountdownTickResult {
 
 /** The displayed countdown second — same rounding the status label uses. */
 export function countdownSecond(dueAtMs: number, nowMs: number): number {
-  return Math.max(0, Math.round((dueAtMs - nowMs) / 1000));
+  return Math.max(0, Math.ceil((dueAtMs - nowMs) / 1000));
 }
 
 export function stepCountdownTick(

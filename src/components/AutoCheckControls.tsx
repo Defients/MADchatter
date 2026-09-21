@@ -4,7 +4,7 @@
  * Replaces the implicit "checks every 15 seconds" behavior with something the
  * user actually controls, and makes the next evaluation legible:
  *
- *   [ Auto-Check ON/OFF ]  [ Smart | 30s | 1m | 2m | 5m ]
+ *   [ Auto-Check ON/OFF ]  [ Smart | 30s | 1m | 2m | Custom ]
  *   ▂▂▂▂▂▂▂▂▂▂▂———————   Next check in 42s
  *
  * Performance notes (these systems update often, so this component is built to
@@ -24,6 +24,7 @@
 
 import { useEffect, useState } from "react";
 import { Activity, Clock, Sparkles, Zap } from "lucide-react";
+import { toast } from "sonner";
 import { useAppStore } from "../store";
 import { useNowTick } from "../hooks/useNowTick";
 import { useAutoCheckCountdownTicks } from "../hooks/useAutoCheckCountdownTicks";
@@ -31,12 +32,15 @@ import { useIsMobile } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
 import {
   AUTO_CHECK_INTERVAL_OPTIONS,
+  customAutoCheckMinutesToMs,
   computeAutoCheckWindow,
   describeAutoCheckStatus,
   formatAutoCheckInterval,
   normalizeAutoCheckMode,
   resolveAutoCheckFloorMs,
+  normalizeCustomAutoCheckMinutes,
 } from "../lib/coreAutoCheck";
+import { playSfx } from "../lib/sfx";
 
 export interface AutoCheckControlsProps {
   /** "compact" = mobile CORE (tight single row + thin bar).
@@ -55,12 +59,11 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
   const lastCheckMs = useAppStore((s) => s.autoForgeLastCheckMs);
   const armed = useAppStore((s) => s.autoForgeCheckArmed);
   const checking = useAppStore((s) => s.isAutoForgeThinking);
-  // Model pacing floor — the AI's "estimated next action" time. The cadence
-  // is the user's maximum frequency, but the model can pace slower. The
-  // countdown reflects whichever gate opens last, so it never reaches 0
-  // and sits at "Checking shortly…" for minutes while the model pacing
-  // blocks the cadence gate from running.
+  // In Interval mode this timestamp is the authoritative user-owned attempt
+  // deadline. Smart mode continues to use it for contextual/model pacing.
   const nextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
+  const channel = useAppStore((s) => s.streamMetadata.channelName);
+  const connection = useAppStore((s) => s.tmiReadState);
 
   const normalizedMode = normalizeAutoCheckMode(mode);
   const isInterval = normalizedMode === "interval";
@@ -96,7 +99,7 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
   // the attempt identity — dedupe/pause/supersede semantics live in
   // lib/autoCheckCountdown.ts. Smart mode has no honest countdown → no ticks.
   useAutoCheckCountdownTicks({
-    enabled: isMobile && !idle && isInterval,
+    enabled: isMobile && !idle && isInterval && !!channel.trim() && connection === "connected",
     dueAtMs: isInterval && !idle ? window.dueAtMs : null,
     now,
   });
@@ -121,7 +124,7 @@ export function AutoCheckControls({ variant = "full", className }: AutoCheckCont
           type="button"
           role="switch"
           aria-checked={autoCheckEnabled}
-          onClick={() => setAutoCheckEnabled(!autoCheckEnabled)}
+          onClick={() => { setAutoCheckEnabled(!autoCheckEnabled); playSfx("setting_toggle"); }}
           className={cn(
             "px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider transition-all touch-target",
             autoCheckEnabled
@@ -163,13 +166,31 @@ function AutoCheckCadenceRow(props: {
 }) {
   const { compact, mode, intervalMs } = props;
   const smartActive = mode === "smart";
+  const customActive = mode === "interval" && !AUTO_CHECK_INTERVAL_OPTIONS.includes(intervalMs);
+  const [customMinutes, setCustomMinutes] = useState(() => String(normalizeCustomAutoCheckMinutes(intervalMs / 60_000)));
+  useEffect(() => {
+    if (customActive) setCustomMinutes(String(normalizeCustomAutoCheckMinutes(intervalMs / 60_000)));
+  }, [customActive, intervalMs]);
+  const commitCustom = () => {
+    if (!/^\d+$/.test(customMinutes)) {
+      setCustomMinutes(String(normalizeCustomAutoCheckMinutes(intervalMs / 60_000)));
+      toast.error("Enter a whole number from 1 to 99 minutes");
+      return;
+    }
+    const raw = Number(customMinutes);
+    const minutes = normalizeCustomAutoCheckMinutes(customMinutes);
+    setCustomMinutes(String(minutes));
+    if (raw !== minutes) toast.info(`Custom Auto-Check clamped to ${minutes} minute${minutes === 1 ? "" : "s"}`);
+    props.onSelect("interval", customAutoCheckMinutesToMs(minutes));
+    playSfx("select_change");
+  };
   return (
     <div className="grid grid-cols-5 gap-1" role="radiogroup" aria-label="Auto-Check cadence">
       <button
         type="button"
         role="radio"
         aria-checked={smartActive}
-        onClick={() => props.onSelect("smart")}
+        onClick={() => { props.onSelect("smart"); playSfx("select_change"); }}
         title="Smart — evaluate only when the context actually changes"
         className={cn(
           "rounded-lg border font-bold uppercase flex items-center justify-center gap-1 transition-all touch-target",
@@ -190,8 +211,8 @@ function AutoCheckCadenceRow(props: {
             type="button"
             role="radio"
             aria-checked={active}
-            onClick={() => props.onSelect("interval", option)}
-            title={`Check at most once every ${formatAutoCheckInterval(option)}`}
+            onClick={() => { props.onSelect("interval", option); playSfx("select_change"); }}
+            title={`Run an AutoCheck attempt every ${formatAutoCheckInterval(option)}`}
             className={cn(
               "rounded-lg border font-bold uppercase transition-all touch-target",
               compact ? "py-1 text-[9px]" : "py-1.5 text-[10px]",
@@ -204,6 +225,43 @@ function AutoCheckCadenceRow(props: {
           </button>
         );
       })}
+      {customActive ? (
+        <label className={cn(
+          "rounded-lg border border-orange-500/50 bg-orange-500/20 text-orange-100 font-bold uppercase flex items-center justify-center gap-0.5 touch-target",
+          compact ? "py-1 text-[9px]" : "py-1.5 text-[10px]",
+        )} title="Custom interval: 1–99 whole minutes">
+          <input
+            aria-label="Custom Auto-Check minutes"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={customMinutes}
+            onChange={(event) => setCustomMinutes(event.target.value.slice(0, 3))}
+            onBlur={commitCustom}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); commitCustom(); event.currentTarget.blur(); }
+            }}
+            className="w-6 bg-transparent text-right outline-none"
+          />
+          M
+        </label>
+      ) : (
+        <button
+          type="button"
+          role="radio"
+          aria-checked={false}
+          onClick={() => {
+            const minutes = 5;
+            setCustomMinutes(String(minutes));
+            props.onSelect("interval", customAutoCheckMinutesToMs(minutes));
+            playSfx("select_change");
+          }}
+          title="Set a custom interval from 1 to 99 minutes"
+          className={cn(
+            "rounded-lg border font-bold uppercase transition-all touch-target bg-black/30 border-white/5 text-gray-500 hover:text-gray-300",
+            compact ? "py-1 text-[9px]" : "py-1.5 text-[10px]",
+          )}
+        >Custom</button>
+      )}
     </div>
   );
 }

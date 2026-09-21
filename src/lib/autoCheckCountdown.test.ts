@@ -150,13 +150,13 @@ function testReconcileJump() {
   ]);
   assertEq(jump.join(","), ",2,1", "12s → 2s jump never fabricates a 3 tick");
 
-  // Reconcile to <1s: nothing plays.
+  // With ceil semantics, a fraction of the final second is honestly second 1.
   const due4 = due1 - 12_000 + 400;
   const { ticks: under } = runSequence([
     at(due1, 12),
     { enabled: true, dueAtMs: due4, nowMs: due1 - 12_000 },
   ]);
-  assertEq(under.join(","), ",", "reconcile to <1s stays silent");
+  assertEq(under.join(","), ",1", "reconcile to the final fractional second ticks 1");
 }
 
 // ─── Rapid mode changes: no spam ───────────────────────────────────────────

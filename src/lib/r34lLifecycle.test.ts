@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { advanceR34lPlateau, R34L_PLATEAU_EVIDENCE_WINDOW, r34lStyleReady } from "./r34lLifecycle";
+import { advanceR34lPlateau, isR34lFreezeSuggestionDismissed, R34L_PLATEAU_EVIDENCE_WINDOW, r34lAppliedFingerprint, r34lStyleReady } from "./r34lLifecycle";
 import type { R34lView } from "./r34lLearning";
 
 const base = {
@@ -24,5 +24,11 @@ const changed = advanceR34lPlateau(started.snapshot, {
   statements: [{ family: "length", text: "messages now run long", band: "established", applied: true }],
 });
 assert.equal(changed.suggestFrozen, false, "material fingerprint change restarts the window");
+
+const matureView = { ...base, recentMessages: base.recentMessages + R34L_PLATEAU_EVIDENCE_WINDOW };
+const dismissal = { fingerprint: r34lAppliedFingerprint(matureView), recentMessages: matureView.recentMessages };
+assert.equal(isR34lFreezeSuggestionDismissed(dismissal, matureView), true, "Not now hides the same plateau snapshot");
+assert.equal(isR34lFreezeSuggestionDismissed(dismissal, { ...matureView, recentMessages: matureView.recentMessages + 17 }), true, "dismissal survives minor extra evidence");
+assert.equal(isR34lFreezeSuggestionDismissed(dismissal, { ...matureView, recentMessages: matureView.recentMessages + 18 }), false, "substantially more evidence permits a later suggestion");
 
 console.log("R34L readiness and bounded plateau scenarios passed");

@@ -112,7 +112,7 @@ import {
 import { getTwitchSession } from "../lib/twitch";
 import { getKickSession } from "../lib/kick";
 import { summarizeChatPulse } from "../lib/chatPulse";
-import { advanceR34lPlateau, r34lStyleReady, type R34lPlateauSnapshot } from "../lib/r34lLifecycle";
+import { advanceR34lPlateau, isR34lFreezeSuggestionDismissed, r34lAppliedFingerprint, r34lStyleReady, type R34lFreezeDismissal, type R34lPlateauSnapshot } from "../lib/r34lLifecycle";
 
 // Color maps for sentiment
 const SENTIMENT_DOT_COLORS: Record<string, string> = {
@@ -279,6 +279,7 @@ export function CoreMobileWorkspace(props: {
   const autoForgeDryRun = useAppStore((s) => s.autoForgeDryRun);
   const setAutoForgeDryRun = useAppStore((s) => s.setAutoForgeDryRun);
   const autoForgeAutoCheckEnabled = useAppStore((s) => s.autoForgeAutoCheckEnabled);
+  const autoForgeAutoCheckMode = useAppStore((s) => s.autoForgeAutoCheckMode);
   const setAutoForgeAutoCheckEnabled = useAppStore((s) => s.setAutoForgeAutoCheckEnabled);
   const autoForgeConfidenceThreshold = useAppStore((s) => s.autoForgeConfidenceThreshold);
   const setAutoForgeConfidenceThreshold = useAppStore((s) => s.setAutoForgeConfidenceThreshold);
@@ -299,7 +300,7 @@ export function CoreMobileWorkspace(props: {
     }
   }, []);
   const autoForgeCountdown = autoForgeNextActionMs
-    ? Math.max(0, Math.floor((autoForgeNextActionMs - now) / 1000))
+    ? Math.max(0, Math.ceil((autoForgeNextActionMs - now) / 1000))
     : 0;
   const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const lastTokenUsage = useAppStore((s) => s.lastTokenUsage);
@@ -438,6 +439,7 @@ export function CoreMobileWorkspace(props: {
           isVisualCapturing={props.isVisualCapturing}
           visualCooldown={props.visualCooldown}
           snapDisabled={props.snapDisabled}
+          onOpenTuning={() => setMobileTab("tuning")}
         />
         </div>
 
@@ -478,9 +480,13 @@ export function CoreMobileWorkspace(props: {
         </div>
       </main>
 
-      {/* Global Mobile CORE response surface — available from every tab and
-          kept in normal flex flow so it never covers navigation/safe areas. */}
-      <MobileSmartReplyShelf onOpenTuning={() => setMobileTab("tuning")} />
+      {mobileTab !== "context" && (
+        <MobileSmartReplyShelf
+          compact
+          onOpenContext={() => setMobileTab("context")}
+          onOpenTuning={() => setMobileTab("tuning")}
+        />
+      )}
 
       {/* ─── 3. Persistent Status / Telemetry Strip (with Expandable Drawer) ─── */}
       {/* ─── 3. Persistent Status / Telemetry Strip (collapsible utility strip) ───
@@ -598,7 +604,7 @@ export function CoreMobileWorkspace(props: {
                     <Zap className="w-3 h-3" /> AutoForge
                   </span>
                 )}
-                {autoForgeCountdown > 0 && autoForgeAutoCheckEnabled && (
+                {autoForgeAutoCheckMode === "interval" && autoForgeCountdown > 0 && autoForgeAutoCheckEnabled && (
                   <span className="text-gray-500 font-mono text-[9px]">({autoForgeCountdown}s)</span>
                 )}
               </span>
@@ -823,6 +829,7 @@ function MobileContextTab(props: {
   isVisualCapturing: boolean;
   visualCooldown: boolean;
   snapDisabled?: boolean;
+  onOpenTuning: () => void;
 }) {
   const [streamMinimized, setStreamMinimized] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
@@ -1550,6 +1557,7 @@ function MobileContextTab(props: {
         onExpandedChange={setComposerExpanded}
         focusRequest={composerFocusRequest}
       />
+      <MobileSmartReplyShelf onOpenTuning={props.onOpenTuning} />
 
       {/* Supporting Context is temporary: it overlays the lower chat region
           and releases every pixel when dismissed. */}
@@ -1673,10 +1681,19 @@ function MobileChatComposer(props: {
     }
   };
 
-  if (!props.expanded || smartReplyTrayActive) return null;
-
   return (
-    <div data-mobile-composer="expanded" className="shrink-0 border-t border-white/5 bg-[#121217] px-2.5 py-1.5 flex items-end gap-1.5" aria-label="Chat action tray">
+    <AnimatePresence initial={false}>
+    {props.expanded && !smartReplyTrayActive && (
+    <motion.div
+      key="mobile-chat-composer"
+      data-mobile-composer="expanded"
+      initial={{ opacity: 0, y: 12, height: 0 }}
+      animate={{ opacity: 1, y: 0, height: "auto" }}
+      exit={{ opacity: 0, y: 14, height: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      className="shrink-0 overflow-hidden border-t border-white/5 bg-[#121217] px-2.5 py-1.5 flex items-end gap-1.5"
+      aria-label="Chat action tray"
+    >
       <textarea
         ref={inputRef}
         rows={1}
@@ -1703,7 +1720,9 @@ function MobileChatComposer(props: {
       >
         {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
       </button>
-    </div>
+    </motion.div>
+    )}
+    </AnimatePresence>
   );
 }
 
@@ -1871,7 +1890,7 @@ function MobileForgeTab(props: {
                 type="button"
                 onClick={() => {
                   updateConfig({ primaryProfile: active ? "none" : p.value });
-                  playSfx("palette_select");
+                  playSfx("select_change");
                 }}
                 className={cn(
                   "group relative flex flex-col items-center justify-center gap-1.5 py-2.5 px-1.5 rounded-xl border text-[11px] font-bold transition-all touch-target overflow-hidden",
@@ -2592,6 +2611,7 @@ function MobileTuningTab(props: {
   );
   const styleReady = !r34lEnabled && !r34lLearningFrozen && props.readiness.platformReady && r34lStyleReady(r34lView);
   const plateauRef = useRef<R34lPlateauSnapshot | null>(null);
+  const freezeDismissalRef = useRef<R34lFreezeDismissal | null>(null);
   const [suggestFrozen, setSuggestFrozen] = useState(false);
   useEffect(() => {
     if (!r34lEnabled || r34lLearningFrozen) {
@@ -2601,7 +2621,7 @@ function MobileTuningTab(props: {
     }
     const result = advanceR34lPlateau(plateauRef.current, r34lView);
     plateauRef.current = result.snapshot;
-    setSuggestFrozen(result.suggestFrozen);
+    setSuggestFrozen(result.suggestFrozen && !isR34lFreezeSuggestionDismissed(freezeDismissalRef.current, r34lView));
   }, [r34lView, r34lEnabled, r34lLearningFrozen]);
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
@@ -2635,7 +2655,7 @@ function MobileTuningTab(props: {
     } else {
       setProviderSectionExpanded(true);
     }
-    playSfx("panel_collapse");
+    playSfx(providerSectionExpanded ? "drawer_close" : "drawer_open");
   };
 
   const handleSaveKey = (providerId: string, label: string, keyField: keyof ReturnType<typeof getKeys>) => {
@@ -2649,14 +2669,14 @@ function MobileTuningTab(props: {
     setExpandedProvider(null);
     setApiKeyInput("");
     toast.success(`${label} key saved — active now!`);
-    playSfx("welcome_dismiss");
+    playSfx("setting_toggle");
   };
 
   const handleRemoveKey = (providerId: string, label: string, keyField: keyof ReturnType<typeof getKeys>) => {
     saveKeys({ [keyField]: "" });
     setApiKeyInput("");
     toast.success(`${label} key removed`);
-    playSfx("memory_remove");
+    playSfx("setting_toggle");
     if (activeProvider === providerId) {
       const fallback = getProviderWithKey() || "gemini";
       setActiveProvider(fallback);
@@ -2682,7 +2702,7 @@ function MobileTuningTab(props: {
               type="button"
               onClick={() => {
                 setPlatform(p);
-                playSfx("palette_select");
+                playSfx("select_change");
               }}
               className={cn(
                 "flex-1 py-2 rounded-lg border text-xs font-bold capitalize transition-all touch-target",
@@ -2706,9 +2726,11 @@ function MobileTuningTab(props: {
             platform={mobilePlatform}
             onSave={async (name) => {
               try {
-                if (await switchChannel(name)) {
+                const switched = await switchChannel(name);
+                if (switched) {
                   toast.success(`Now watching @${name}`);
                 }
+                return switched;
               } catch (e: any) {
                 toast.error(e.message || "Failed to switch channel");
                 throw e;
@@ -2801,7 +2823,7 @@ function MobileTuningTab(props: {
                     if (hasKey && !isActive) {
                       setActiveProvider(p.id);
                       toast.success(`Switched to ${p.shortLabel}`);
-                      playSfx("palette_select");
+                      playSfx("select_change");
                     } else {
                       const nextExpanded = isExpanded ? null : p.id;
                       setExpandedProvider(nextExpanded);
@@ -3153,18 +3175,33 @@ function MobileTuningTab(props: {
             </button>
           </div>
           {suggestFrozen && (
-            <button
-              type="button"
-              onClick={() => {
-                setR34lLearningFrozen(true);
-                setSuggestFrozen(false);
-                playSfx("setting_toggle");
-                toast.success("R34L FROZEN — learned style still applies; new learning paused");
-              }}
-              className="mobile-touch-row flex w-full items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-200 hover:bg-cyan-500/15"
-            >
-              ❄ FREEZE?
-            </button>
+            <div className="rounded-lg border border-cyan-400/25 bg-cyan-500/[0.07] p-2">
+              <p className="text-[9px] text-cyan-100/75">Freeze learning? Learned style stays active.</p>
+              <div className="mt-1.5 flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setR34lLearningFrozen(true);
+                    setSuggestFrozen(false);
+                    playSfx("setting_toggle");
+                    toast.success("R34L FROZEN — learned style still applies; new learning paused");
+                  }}
+                  className="mobile-touch-row flex flex-1 items-center justify-center rounded border border-cyan-400/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-200"
+                >❄ FREEZE?</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    freezeDismissalRef.current = {
+                      fingerprint: r34lAppliedFingerprint(r34lView),
+                      recentMessages: r34lView.recentMessages,
+                    };
+                    setSuggestFrozen(false);
+                    playSfx("navigation");
+                  }}
+                  className="rounded border border-white/10 px-2 text-[9px] font-bold text-gray-400"
+                >Not now</button>
+              </div>
+            </div>
           )}
           <R34lInlineDetails showDesktopShortcutHint={false} />
 

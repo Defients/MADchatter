@@ -1,4 +1,5 @@
 import { useAppStore } from "../store";
+import { installOptionalUiAudioLifecycle, isOptionalUiAudioAllowed } from "./uiAudioPolicy";
 import {
   mobileAudioCueAllowed,
   shouldSuppressLowerPriorityCue,
@@ -99,8 +100,41 @@ type SoundDefinition = { type: "synth"; synth: SynthConfig };
 
 let ctx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
+let attentionCtx: AudioContext | null = null;
+let attentionGain: GainNode | null = null;
 let currentSinkId: string | null = null;
 let activePriorityCue: { cue: MobileAudioCue; until: number } | null = null;
+let lifecycleInstalled = false;
+const optionalUiDiagnostics = { attempted: 0, allowed: 0, suppressed: 0 };
+
+export function getOptionalUiAudioDiagnostics(): Readonly<typeof optionalUiDiagnostics> {
+  return { ...optionalUiDiagnostics };
+}
+
+export function resetOptionalUiAudioDiagnostics(): void {
+  optionalUiDiagnostics.attempted = 0;
+  optionalUiDiagnostics.allowed = 0;
+  optionalUiDiagnostics.suppressed = 0;
+}
+
+function admitOptionalUiAudio(): boolean {
+  optionalUiDiagnostics.attempted++;
+  const allowed = isOptionalUiAudioAllowed();
+  if (allowed) optionalUiDiagnostics.allowed++;
+  else optionalUiDiagnostics.suppressed++;
+  return allowed;
+}
+
+function ensureUiAudioLifecycle(): void {
+  if (lifecycleInstalled) return;
+  lifecycleInstalled = true;
+  installOptionalUiAudioLifecycle({
+    onSuspend: () => { if (ctx?.state === "running") void ctx.suspend().catch(() => {}); },
+    // Future foreground interactions may resume lazily. Nothing is queued or
+    // replayed here, so hidden countdown/UI cues simply disappear.
+    onResume: () => {},
+  });
+}
 
 export function reserveAudioPriority(cue: MobileAudioCue, durationMs: number): void {
   const now = Date.now();
@@ -119,22 +153,31 @@ function cueForSfx(event: SfxEvent): MobileAudioCue {
   return "navigation";
 }
 
-function getCtx(): AudioContext | null {
+function getCtx(domain: "ui" | "attention" = "ui"): AudioContext | null {
   if (typeof window === "undefined") return null;
-  if (!ctx) {
+  if (domain === "ui") {
+    ensureUiAudioLifecycle();
+    if (!isOptionalUiAudioAllowed()) return null;
+  }
+  let target = domain === "attention" ? attentionCtx : ctx;
+  if (!target) {
     try {
-      ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      masterGain = ctx.createGain();
-      masterGain.gain.value = 1;
-      masterGain.connect(ctx.destination);
+      target = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const gain = target.createGain();
+      gain.gain.value = 1;
+      gain.connect(target.destination);
+      if (domain === "attention") { attentionCtx = target; attentionGain = gain; }
+      else { ctx = target; masterGain = gain; }
     } catch {
       return null;
     }
   }
-  if (ctx.state === "suspended") {
-    ctx.resume().catch(() => {});
+  if (target.state === "suspended") {
+    // UI callers can never resume while hidden because the policy returned
+    // above. Attention uses its independent functional-alert context.
+    target.resume().catch(() => {});
   }
-  return ctx;
+  return target;
 }
 
 export async function setSfxOutputSink(deviceId: string): Promise<void> {
@@ -151,14 +194,15 @@ export async function setSfxOutputSink(deviceId: string): Promise<void> {
 
 // ─── Synth Helpers ────────────────────────────────────────────────────────────
 
-function playSynth(config: SynthConfig, volume: number): void {
-  const c = getCtx();
-  if (!c || !masterGain) return;
+function playSynth(config: SynthConfig, volume: number, domain: "ui" | "attention" = "ui"): void {
+  const c = getCtx(domain);
+  const outputGain = domain === "attention" ? attentionGain : masterGain;
+  if (!c || !outputGain) return;
 
   const now = c.currentTime;
   const output = c.createGain();
   output.gain.value = volume;
-  output.connect(masterGain);
+  output.connect(outputGain);
 
   // Reverb (simple convolver-free approach: delayed gain decay)
   let reverbInput: GainNode = output;
@@ -1110,6 +1154,7 @@ const SOUND_MAPS: Record<Theme, Record<BaseSfxEvent, SoundDefinition>> = {
 
 export function playSfx(event: SfxEvent, options?: { volume?: number }): void {
   if (typeof window === "undefined") return;
+  if (!admitOptionalUiAudio()) return;
 
   const state = useAppStore.getState();
   const cue = cueForSfx(event);
@@ -1137,11 +1182,12 @@ export function playAttentionFallbackSfx(): void {
   const theme: Theme = state.theme === "cosmotech" || state.theme === "corrupture" ? "cosmotech" : "default";
   const definition = SOUND_MAPS[theme].mention_alert;
   reserveAudioPriority("attention_mention", definition.synth.duration * 1000);
-  playSynth(definition.synth, 0.72);
+  playSynth(definition.synth, 0.72, "attention");
 }
 
 export function playForceBurstSfx(): void {
   if (typeof window === "undefined") return;
+  if (!admitOptionalUiAudio()) return;
 
   const state = useAppStore.getState();
   if (!state.sfxEnabled) return;
@@ -1195,6 +1241,7 @@ const AUTOCHECK_TICKS: Record<1 | 2 | 3, SynthConfig> = {
 /** Soft 3→2→1 countdown tick for the mobile AutoForge HUD. Respects sfxEnabled/sfxVolume. */
 export function playAutoCheckTick(step: 1 | 2 | 3): void {
   if (typeof window === "undefined") return;
+  if (!admitOptionalUiAudio()) return;
   const state = useAppStore.getState();
   if (!state.sfxEnabled) return;
   const def = AUTOCHECK_TICKS[step];

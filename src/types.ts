@@ -405,6 +405,20 @@ export interface SmartReplyNotice {
   message?: string;
 }
 
+/** One retained Smart Reply operation/result. Desktop may keep several of
+ * these concurrently; Mobile presents only the focused thread. */
+export interface SmartReplyThread {
+  key: string;
+  botKey: string;
+  messageId: string;
+  botId?: string;
+  botUsername: string;
+  receivedAt: number;
+  loading: boolean;
+  replies: SmartReply[];
+  notice: SmartReplyNotice;
+}
+
 // ─── Chatter Leaderboard Types ─────────────────────────────────
 
 export interface ChatterStats {

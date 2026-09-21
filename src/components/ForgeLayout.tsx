@@ -258,9 +258,16 @@ export function ForgeLayout() {
     smartReplies,
     setSmartReplies,
     smartRepliesLoading,
+    smartReplyThreads,
+    focusedSmartReplyKey,
+    focusSmartReplyThread,
+    dismissSmartReplyThread,
     isAutoForgeThinking,
     sentimentHistory,
   } = useAppStore();
+  const focusedSmartReplyThread = smartReplyThreads.find((thread) => thread.key === focusedSmartReplyKey) ?? null;
+  const visibleSmartReplies = focusedSmartReplyThread?.replies ?? smartReplies;
+  const visibleSmartRepliesLoading = focusedSmartReplyThread?.loading ?? smartRepliesLoading;
 
   const {
     user,
@@ -1010,15 +1017,18 @@ export function ForgeLayout() {
 
   // Send a smart reply and record it in the sent log / stats so anti-repetition
   // and analytics see it (previously smart replies were sent but not tracked).
-  const sendSmartReply = async (reply: (typeof smartReplies)[number]) => {
+  const sendSmartReply = async (reply: (typeof visibleSmartReplies)[number]) => {
     const channel = streamMetadata?.channelName;
     if (!channel) return;
     const state = useAppStore.getState();
     try {
       await sendManualMessage({ message: reply.text, channel, botId: reply.botId, source: "smart_reply" });
       if (state.messageSoundEnabled) playMessageSound();
-      setSmartReplies([]);
-      useAppStore.getState().setSmartReplyNotice(null);
+      if (focusedSmartReplyKey) dismissSmartReplyThread(focusedSmartReplyKey);
+      else {
+        setSmartReplies([]);
+        useAppStore.getState().setSmartReplyNotice(null);
+      }
       toast.success("Reply sent!");
       playSfx('send_message');
     } catch (e: any) {
@@ -1029,20 +1039,20 @@ export function ForgeLayout() {
 
   // Smart reply keyboard shortcuts (1/2/3 to send)
   useEffect(() => {
-    if (smartReplies.length === 0) return;
+    if (visibleSmartReplies.length === 0) return;
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target instanceof HTMLElement ? e.target : null;
       if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
       const idx = parseInt(e.key, 10) - 1;
-      if (idx >= 0 && idx < smartReplies.length) {
+      if (idx >= 0 && idx < visibleSmartReplies.length) {
         e.preventDefault();
-        sendSmartReply(smartReplies[idx]);
+        sendSmartReply(visibleSmartReplies[idx]);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [smartReplies, streamMetadata?.channelName, platform]);
+  }, [visibleSmartReplies, focusedSmartReplyKey, streamMetadata?.channelName, platform]);
 
   const startEditingChannel = () => {
     setChannelInput(streamMetadata?.channelName || "");
@@ -2263,14 +2273,31 @@ export function ForgeLayout() {
             </ThemedTooltip>
           )}
           {/* Smart Reply Chips */}
-          {(smartReplies.length > 0 || smartRepliesLoading) && (
+          {(visibleSmartReplies.length > 0 || visibleSmartRepliesLoading || smartReplyThreads.length > 0) && (
             <div data-tutorial="smart-replies" className="flex items-center gap-1.5 px-2 py-1.5 border-b border-white/5 bg-cyan-500/5 shrink-0 flex-wrap">
-              {smartRepliesLoading ? (
+              {smartReplyThreads.length > 1 && (
+                <div className="flex items-center gap-1" aria-label="Smart Reply bots">
+                  {smartReplyThreads.map((thread) => (
+                    <button
+                      key={thread.key}
+                      type="button"
+                      onClick={() => focusSmartReplyThread(thread.key)}
+                      className={cn(
+                        "rounded border px-1.5 py-0.5 text-[8px] font-bold",
+                        thread.key === focusedSmartReplyKey
+                          ? "border-cyan-400/50 bg-cyan-400/20 text-cyan-100"
+                          : "border-white/10 text-gray-500",
+                      )}
+                    >@{thread.botUsername}{thread.loading ? " …" : ""}</button>
+                  ))}
+                </div>
+              )}
+              {visibleSmartRepliesLoading ? (
                 <span className="text-[10px] text-cyan-400 animate-pulse">Generating replies...</span>
               ) : (
                 <>
                   <span className="text-[9px] text-cyan-500 font-bold uppercase shrink-0">Reply:</span>
-                  {smartReplies.map((reply, idx) => (
+                  {visibleSmartReplies.map((reply, idx) => (
                     <ThemedTooltip content={reply.text}>
                       <button
                         key={reply.id}
@@ -2285,7 +2312,7 @@ export function ForgeLayout() {
                   ))}
                   <button
                     type="button"
-                    onClick={() => setSmartReplies([])}
+                    onClick={() => focusedSmartReplyKey ? dismissSmartReplyThread(focusedSmartReplyKey) : setSmartReplies([])}
                     className="text-gray-500 hover:text-white transition-colors shrink-0 ml-auto"
                   >
                     <X className="w-3 h-3" />

@@ -26,6 +26,7 @@ const {
   AUTO_CHECK_MAX_INTERVAL_MS,
   DEFAULT_AUTO_CHECK_INTERVAL_MS,
   DEFAULT_AUTO_CHECK_MODE,
+  customAutoCheckMinutesToMs,
   captureAutoCheckSignal,
   clampAutoCheckIntervalMs,
   computeAutoCheckWindow,
@@ -34,6 +35,7 @@ const {
   formatAutoCheckInterval,
   hasMeaningfulContextChange,
   normalizeAutoCheckMode,
+  normalizeCustomAutoCheckMinutes,
   reconcileAutoCheckSchedule,
   resolveAutoCheckFloorMs,
   resolveEffectiveCheckFloorMs,
@@ -76,8 +78,12 @@ function testNormalization() {
   assertEq(formatAutoCheckInterval(30_000), "30s", "30s label");
   assertEq(formatAutoCheckInterval(60_000), "1m", "1m label");
   assertEq(formatAutoCheckInterval(300_000), "5m", "5m label");
-  assert(AUTO_CHECK_INTERVAL_OPTIONS.length >= 4, "at least four interval options are offered");
+  assertEq(AUTO_CHECK_INTERVAL_OPTIONS.length, 3, "fixed presets are exactly 30s, 1m, and 2m");
   assert(AUTO_CHECK_INTERVAL_OPTIONS.every((v) => v >= AUTO_CHECK_MIN_INTERVAL_MS), "no offered option polls faster than the floor");
+  assertEq(normalizeCustomAutoCheckMinutes(0), 1, "custom minutes clamp to 1");
+  assertEq(normalizeCustomAutoCheckMinutes(100), 99, "custom minutes clamp to 99");
+  assertEq(customAutoCheckMinutesToMs(5), 300_000, "legacy 5m value is representable as CUSTOM 5");
+  assertEq(customAutoCheckMinutesToMs(99), 5_940_000, "CUSTOM 99 persists as milliseconds");
 }
 
 // ─── Test 2: context fingerprint ────────────────────────────────────────────
@@ -164,7 +170,7 @@ function testSmartCadence() {
 // ─── Test 5: countdown + status copy ────────────────────────────────────────
 function testStatusHelpers() {
   const now = 5_000_000;
-  const win = computeAutoCheckWindow({ mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now });
+  const win = computeAutoCheckWindow({ mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now, nextActionMs: now + 30_000 });
   assertEq(win.dueInMs, 30_000, "dueInMs counts down to the cadence");
   assertEq(win.elapsedMs, 30_000, "elapsedMs tracks time since the last check");
   assertEq(win.progress, 0.5, "progress is 0→1 toward the next check");
@@ -220,7 +226,7 @@ function testEffectiveFloor() {
     90_000,
     "effective floor widens to a larger min cooldown (smart)",
   );
-  // Interval mode: the cadence floor is the interval; cooldown can widen it.
+  // Interval mode: sending cooldown cannot widen the attempt cadence.
   assertEq(
     resolveEffectiveCheckFloorMs("interval", 30_000, 25_000),
     30_000,
@@ -228,8 +234,8 @@ function testEffectiveFloor() {
   );
   assertEq(
     resolveEffectiveCheckFloorMs("interval", 30_000, 120_000),
-    120_000,
-    "effective floor widens to a larger min cooldown (interval)",
+    30_000,
+    "send cooldown never widens a manual Interval attempt",
   );
   // Invalid / missing cooldown falls back to the cadence floor.
   assertEq(
@@ -336,10 +342,10 @@ function testScheduleReconcile() {
   assertEq(long.nextActionMs, now + 30_000, "48s remaining + 30s mode → 30s");
   assertEq(long.shortened, true, "a real pull-forward reports shortened");
 
-  // Interval: an already-sooner attempt is never pushed back out.
+  // Interval: explicit selection always establishes a fresh user anchor.
   const sooner = rec({ intervalMs: 30_000, scheduledMs: now + 8_000 });
-  assertEq(sooner.nextActionMs, now + 8_000, "8s remaining + 30s mode stays ~8s");
-  assertEq(sooner.shortened, false, "preserving a sooner attempt is not a shortening");
+  assertEq(sooner.nextActionMs, now + 30_000, "30s selection re-anchors from selection time");
+  assertEq(sooner.shortened, false, "a later explicit anchor is not a shortening");
 
   // Interval: a longer countdown trims to the new cadence.
   assertEq(rec({ scheduledMs: now + 90_000 }).nextActionMs, now + 60_000, "90s + 60s mode → 60s");
@@ -368,19 +374,17 @@ function testScheduleReconcile() {
   const roundTrip = rec({ mode: "smart", lastCheckAt: now - 25_000, scheduledMs: now + 55_000 });
   assertEq(roundTrip.nextActionMs, now + 5_000, "smart re-entry recomputes the residual (5s)");
 
-  // An already-due schedule stays due — a mode switch must not push a
-  // pending attempt back out to the full cadence.
-  assertEq(rec({ scheduledMs: now - 1_000 }).nextActionMs, now - 1_000, "overdue schedule stays due");
-  assertEq(rec({ scheduledMs: 0 }).nextActionMs, 0, "never-scheduled (0) stays due");
+  assertEq(rec({ scheduledMs: now - 1_000 }).nextActionMs, now + 60_000, "interval selection deliberately re-anchors an overdue schedule");
+  assertEq(rec({ scheduledMs: 0 }).nextActionMs, now + 60_000, "interval selection anchors a never-scheduled cadence");
 
   // Missing schedule is replaced by the mode's target.
   assertEq(rec({ scheduledMs: NaN }).nextActionMs, now + 60_000, "NaN schedule is replaced");
 
-  // Min cooldown widens the interval target exactly like the live loops.
+  // Send cooldown cannot mutate the user-owned attempt deadline.
   assertEq(
     rec({ intervalMs: 30_000, minCooldownMs: 45_000, scheduledMs: now + 200_000 }).nextActionMs,
-    now + 45_000,
-    "cooldown widens the interval target",
+    now + 30_000,
+    "cooldown does not widen the interval target",
   );
 
   // Sub-second pull-forwards don't count as a user-visible shortening.
@@ -389,12 +393,12 @@ function testScheduleReconcile() {
   assertEq(subSecond.shortened, false, "sub-second pull-forward doesn't flash");
 
   // dueAtMs: the countdown's scheduled-attempt identity.
-  const win = computeAutoCheckWindow({ mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now });
+  const win = computeAutoCheckWindow({ mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now, nextActionMs: now + 30_000 });
   assertEq(win.dueAtMs, now + 30_000, "dueAtMs = cadence due timestamp");
   const paced = computeAutoCheckWindow({
     mode: "interval", intervalMs: 60_000, lastCheckAt: now - 30_000, now, nextActionMs: now + 90_000,
   });
-  assertEq(paced.dueAtMs, now + 90_000, "dueAtMs = model pacing when it is later");
+  assertEq(paced.dueAtMs, now + 90_000, "dueAtMs is the canonical stored Interval deadline");
 }
 
 testScheduleReconcile();

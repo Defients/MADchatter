@@ -33,6 +33,19 @@ assert(classifyDirectMentionEvents({
   channel: "room", platform: "twitch", sessionRevision: 2, targets: [{ botUsername: "BotName" }], replyTargetUsername: "botname",
 })[0]?.evidence === "platform_reply", "platform reply metadata is direct evidence");
 
+for (const text of ["@BotName", "yo @BotName", "yo,@BotName", "(@BotName)", "hey—@BotName", "well...@BotName?"]) {
+  assert(classifyDirectMentionEvents({
+    messageId: `boundary-${text}`, username: "viewer", text, receivedAt: 3,
+    channel: "room", platform: "twitch", sessionRevision: 2, targets: [{ botUsername: "BotName" }],
+  }).length === 1, `punctuation boundary recognized: ${text}`);
+}
+for (const text of ["hello@botname.com", "@BotNameExtra", "BotName in a sentence"]) {
+  assert(classifyDirectMentionEvents({
+    messageId: `reject-${text}`, username: "viewer", text, receivedAt: 3,
+    channel: "room", platform: "twitch", sessionRevision: 2, targets: [{ botUsername: "BotName" }],
+  }).length === 0, `false direct mention rejected: ${text}`);
+}
+
 function event(messageId: string): MentionEvent {
   return {
     messageId, botUsername: "BotName", username: "viewer123", text: `@BotName ${messageId}`,
@@ -154,3 +167,57 @@ for (const [reason, expectedState] of [
 }
 
 console.log(`${passed}/${passed} direct-mention scenarios passed`);
+
+{
+  const coordinator = new DirectMentionCoordinator();
+  const pending = new Map<string, (value: SmartReply[]) => void>();
+  const aborted: string[] = [];
+  const retained = new Map<string, SmartReply[]>();
+  let active = 0;
+  let now = 10_000;
+  const alerts: Array<{ bot: string; alert: boolean }> = [];
+  const makeEvent = (botId: string, botUsername: string, messageId: string): MentionEvent => ({
+    ...event(messageId), botId, botUsername, text: `@${botUsername} hi`, receivedAt: now,
+  });
+  const depsFor = (mention: MentionEvent): DirectMentionCoordinatorDeps => ({
+    now: () => now,
+    acknowledge: (item, alert) => { alerts.push({ bot: item.botId!, alert }); },
+    smartRepliesEnabled: () => true,
+    generate: (item, signal) => new Promise((resolve) => {
+      pending.set(item.messageId, resolve);
+      signal.addEventListener("abort", () => aborted.push(item.messageId), { once: true });
+    }),
+    isSessionCurrent: () => true,
+    setReplies: (replies) => retained.set(`${mention.botId}:${mention.messageId}`, replies),
+    setLoading: (loading) => { active += loading ? 1 : -1; },
+    setNotice: () => {},
+  });
+  const botA = makeEvent("a", "BotA", "a1");
+  const botB = makeEvent("b", "BotB", "b1");
+  const aPending = coordinator.handle(botA, depsFor(botA));
+  const bPending = coordinator.handle(botB, depsFor(botB));
+  assert(!aborted.includes("a1"), "Bot B does not abort Bot A generation");
+  pending.get("b1")!([{ id: "rb", text: "B", timestamp: now }]);
+  assert(await bPending === "ready", "Bot B completes independently");
+  pending.get("a1")!([{ id: "ra", text: "A", timestamp: now }]);
+  assert(await aPending === "ready", "Bot A remains independently valid");
+  assert(retained.get("a:a1")?.[0]?.text === "A" && retained.get("b:b1")?.[0]?.text === "B", "per-bot results remain retained");
+  assert(active === 0, "per-request loading balances after concurrent completion");
+
+  now += 100;
+  const a2 = makeEvent("a", "BotA", "a2");
+  const first = coordinator.handle(a2, depsFor(a2));
+  now += 100;
+  const a3 = makeEvent("a", "BotA", "a3");
+  const newest = coordinator.handle(a3, depsFor(a3));
+  assert(aborted.includes("a2"), "newer Bot A mention supersedes older Bot A work");
+  pending.get("a2")!([{ id: "old-a", text: "old", timestamp: now }]);
+  assert(await first === "stale", "old Bot A completion is stale");
+  pending.get("a3")!([{ id: "new-a", text: "new", timestamp: now }]);
+  assert(await newest === "ready" && retained.get("a:a3")?.[0]?.text === "new", "new Bot A completion wins");
+
+  assert(alerts.filter((entry) => entry.bot === "a" && entry.alert).length === 1, "same-bot attention burst coalesces within two seconds");
+  assert(alerts.some((entry) => entry.bot === "b" && entry.alert), "different bots keep independent attention windows");
+}
+
+console.log(`${passed}/${passed} direct-mention scenarios passed (including multi-bot ownership)`);

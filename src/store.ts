@@ -45,7 +45,7 @@ const resilientLocalStorage: Storage = {
     }
   },
 };
-import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, SmartReplyNotice, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
+import { ForgeSuggestion, ForgeConfig, PinnedMemory, AutoForgeEvent, SentMessage, SessionStats, ChatMessage, AutoMemory, UserProfile, InsideJoke, PersonalityState, AutoMemoryConfig, ActionHistoryEntry, EnhancedSessionStats, AutoForgeRateLimitConfig, SentimentReading, SentimentSummary, QueuedMessage, ChatActivityBucket, SmartReply, SmartReplyNotice, SmartReplyThread, ChatterStats, DecisionLogEntry, PersonaPreset, KeywordTriggerRule, SessionGoal, GoalEvaluationResult, EngagementBreakdown, ForgeTemplate, AutoForgeSequence, PerActionRateLimitConfig, StreamHealthScore, ActionAccuracyEntry, AutoForgeRule, Bot, BotIdentity, BotPersona, BotRuntime, BotSessionPayload, BotPlatform, VisualSnapshotHistoryEntry, FeatureTokenStats, TokenFeatureKey, DirectorNote, FirstMessageCohort, FirstMessageStatus } from "./types";
 import type { Platform } from "./lib/kick";
 import { generateId } from "./lib/ids";
 import { stripReasoningBlocks } from "./lib/textSanitize";
@@ -524,6 +524,7 @@ interface AppState {
   // bots). Never persisted: it describes the live session, not user settings.
   autoForgeLastCheckMs: number;
   setAutoForgeLastCheckMs: (ms: number) => void;
+  recordAutoForgeCheckAttempt: (ms: number) => void;
   autoForgeCheckArmed: boolean;
   setAutoForgeCheckArmed: (armed: boolean) => void;
   // Runtime-only pulse marker: timestamp of the last Auto-Check mode change
@@ -844,6 +845,12 @@ interface AppState {
   setSmartRepliesLoading: (loading: boolean) => void;
   smartReplyNotice: SmartReplyNotice | null;
   setSmartReplyNotice: (notice: SmartReplyNotice | null) => void;
+  smartReplyThreads: SmartReplyThread[];
+  focusedSmartReplyKey: string | null;
+  upsertSmartReplyThread: (thread: SmartReplyThread, focus?: boolean) => void;
+  focusSmartReplyThread: (key: string) => void;
+  dismissSmartReplyThread: (key: string) => void;
+  clearSmartReplyThreads: () => void;
   smartRepliesEnabled: boolean;
   setSmartRepliesEnabled: (enabled: boolean) => void;
 
@@ -1069,6 +1076,7 @@ interface AppState {
   setBotLastAutoForgeDecision: (id: string, decision: AutoForgeDecision | null, record?: boolean) => void;
   setBotAutoForgeLastActionMs: (id: string, ms: number | null) => void;
   setBotAutoForgeNextActionMs: (id: string, ms: number) => void;
+  recordBotAutoForgeCheckAttempt: (id: string, ms: number) => void;
   setBotIsAutoForgeThinking: (id: string, thinking: boolean) => void;
   incrementBotStat: (id: string, key: keyof EnhancedSessionStats, amount?: number) => void;
   addBotActionHistoryEntry: (id: string, entry: Omit<ActionHistoryEntry, "id">) => void;
@@ -1530,13 +1538,30 @@ export const useAppStore = create<AppState>()(
       setAutoForgeEnabled: (enabled) =>
         set((state) => {
           const updates: Partial<AppState> = { autoForgeEnabled: enabled };
+          if (enabled && state.autoForgeAutoCheckMode === "interval") {
+            const deadline = Date.now() + state.autoForgeAutoCheckIntervalMs;
+            updates.autoForgeNextActionMs = deadline;
+            updates.bots = state.bots.map((bot) => bot.active && bot.session
+              ? { ...bot, runtime: { ...bot.runtime, autoForgeNextActionMs: deadline } }
+              : bot);
+          }
           if (enabled && !state.hasEnabledAutoForgeOnce) {
             updates.hasEnabledAutoForgeOnce = true;
           }
           return updates;
         }),
       autoForgeAutoCheckEnabled: true,
-      setAutoForgeAutoCheckEnabled: (enabled) => set({ autoForgeAutoCheckEnabled: enabled }),
+      setAutoForgeAutoCheckEnabled: (enabled) => set((state) => {
+        if (!enabled || state.autoForgeAutoCheckMode !== "interval") return { autoForgeAutoCheckEnabled: enabled };
+        const deadline = Date.now() + state.autoForgeAutoCheckIntervalMs;
+        return {
+          autoForgeAutoCheckEnabled: true,
+          autoForgeNextActionMs: deadline,
+          bots: state.bots.map((bot) => bot.active && bot.session
+            ? { ...bot, runtime: { ...bot.runtime, autoForgeNextActionMs: deadline } }
+            : bot),
+        };
+      }),
       autoForgeAutoCheckMode: DEFAULT_AUTO_CHECK_MODE,
       autoForgeAutoCheckIntervalMs: DEFAULT_AUTO_CHECK_INTERVAL_MS,
       setAutoForgeAutoCheckCadence: (mode, intervalMs) => set((state) => {
@@ -1595,6 +1620,12 @@ export const useAppStore = create<AppState>()(
       }),
       autoForgeLastCheckMs: 0,
       setAutoForgeLastCheckMs: (ms) => set({ autoForgeLastCheckMs: ms }),
+      recordAutoForgeCheckAttempt: (ms) => set((state) => ({
+        autoForgeLastCheckMs: ms,
+        autoForgeNextActionMs: state.autoForgeAutoCheckMode === "interval"
+          ? ms + state.autoForgeAutoCheckIntervalMs
+          : state.autoForgeNextActionMs,
+      })),
       autoForgeCheckArmed: false,
       setAutoForgeCheckArmed: (armed) => set({ autoForgeCheckArmed: armed }),
       autoForgeTimerShortenedAtMs: 0,
@@ -1632,7 +1663,9 @@ export const useAppStore = create<AppState>()(
       autoForgeLastActionMs: null,
       setAutoForgeLastActionMs: (ms) => set({ autoForgeLastActionMs: ms }),
       autoForgeNextActionMs: 0,
-      setAutoForgeNextActionMs: (ms) => set({ autoForgeNextActionMs: ms }),
+      setAutoForgeNextActionMs: (ms) => set((state) => state.autoForgeAutoCheckMode === "interval" && state.autoForgeNextActionMs > 0
+        ? {}
+        : { autoForgeNextActionMs: ms }),
 
       // ─── Manual send / typing awareness (A8) ──────────────────
       lastManualSendMs: 0,
@@ -1891,6 +1924,8 @@ export const useAppStore = create<AppState>()(
           smartReplies: [],
           smartRepliesLoading: false,
           smartReplyNotice: null,
+          smartReplyThreads: [],
+          focusedSmartReplyKey: null,
           chatLog: [],
           sentMessages: [],
           audioTranscript: "",
@@ -2669,10 +2704,58 @@ export const useAppStore = create<AppState>()(
       setSmartRepliesLoading: (loading) => set({ smartRepliesLoading: loading }),
       smartReplyNotice: null,
       setSmartReplyNotice: (notice) => set({ smartReplyNotice: notice }),
+      smartReplyThreads: [],
+      focusedSmartReplyKey: null,
+      upsertSmartReplyThread: (thread, focus = true) => set((state) => {
+        const without = state.smartReplyThreads.filter((item) => item.key !== thread.key);
+        // Retention is intentionally bounded. Loading threads are retained
+        // first; otherwise the newest mention wins the final slot.
+        const threads = [...without, thread]
+          .sort((a, b) => a.receivedAt - b.receivedAt)
+          .slice(-8);
+        const focusedKey = focus ? thread.key : state.focusedSmartReplyKey;
+        const focused = threads.find((item) => item.key === focusedKey)
+          ?? threads[threads.length - 1]
+          ?? null;
+        return {
+          smartReplyThreads: threads,
+          focusedSmartReplyKey: focused?.key ?? null,
+          smartReplies: focused?.replies ?? [],
+          smartReplyNotice: focused?.notice ?? null,
+          smartRepliesLoading: threads.some((item) => item.loading),
+        };
+      }),
+      focusSmartReplyThread: (key) => set((state) => {
+        const focused = state.smartReplyThreads.find((item) => item.key === key);
+        if (!focused) return {};
+        return {
+          focusedSmartReplyKey: key,
+          smartReplies: focused.replies,
+          smartReplyNotice: focused.notice,
+          smartRepliesLoading: state.smartReplyThreads.some((item) => item.loading),
+        };
+      }),
+      dismissSmartReplyThread: (key) => set((state) => {
+        const threads = state.smartReplyThreads.filter((item) => item.key !== key);
+        const focused = state.focusedSmartReplyKey === key
+          ? threads[threads.length - 1] ?? null
+          : threads.find((item) => item.key === state.focusedSmartReplyKey) ?? threads[threads.length - 1] ?? null;
+        return {
+          smartReplyThreads: threads,
+          focusedSmartReplyKey: focused?.key ?? null,
+          smartReplies: focused?.replies ?? [],
+          smartReplyNotice: focused?.notice ?? null,
+          smartRepliesLoading: threads.some((item) => item.loading),
+        };
+      }),
+      clearSmartReplyThreads: () => set({
+        smartReplyThreads: [], focusedSmartReplyKey: null,
+        smartReplies: [], smartReplyNotice: null, smartRepliesLoading: false,
+      }),
       smartRepliesEnabled: true,
       setSmartRepliesEnabled: (enabled) => set(enabled
         ? { smartRepliesEnabled: true }
-        : { smartRepliesEnabled: false, smartReplies: [], smartRepliesLoading: false, smartReplyNotice: null }),
+        : { smartRepliesEnabled: false, smartReplies: [], smartRepliesLoading: false, smartReplyNotice: null, smartReplyThreads: [], focusedSmartReplyKey: null }),
 
       // ─── Chatter Leaderboard ─────────────────────────────────
       chatterStats: {},
@@ -3575,8 +3658,26 @@ export const useAppStore = create<AppState>()(
         })),
       setBotAutoForgeNextActionMs: (id, ms) =>
         set((state) => ({
-          bots: state.bots.map((b) => (b.id === id ? { ...b, runtime: { ...b.runtime, autoForgeNextActionMs: ms } } : b)),
+          bots: state.bots.map((b) => (b.id === id
+            ? state.autoForgeAutoCheckMode === "interval" && b.runtime.autoForgeNextActionMs > 0
+              ? b
+              : { ...b, runtime: { ...b.runtime, autoForgeNextActionMs: ms } }
+            : b)),
         })),
+      recordBotAutoForgeCheckAttempt: (id, ms) => set((state) => ({
+        autoForgeLastCheckMs: ms,
+        bots: state.bots.map((bot) => bot.id === id
+          ? {
+              ...bot,
+              runtime: {
+                ...bot.runtime,
+                autoForgeNextActionMs: state.autoForgeAutoCheckMode === "interval"
+                  ? ms + state.autoForgeAutoCheckIntervalMs
+                  : bot.runtime.autoForgeNextActionMs,
+              },
+            }
+          : bot),
+      })),
       setBotIsAutoForgeThinking: (id, thinking) =>
         set((state) => ({
           bots: state.bots.map((b) => (b.id === id ? { ...b, runtime: { ...b.runtime, isAutoForgeThinking: thinking } } : b)),

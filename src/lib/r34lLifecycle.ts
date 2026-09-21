@@ -11,6 +11,11 @@ export interface R34lPlateauResult {
   suggestFrozen: boolean;
 }
 
+export interface R34lFreezeDismissal {
+  fingerprint: string;
+  recentMessages: number;
+}
+
 export const R34L_PLATEAU_EVIDENCE_WINDOW = 18;
 
 /** Canonical applied output—not raw counters—is the stability identity. */
@@ -29,6 +34,15 @@ export function r34lAppliedFingerprint(view: R34lView): string {
 export function r34lStyleReady(view: R34lView): boolean {
   return (view.state === "usable" || view.state === "established") &&
     view.appliedCount > 0 && r34lAppliedFingerprint(view).length > 0;
+}
+
+export function isR34lFreezeSuggestionDismissed(
+  dismissal: R34lFreezeDismissal | null,
+  view: R34lView,
+): boolean {
+  if (!dismissal) return false;
+  return dismissal.fingerprint === r34lAppliedFingerprint(view) &&
+    view.recentMessages - dismissal.recentMessages < R34L_PLATEAU_EVIDENCE_WINDOW;
 }
 
 /**

@@ -175,14 +175,29 @@ export function useAutoForge() {
   markActionBucketRef.current = markAutoForgeActionBucket;
 
   const checkAutoForge = async (force = false) => {
-    // Choreographed events temporarily own automated speech. Stand down before
-    // provider work; platformSend repeats this at delivery time for stale work.
-    if (botCoordinator.getEventFloorOwner()) return;
     // Multi-bot guard: the legacy single-bot loop stands down ONLY when
     // multi-bot is actively engaged (toggle on AND ≥2 bots authenticated).
     // With 0–1 authed bots the legacy loop keeps running so there's no dead zone.
     // (Placed inside the callback so React's rules of hooks are unaffected.)
     if (selectMultiBotActive(useAppStore.getState())) return;
+    const state = storeRef.current;
+    const live = useAppStore.getState();
+    const supercharged = live.superchargeActive;
+    const intervalDeadlineAttempt = !force && !supercharged && state.autoForgeAutoCheckMode === "interval";
+    if (!state.autoForgeEnabled) return;
+    if (intervalDeadlineAttempt) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      const nowMs = Date.now();
+      if (state.autoForgeNextActionMs <= 0) {
+        live.setAutoForgeNextActionMs(nowMs + state.autoForgeAutoCheckIntervalMs);
+        return;
+      }
+      if (nowMs < state.autoForgeNextActionMs) return;
+      live.recordAutoForgeCheckAttempt(nowMs);
+    }
+    // Choreographed events temporarily own automated speech. The interval
+    // attempt is still recorded above; event ownership shapes its outcome.
+    if (botCoordinator.getEventFloorOwner()) return;
     // Concurrency guard: skip if a previous check is still in-flight.
     // Watchdog: if the previous run's await never settled (hung SDK call,
     // dead-socket send, etc.) the flag would wedge the loop forever.
@@ -196,16 +211,13 @@ export function useAutoForge() {
         return;
       }
     }
-    const state = storeRef.current;
-    const live = useAppStore.getState();
-    const supercharged = live.superchargeActive;
     // Self-heal a wedged manual-forge flag — a hung forge request would
     // otherwise gate every AutoForge check + force forever.
     if (live.isForging && (live.forgeStartedAtMs === null || Date.now() - live.forgeStartedAtMs > FORGE_WATCHDOG_MS)) {
       console.warn(`[AutoForge] isForging stuck >${FORGE_WATCHDOG_MS / 1000}s — clearing stale flag`);
       live.setIsForging(false);
     }
-    if (!state.autoForgeEnabled || live.botsGlobalStop) return;
+    if (live.botsGlobalStop) return;
     if (live.isForging && !force) {
       // Gated on a live manual forge — push NEXT CHECK forward so the HUD
       // countdown reflects the real deferral instead of sitting at 0s.
@@ -215,7 +227,7 @@ export function useAutoForge() {
     // force bypasses the isForging gate — the scheduler arbitrates contention.
 
     // Only trigger if we've passed the next scheduled action time
-    if (!force && Date.now() < state.autoForgeNextActionMs) return;
+    if (!force && !intervalDeadlineAttempt && Date.now() < state.autoForgeNextActionMs) return;
 
     isAutoForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
@@ -434,7 +446,7 @@ export function useAutoForge() {
       // Vibe check: skip the AI call entirely when the moment is dead.
       // Cheap local heuristic — never skips mentions or spikes. Supercharge
       // mode bypasses it entirely — the user asked for maximum engagement.
-      if (!force && !supercharged) {
+      if (!force && !supercharged && !intervalDeadlineAttempt) {
         const vibe = vibeCheck({
           isMentioned,
           activitySpike,
@@ -611,8 +623,8 @@ export function useAutoForge() {
         // so cheap gate blocks never flash "Processing…").
         setIsAutoForgeThinking(true);
       } else {
-        // Force / supercharge bypass the cadence gate — a model call is
-        // imminent, so show the thinking state.
+        // Force/supercharge bypass the cadence gate; an admitted Interval
+        // deadline has already recorded its attempt above.
         setIsAutoForgeThinking(true);
       }
 
@@ -816,7 +828,7 @@ export function useAutoForge() {
         if (!Number.isFinite(nextMinutes) || nextMinutes < 0) nextMinutes = 1.5;
         // In dry-run nothing is actually sent, so the model's self-pacing
         // serves no protective purpose — clamp the next check to the user's
-        // cadence so decisions visibly cycle at 30s/1m/2m/5m instead of
+        // cadence so decisions visibly cycle at the selected interval instead of
         // hiding for 3-5 min and looking stuck. Also floor at the effective
         // check floor so the pacing gate stays honest (no sub-floor spin).
         const cadenceMinutes = (state.autoForgeAutoCheckIntervalMs || 30000) / 60000;
@@ -1436,12 +1448,14 @@ export function useAutoForge() {
   };
 
   useEffect(() => {
-    // Run the check every 15 seconds to see if it's time to act
+    // A lightweight 1s heartbeat bounds foreground deadline latency. The
+    // absolute timestamp remains authoritative; suspended browsers resume via
+    // the lifecycle listener below and never replay missed intervals.
     const interval = setInterval(() => {
       if (storeRef.current.autoForgeEnabled && storeRef.current.autoForgeAutoCheckEnabled) {
         checkAutoForge();
       }
-    }, 15000);
+    }, 1000);
     
     const onForceCheck = () => {
       if (storeRef.current.autoForgeEnabled) {
@@ -1449,6 +1463,16 @@ export function useAutoForge() {
       }
     };
     window.addEventListener("autoforge-force-check", onForceCheck);
+
+    const onForegroundResume = () => {
+      if (document.visibilityState !== "visible") return;
+      const current = useAppStore.getState();
+      if (!current.autoForgeEnabled || !current.autoForgeAutoCheckEnabled || current.autoForgeAutoCheckMode !== "interval") return;
+      if (!current.streamMetadata.channelName || current.autoForgeNextActionMs <= 0 || Date.now() < current.autoForgeNextActionMs) return;
+      checkAutoForge();
+    };
+    document.addEventListener("visibilitychange", onForegroundResume);
+    window.addEventListener("pageshow", onForegroundResume);
 
     // Supercharge teardown — when the user disables Supercharge, reset pacing
     // state so the loop returns to normal cadence immediately instead of
@@ -1468,6 +1492,8 @@ export function useAutoForge() {
     return () => {
       clearInterval(interval);
       window.removeEventListener("autoforge-force-check", onForceCheck);
+      document.removeEventListener("visibilitychange", onForegroundResume);
+      window.removeEventListener("pageshow", onForegroundResume);
       window.removeEventListener("easter-egg-supercharge", onSupercharge);
       if (followupTimerRef.current) {
         clearTimeout(followupTimerRef.current);

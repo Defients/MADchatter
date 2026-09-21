@@ -25,7 +25,14 @@ function escapeRegex(value: string): string {
 export function hasDirectAtMention(text: string, botUsername: string): boolean {
   const normalized = botUsername.trim().replace(/^@+/, "");
   if (!text || !normalized) return false;
-  return new RegExp(`(^|\\s)@${escapeRegex(normalized)}(?=$|[\\s.,!?;:'"()[\\]{}<>])`, "i").test(text);
+  // The character before @ must not be an address/identifier character. This
+  // accepts punctuation and brackets while rejecting hello@botname.com.
+  // The trailing negative lookahead rejects @BotNameExtra for BotName.
+  return new RegExp(`(^|[^\\p{L}\\p{N}_@])@${escapeRegex(normalized)}(?![\\p{L}\\p{N}_])`, "iu").test(text);
+}
+
+export function smartReplyBotKey(target: Pick<MentionEvent, "botId" | "botUsername">): string {
+  return target.botId ? `id:${target.botId}` : `username:${target.botUsername.trim().replace(/^@+/, "").toLowerCase()}`;
 }
 
 /**
@@ -82,7 +89,7 @@ export class SmartReplyRequestError extends Error {
 
 export interface DirectMentionCoordinatorDeps {
   now: () => number;
-  acknowledge: (event: MentionEvent) => void | Promise<void>;
+  acknowledge: (event: MentionEvent, alertUser: boolean) => void | Promise<void>;
   smartRepliesEnabled: () => boolean;
   generate: (event: MentionEvent, signal: AbortSignal) => Promise<SmartReply[]>;
   isSessionCurrent: (event: MentionEvent) => boolean;
@@ -104,24 +111,21 @@ const DEDUP_TTL_MS = 2 * 60_000;
 const MAX_DEDUP_KEYS = 256;
 const SPAM_WINDOW_MS = 10_000;
 const MAX_REQUESTS_PER_WINDOW = 6;
+export const ATTENTION_COALESCE_MS = 2_000;
 
 export class DirectMentionCoordinator {
   private processed = new Map<string, number>();
   private requestTimes = new Map<string, number[]>();
-  /**
-   * Smart Replies currently render into one shared suggestion surface on both
-   * desktop and mobile. One request therefore owns that surface at a time.
-   * A newer direct mention aborts and supersedes the obsolete provider call;
-   * the identity check remains as a guard for providers that cannot cancel
-   * after transport has started.
-   */
-  private activeRequest: { key: string; controller: AbortController } | null = null;
+  /** One active provider request per stable bot identity. */
+  private activeRequests = new Map<string, { key: string; controller: AbortController; supersede: () => void }>();
+  private lastAttentionAt = new Map<string, number>();
 
   reset(): void {
-    this.activeRequest?.controller.abort();
+    for (const request of this.activeRequests.values()) request.controller.abort();
     this.processed.clear();
     this.requestTimes.clear();
-    this.activeRequest = null;
+    this.activeRequests.clear();
+    this.lastAttentionAt.clear();
   }
 
   private prune(now: number): void {
@@ -135,8 +139,8 @@ export class DirectMentionCoordinator {
     }
   }
 
-  private requestAllowed(botUsername: string, now: number): boolean {
-    const key = botUsername.toLowerCase();
+  private requestAllowed(target: Pick<MentionEvent, "botId" | "botUsername">, now: number): boolean {
+    const key = smartReplyBotKey(target);
     const recent = (this.requestTimes.get(key) ?? []).filter((timestamp) => now - timestamp <= SPAM_WINDOW_MS);
     if (recent.length >= MAX_REQUESTS_PER_WINDOW) {
       this.requestTimes.set(key, recent);
@@ -157,17 +161,23 @@ export class DirectMentionCoordinator {
     // Acknowledgement happens before any provider work and failures are
     // isolated: audio/notification policy can never break chat ingestion.
     try {
-      const acknowledgement = deps.acknowledge(event);
+      const botKey = smartReplyBotKey(event);
+      const lastAlert = this.lastAttentionAt.get(botKey) ?? -Infinity;
+      const alertUser = now - lastAlert >= ATTENTION_COALESCE_MS;
+      if (alertUser) this.lastAttentionAt.set(botKey, now);
+      const acknowledgement = deps.acknowledge(event, alertUser);
       if (acknowledgement && typeof (acknowledgement as Promise<void>).catch === "function") {
         void (acknowledgement as Promise<void>).catch(() => {});
       }
     } catch { /* intentionally isolated */ }
 
     if (!deps.smartRepliesEnabled()) return "acknowledged";
-    if (!this.requestAllowed(event.botUsername, now)) {
-      this.activeRequest?.controller.abort();
-      this.activeRequest = null;
-      deps.setReplies([]);
+    if (!this.requestAllowed(event, now)) {
+      const botKey = smartReplyBotKey(event);
+      const active = this.activeRequests.get(botKey);
+      active?.controller.abort();
+      active?.supersede();
+      this.activeRequests.delete(botKey);
       deps.setLoading(false);
       deps.setNotice({
         state: "unavailable",
@@ -182,9 +192,20 @@ export class DirectMentionCoordinator {
       return "spam_guard";
     }
 
-    this.activeRequest?.controller.abort();
+    const botKey = smartReplyBotKey(event);
+    const prior = this.activeRequests.get(botKey);
+    prior?.controller.abort();
+    prior?.supersede();
     const controller = new AbortController();
-    this.activeRequest = { key: dedupKey, controller };
+    this.activeRequests.set(botKey, {
+      key: dedupKey,
+      controller,
+      supersede: () => {
+        deps.setReplies([]);
+        deps.setNotice(null);
+        deps.setLoading(false);
+      },
+    });
     deps.setReplies([]);
     deps.setNotice({
       state: "loading",
@@ -198,7 +219,7 @@ export class DirectMentionCoordinator {
 
     try {
       const replies = await deps.generate(event, controller.signal);
-      if (!deps.isSessionCurrent(event) || this.activeRequest?.key !== dedupKey) return "stale";
+      if (!deps.isSessionCurrent(event) || this.activeRequests.get(botKey)?.key !== dedupKey) return "stale";
       if (!deps.smartRepliesEnabled()) {
         deps.setReplies([]);
         deps.setNotice(null);
@@ -218,7 +239,7 @@ export class DirectMentionCoordinator {
       });
       return "ready";
     } catch (error) {
-      if (!deps.isSessionCurrent(event) || this.activeRequest?.key !== dedupKey || controller.signal.aborted) return "stale";
+      if (!deps.isSessionCurrent(event) || this.activeRequests.get(botKey)?.key !== dedupKey || controller.signal.aborted) return "stale";
       const known = error instanceof SmartReplyRequestError ? error : null;
       const reason = known?.reason ?? "generation_failed";
       deps.setNotice({
@@ -233,8 +254,8 @@ export class DirectMentionCoordinator {
       });
       return reason === "generation_failed" ? "error" : "unavailable";
     } finally {
-      if (this.activeRequest?.key === dedupKey) {
-        this.activeRequest = null;
+      if (this.activeRequests.get(botKey)?.key === dedupKey) {
+        this.activeRequests.delete(botKey);
         // Loading belongs to the shared surface, not the old channel. Clear it
         // even when the session became stale; resetDirectMentionHandling also
         // clears replies/notice synchronously at the transition boundary.

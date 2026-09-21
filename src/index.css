@@ -529,7 +529,7 @@
   86% { box-shadow: 0 0 12px rgba(52, 211, 153, 0.32); }
 }
 
-.r34l-style-ready { animation: r34l-style-ready 5s ease-in-out infinite; }
+.r34l-style-ready { animation: r34l-style-ready .7s ease-out 1; }
 
 @media (max-width: 768px) and (max-height: 720px) {
   .core-mobile-shell > header { height: 42px; }

@@ -9,9 +9,8 @@
  * This module is the single source of truth for *when an AutoForge evaluation
  * is worthwhile*:
  *
- *   - `"interval"` — the user picks a cadence (30s / 1m / 2m / 5m). A check
- *     runs no more often than that, and only if the existing model pacing
- *     (`autoForgeNextActionMs`) also says it's time.
+ *   - `"interval"` — the user owns an absolute attempt deadline. Model
+ *     pacing and local gates may shape the result, never move that deadline.
  *   - `"smart"` — no fixed cadence. A check runs when the context actually
  *     changed (new chat, new transcript, new visual frame, new bot activity)
  *     and the minimum floor has elapsed. Mentions and activity spikes always
@@ -56,7 +55,9 @@ export const DEFAULT_AUTO_CHECK_INTERVAL_MS = 60_000;
 export const AUTO_CHECK_SMART_FLOOR_MS = 30_000;
 
 export const AUTO_CHECK_MIN_INTERVAL_MS = 30_000;
-export const AUTO_CHECK_MAX_INTERVAL_MS = 15 * 60_000;
+export const AUTO_CHECK_MAX_INTERVAL_MS = 99 * 60_000;
+export const AUTO_CHECK_CUSTOM_MINUTES_MIN = 1;
+export const AUTO_CHECK_CUSTOM_MINUTES_MAX = 99;
 
 /** Supported manual cadences. Chosen around the existing AutoForge pacing
  *  architecture (the loop already respected a model-driven next-action time
@@ -65,8 +66,17 @@ export const AUTO_CHECK_INTERVAL_OPTIONS: ReadonlyArray<number> = [
   30_000,
   60_000,
   120_000,
-  300_000,
 ];
+
+export function normalizeCustomAutoCheckMinutes(value: unknown): number {
+  const minutes = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(minutes)) return 1;
+  return Math.min(AUTO_CHECK_CUSTOM_MINUTES_MAX, Math.max(AUTO_CHECK_CUSTOM_MINUTES_MIN, Math.round(minutes)));
+}
+
+export function customAutoCheckMinutesToMs(value: unknown): number {
+  return normalizeCustomAutoCheckMinutes(value) * 60_000;
+}
 
 export function normalizeAutoCheckMode(value: unknown): AutoCheckMode {
   return value === "interval" ? "interval" : "smart";
@@ -143,7 +153,7 @@ export function resolveAutoCheckFloorMs(mode: AutoCheckMode, intervalMs: number)
 }
 
 /**
- * The effective minimum gap between two *non-urgent* AutoForge evaluations.
+ * The effective minimum gap between two *non-urgent* Smart-mode evaluations.
  *
  * Combines the user's Auto-Check cadence floor with their send rate-limit min
  * cooldown. Rationale: if the bot cannot send more often than every N seconds,
@@ -164,7 +174,9 @@ export function resolveEffectiveCheckFloorMs(
   const cooldown = typeof minCooldownMs === "number" && Number.isFinite(minCooldownMs) && minCooldownMs > 0
     ? minCooldownMs
     : 0;
-  return Math.max(cadenceFloor, cooldown);
+  // A send cooldown may save speculative Smart-mode work. It must never
+  // widen a manual Interval attempt cadence: checking and sending are distinct.
+  return mode === "interval" ? cadenceFloor : Math.max(cadenceFloor, cooldown);
 }
 
 export interface AutoCheckCadenceDecision {
@@ -268,8 +280,8 @@ export function describeAutoCheckStatus(args: AutoCheckStatusArgs): string {
     return args.armed ? "New context — check queued" : "Waiting for new context";
   }
   if (args.dueInMs === null || !Number.isFinite(args.dueInMs)) return "Next check pending";
-  const seconds = Math.max(0, Math.round(args.dueInMs / 1000));
-  return seconds <= 0 ? "Checking shortly…" : `Next check in ${seconds}s`;
+  const seconds = Math.max(0, Math.ceil(args.dueInMs / 1000));
+  return seconds <= 0 ? "Check due" : `Next check in ${seconds}s`;
 }
 
 export interface AutoCheckWindow {
@@ -278,7 +290,7 @@ export interface AutoCheckWindow {
   /** Milliseconds until the next evaluation is due. */
   dueInMs: number;
   /** Absolute timestamp of the effective due moment (max of cadence due and
-   *  model pacing due) — the countdown's scheduled-attempt identity. */
+   *  model pacing due in Smart mode) — the scheduled-attempt identity. */
   dueAtMs: number;
   /** 0→1 progress toward the next evaluation. */
   progress: number;
@@ -289,12 +301,8 @@ export interface AutoCheckWindow {
  * Derived from a timestamp the loops already maintain — the bar itself is a
  * pure CSS animation, so nothing here runs per frame.
  *
- * `nextActionMs` is the model-driven pacing floor (`autoForgeNextActionMs`).
- * The actual next check is `max(lastCheckAt + floorMs, nextActionMs)` — the
- * cadence is the user's maximum frequency, but the model can pace slower.
- * Without this, the countdown reaches 0 and sits at "Checking shortly…"
- * for minutes while the model pacing gate blocks the cadence gate from
- * running.
+ * In Interval mode `nextActionMs` is the canonical user-owned attempt
+ * deadline. Smart mode retains its context/model pacing behavior.
  */
 export function computeAutoCheckWindow(
   args: { mode: AutoCheckMode; intervalMs: number; lastCheckAt: number; now: number; nextActionMs?: number; minCooldownMs?: number },
@@ -306,8 +314,19 @@ export function computeAutoCheckWindow(
   const elapsed = typeof last === "number" && Number.isFinite(last) && last > 0 && last <= args.now
     ? args.now - last
     : 0;
-  // Cadence due time: lastCheck + floor. Model pacing due time: nextActionMs.
-  // The actual next check is the LATER of the two — whichever gate opens last.
+  if (normalizeAutoCheckMode(args.mode) === "interval") {
+    const deadline = typeof args.nextActionMs === "number" && Number.isFinite(args.nextActionMs) && args.nextActionMs > 0
+      ? args.nextActionMs
+      : args.now + floorMs;
+    const dueInMs = Math.max(0, deadline - args.now);
+    return {
+      elapsedMs: Math.max(0, floorMs - dueInMs),
+      dueInMs,
+      dueAtMs: deadline,
+      progress: floorMs <= 0 ? 1 : Math.min(1, Math.max(0, floorMs - dueInMs) / floorMs),
+    };
+  }
+  // Smart mode: model pacing remains an advisory/context-driven gate.
   const cadenceDueMs = last > 0 ? last + floorMs : 0;
   const modelDueMs = typeof args.nextActionMs === "number" && args.nextActionMs > 0 ? args.nextActionMs : 0;
   const effectiveDueMs = Math.max(cadenceDueMs, modelDueMs);
@@ -337,7 +356,7 @@ export interface AutoCheckScheduleReconcileArgs {
    *  means the schedule is already due — treated as "as soon as possible",
    *  never pushed back out. Non-finite means no schedule. */
   scheduledMs: number;
-  /** Send rate-limit min cooldown — widens the floor exactly like the loops. */
+  /** Send cooldown widens Smart mode only; Interval remains user-owned. */
   minCooldownMs?: number;
 }
 
@@ -381,7 +400,7 @@ export function reconcileAutoCheckSchedule(
       : 0;
   const cadenceDueMs = last > 0 ? last + floorMs : now;
 
-  const modeDueMs = mode === "interval" ? now + floorMs : cadenceDueMs;
+  const modeDueMs = mode === "interval" ? now + resolveAutoCheckFloorMs(mode, args.intervalMs) : cadenceDueMs;
   const scheduledMs = typeof args.scheduledMs === "number" ? args.scheduledMs : NaN;
   const hasValidSchedule = Number.isFinite(scheduledMs) && scheduledMs > now;
   // A due/overdue timestamp means "check as soon as possible" — preserving it
@@ -389,7 +408,11 @@ export function reconcileAutoCheckSchedule(
   // pushing it out to the new mode's cadence.
   const remainingMs = Number.isFinite(scheduledMs) ? scheduledMs - now : Infinity;
 
-  const nextActionMs = now + Math.min(remainingMs, Math.max(0, modeDueMs - now));
+  // Selecting/changing an Interval explicitly creates a fresh anchor. Smart
+  // mode may still preserve a sooner context-driven evaluation.
+  const nextActionMs = mode === "interval"
+    ? modeDueMs
+    : now + Math.min(remainingMs, Math.max(0, modeDueMs - now));
   return {
     nextActionMs,
     shortened: hasValidSchedule && nextActionMs <= scheduledMs - AUTO_CHECK_SHORTEN_NOTICE_MS,
@@ -399,7 +422,7 @@ export function reconcileAutoCheckSchedule(
 /** Re-exported so callers can normalize a channel the same way the rest of
  *  the app does (strips "#", trims, lowercases). */
 export { normalizeSessionChannel };
-/** "30s" | "1m" | "2m" | "5m" */
+/** "30s" | "1m" … "99m" */
 export function formatAutoCheckInterval(ms: number): string {
   const seconds = Math.round(clampAutoCheckIntervalMs(ms) / 1000);
   if (seconds < 60) return `${seconds}s`;

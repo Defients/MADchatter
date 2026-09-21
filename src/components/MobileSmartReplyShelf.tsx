@@ -8,7 +8,11 @@ import { playMessageSound } from "../lib/sound";
 import { playSfx } from "../lib/sfx";
 import { cn } from "../lib/utils";
 
-export function MobileSmartReplyShelf({ onOpenTuning }: { onOpenTuning: () => void }) {
+export function MobileSmartReplyShelf({ onOpenTuning, compact = false, onOpenContext }: {
+  onOpenTuning: () => void;
+  compact?: boolean;
+  onOpenContext?: () => void;
+}) {
   const replies = useAppStore((state) => state.smartReplies);
   const loading = useAppStore((state) => state.smartRepliesLoading);
   const notice = useAppStore((state) => state.smartReplyNotice);
@@ -17,16 +21,46 @@ export function MobileSmartReplyShelf({ onOpenTuning }: { onOpenTuning: () => vo
   const setReplies = useAppStore((state) => state.setSmartReplies);
   const setNotice = useAppStore((state) => state.setSmartReplyNotice);
   const setLoading = useAppStore((state) => state.setSmartRepliesLoading);
+  const focusedKey = useAppStore((state) => state.focusedSmartReplyKey);
+  const dismissThread = useAppStore((state) => state.dismissSmartReplyThread);
   const [sendingId, setSendingId] = useState<string | null>(null);
 
   const visible = !!notice || loading || replies.length > 0;
   const actionableFailure = notice?.reason === "no_provider" || notice?.reason === "trial_expired";
 
   const dismiss = () => {
+    if (focusedKey) {
+      dismissThread(focusedKey);
+      return;
+    }
     setReplies([]);
     setNotice(null);
     setLoading(false);
   };
+
+  if (compact) {
+    return (
+      <AnimatePresence initial={false}>
+        {visible && (
+          <motion.button
+            type="button"
+            key="mobile-smart-reply-notice"
+            initial={{ opacity: 0, y: 8, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: 8, height: 0 }}
+            onClick={onOpenContext}
+            className="mx-2 mb-1 flex min-h-9 shrink-0 items-center gap-2 overflow-hidden rounded-lg border border-cyan-400/25 bg-[#0d151b]/95 px-3 text-left text-[10px] font-bold text-cyan-200"
+            aria-label="Open Smart Replies in Context"
+          >
+            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <AtSign className="h-3.5 w-3.5" />}
+            <span className="min-w-0 flex-1 truncate">
+              @{notice?.username ?? "mention"} · {replies.length > 0 ? `${replies.length} replies` : loading ? "generating replies" : "reply needs attention"}
+            </span>
+          </motion.button>
+        )}
+      </AnimatePresence>
+    );
+  }
 
   return (
     <AnimatePresence initial={false}>

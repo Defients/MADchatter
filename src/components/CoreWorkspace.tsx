@@ -72,6 +72,7 @@ import { fetchAvailableModels, testProviderConnection, suggestBaseUrlFromLabel, 
 import { checkOllamaHealth, getCachedOllamaHealth, invalidateOllamaHealthCache } from "../lib/ollamaHealth";
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
+import { ChannelSaveGate } from "../lib/channelSave";
 import { playSfx } from "../lib/sfx";
 import { getMobilePlatformPresentation, type MobilePlatform } from "../lib/mobilePlatformPresentation";
 import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
@@ -2853,13 +2854,13 @@ function ForgeTrayButton() {
 
 export function ChannelEditRow(props: {
   channelName: string;
-  onSave: (name: string) => void | Promise<void>;
+  onSave: (name: string) => boolean | Promise<boolean>;
   platform?: MobilePlatform;
 }) {
   const [value, setValue] = useState(props.channelName);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<"idle" | "success" | "error">("idle");
-  const savingRef = useRef(false);
+  const saveGateRef = useRef(new ChannelSaveGate());
   const feedbackTimerRef = useRef<number | null>(null);
   useEffect(() => setValue(props.channelName), [props.channelName]);
   useEffect(() => () => {
@@ -2871,36 +2872,38 @@ export function ChannelEditRow(props: {
     feedbackTimerRef.current = window.setTimeout(() => setFeedback("idle"), 700);
   };
   const save = async () => {
-    if (savingRef.current) return;
     const sanitized = sanitizeChannelInput(value);
     setValue(sanitized);
     if (!sanitized) {
       toast.error("Enter a valid Twitch or Kick channel name");
       return;
     }
-    if (sanitized === props.channelName) return;
-    savingRef.current = true;
     setSaving(true);
     try {
-      await props.onSave(sanitized);
+      const outcome = await saveGateRef.current.submit(props.channelName, sanitized, props.onSave);
+      if (outcome === "same" || outcome === "duplicate") return;
+      if (outcome === "failure") {
+        showFeedback("error");
+        return;
+      }
       showFeedback("success");
       playSfx("channel_set");
     } catch {
       showFeedback("error");
       playSfx("error");
     } finally {
-      savingRef.current = false;
       setSaving(false);
     }
   };
   const presentation = props.platform ? getMobilePlatformPresentation(props.platform) : null;
   return (
-    <div className="flex gap-1">
-      <div className="relative flex-1">
-        <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-gray-600" aria-hidden="true">
+    <div className="flex h-10 items-stretch gap-1" data-channel-edit-row>
+      <div className="flex min-w-0 flex-1 overflow-hidden rounded border border-white/10 bg-[#0a0a0f] focus-within:border-orange-500/50">
+        <span data-channel-prefix className="pointer-events-none grid h-full w-8 shrink-0 place-items-center border-r border-white/5 text-gray-600" aria-hidden="true">
           <Hash className="h-3.5 w-3.5" />
         </span>
         <input
+          data-channel-input
           type="text"
           value={value}
           disabled={saving}
@@ -2919,17 +2922,18 @@ export function ChannelEditRow(props: {
           onBlur={() => setValue(sanitizeChannelInput(value))}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
           placeholder="channel name"
-          className="w-full pl-7 pr-2 py-1.5 rounded bg-[#0a0a0f] border border-white/10 text-[11px] text-gray-200 placeholder-gray-700 focus:outline-none focus:border-orange-500/50 transition-colors"
+          className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11px] text-gray-200 placeholder-gray-700 outline-none"
           aria-label="Channel name"
         />
       </div>
       <button
         type="button"
+        data-channel-set
         onClick={save}
         disabled={saving}
         aria-busy={saving}
         className={cn(
-          "mobile-touch-primary min-w-[58px] px-2.5 py-1.5 rounded border text-[10px] font-bold transition-all inline-flex items-center justify-center gap-1",
+          "mobile-touch-primary h-full min-w-[58px] px-2.5 rounded border text-[10px] font-bold transition-all inline-flex items-center justify-center gap-1",
           feedback === "error"
             ? "border-red-400/50 bg-red-500/20 text-red-200"
             : feedback === "success"
@@ -3235,6 +3239,7 @@ function CoreReadinessStrip(props: {
   const autoForgeNextActionMs = useAppStore((s) => s.autoForgeNextActionMs);
   const autoForgeLastActionMs = useAppStore((s) => s.autoForgeLastActionMs);
   const autoForgeAutoCheckEnabled = useAppStore((s) => s.autoForgeAutoCheckEnabled);
+  const autoForgeAutoCheckMode = useAppStore((s) => s.autoForgeAutoCheckMode);
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
   const bots = useAppStore((s) => s.bots);
   const multiBotEnabled = useAppStore((s) => s.multiBotEnabled);
@@ -3260,7 +3265,7 @@ function CoreReadinessStrip(props: {
 
   const nextCheckPaused = !autoForgeAutoCheckEnabled;
   const timeUntilNext = effectiveNextActionMs
-    ? Math.max(0, Math.floor((effectiveNextActionMs - now) / 1000))
+    ? Math.max(0, Math.ceil((effectiveNextActionMs - now) / 1000))
     : 0;
   const totalCycleMs = effectiveNextActionMs && effectiveLastActionMs
     ? Math.max(1000, effectiveNextActionMs - effectiveLastActionMs)
@@ -3268,7 +3273,7 @@ function CoreReadinessStrip(props: {
   const elapsedMs = effectiveLastActionMs ? Math.max(0, now - effectiveLastActionMs) : 0;
   const cyclePct = totalCycleMs ? Math.min(100, Math.round((elapsedMs / totalCycleMs) * 100)) : 0;
   const isWaiting = !nextCheckPaused && !isProcessing && timeUntilNext === 0;
-  const showBar = props.autoForgeEnabled && (effectiveNextActionMs > 0 || isProcessing);
+  const showBar = props.autoForgeEnabled && ((autoForgeAutoCheckMode === "interval" && effectiveNextActionMs > 0) || isProcessing);
 
   const items: { key: string; label: string; detail: string; done: boolean; error: boolean; portrait?: { image: string; still: string } }[] = [
     {
@@ -3447,9 +3452,11 @@ function CoreReadinessStrip(props: {
                           channelName={props.streamMetadata?.channelName || ""}
                           onSave={async (name) => {
                             try {
-                              if (await switchChannel(name)) {
+                              const switched = await switchChannel(name);
+                              if (switched) {
                                 toast.success(`Watching @${name}`);
                               }
+                              return switched;
                             } catch (error) {
                               toast.error(error instanceof Error ? error.message : "Could not switch channels. Please try again.");
                               throw error;

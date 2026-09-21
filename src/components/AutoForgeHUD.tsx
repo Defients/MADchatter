@@ -123,6 +123,7 @@ export function AutoForgeHUD() {
     bots,
     isAutoForgeThinking,
     autoForgeAutoCheckEnabled,
+    autoForgeAutoCheckMode,
     setAutoForgeAutoCheckEnabled,
     autoForgeDecisionHistory,
   } = useAppStore();
@@ -325,7 +326,7 @@ export function AutoForgeHUD() {
     : 0;
 
   const timeUntilNext = effectiveNextActionMs
-    ? Math.max(0, Math.floor((effectiveNextActionMs - now) / 1000))
+    ? Math.max(0, Math.ceil((effectiveNextActionMs - now) / 1000))
     : 0;
 
   // Progress bar: how close we are to firing (0% → 100% as time elapses).
@@ -521,6 +522,8 @@ export function AutoForgeHUD() {
                     ? "Paused"
                     : isProcessing
                     ? "Processing..."
+                    : autoForgeAutoCheckMode === "smart"
+                    ? "Smart · context driven"
                     : isWaiting
                     ? "Waiting..."
                     : `${timeUntilNext}s`}
@@ -533,8 +536,8 @@ export function AutoForgeHUD() {
                     </div>
                   ) : (
                     <div
-                      className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : isWaiting ? "bg-gray-500" : nextCheckBarColor(timeUntilNext))}
-                      style={{ width: nextCheckPaused ? "100%" : isWaiting ? "100%" : `${cyclePct}%` }}
+                      className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : autoForgeAutoCheckMode === "smart" ? "auto-check-smart bg-cyan-500/60" : isWaiting ? "bg-gray-500" : nextCheckBarColor(timeUntilNext))}
+                      style={{ width: nextCheckPaused || autoForgeAutoCheckMode === "smart" || isWaiting ? "100%" : `${cyclePct}%` }}
                     />
                   )}
                 </div>
@@ -739,6 +742,8 @@ export function AutoForgeHUD() {
                     ? "Paused"
                     : isProcessing
                     ? "Processing..."
+                    : autoForgeAutoCheckMode === "smart"
+                    ? "Smart · context driven"
                     : isWaiting
                     ? "Waiting..."
                     : `${timeUntilNext}s`}
@@ -751,8 +756,8 @@ export function AutoForgeHUD() {
                     </div>
                   ) : (
                     <div
-                      className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : isWaiting ? "bg-gray-500" : nextCheckBarColor(timeUntilNext))}
-                      style={{ width: nextCheckPaused ? "100%" : isWaiting ? "100%" : `${cyclePct}%` }}
+                      className={cn("h-full transition-all duration-1000 ease-linear", nextCheckPaused ? "bg-gray-600" : autoForgeAutoCheckMode === "smart" ? "auto-check-smart bg-cyan-500/60" : isWaiting ? "bg-gray-500" : nextCheckBarColor(timeUntilNext))}
+                      style={{ width: nextCheckPaused || autoForgeAutoCheckMode === "smart" || isWaiting ? "100%" : `${cyclePct}%` }}
                     />
                   )}
                 </div>

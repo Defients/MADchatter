@@ -2,10 +2,58 @@ import assert from 'node:assert/strict';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { chromium } from 'playwright-core';
 
 const outputDir = resolve('audit-output/mobile-ux-closure');
-const qaUrl = process.env.QA_URL || 'http://127.0.0.1:5173';
+async function reservePort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolvePort(port));
+    });
+  });
+}
+
+let appServer = null;
+const qaUrl = process.env.QA_URL || `http://127.0.0.1:${await reservePort()}`;
+
+async function startAppServer() {
+  if (process.env.QA_URL) return;
+  const port = new URL(qaUrl).port;
+  appServer = spawn(process.execPath, [resolve('node_modules/vite/bin/vite.js'), '--host', '127.0.0.1', '--port', port, '--strictPort'], {
+    cwd: process.cwd(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  let diagnostics = '';
+  appServer.stdout.on('data', (chunk) => { diagnostics += String(chunk); });
+  appServer.stderr.on('data', (chunk) => { diagnostics += String(chunk); });
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (appServer.exitCode !== null) throw new Error(`QA app server exited early (${appServer.exitCode}).\n${diagnostics}`);
+    try {
+      const response = await fetch(qaUrl);
+      if (response.ok) return;
+    } catch { /* server is still starting */ }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  throw new Error(`Timed out waiting for QA app server at ${qaUrl}.\n${diagnostics}`);
+}
+
+async function stopAppServer() {
+  if (!appServer || appServer.exitCode !== null) return;
+  appServer.kill('SIGTERM');
+  await Promise.race([
+    new Promise((resolveExit) => appServer.once('exit', resolveExit)),
+    new Promise((resolveWait) => setTimeout(resolveWait, 3_000)),
+  ]);
+  if (appServer.exitCode === null) appServer.kill('SIGKILL');
+}
 const viewports = [
   ...[320, 360, 390, 430, 768].flatMap((width) =>
     [667, 720, 844, 900].map((height) => ({ width, height }))),
@@ -42,6 +90,10 @@ const executablePath = await firstExecutable([
 ]);
 
 await mkdir(outputDir, { recursive: true });
+await startAppServer();
+process.once('exit', () => {
+  if (appServer?.exitCode === null) appServer.kill('SIGTERM');
+});
 const browser = await chromium.launch({ headless: true, executablePath });
 const results = [];
 let desktopStatusDock = null;
@@ -173,7 +225,71 @@ async function assertViewportBaseline(page, viewport) {
   return { key, completeRows: rowMetrics.complete, minimumRows };
 }
 
+async function assertChannelGeometry(page, viewport) {
+  await page.getByRole('tab', { name: 'Tuning workspace' }).click();
+  const row = page.locator('[data-channel-edit-row]').first();
+  await row.waitFor({ state: 'visible' });
+  const geometry = await row.evaluate((element) => {
+    const prefix = element.querySelector('[data-channel-prefix]').getBoundingClientRect();
+    const input = element.querySelector('[data-channel-input]').getBoundingClientRect();
+    const set = element.querySelector('[data-channel-set]').getBoundingClientRect();
+    return {
+      hashInputDelta: Math.abs((prefix.top + prefix.height / 2) - (input.top + input.height / 2)),
+      inputSetDelta: Math.abs((input.top + input.height / 2) - (set.top + set.height / 2)),
+      left: Math.min(prefix.left, input.left, set.left),
+      right: Math.max(prefix.right, input.right, set.right),
+      overlap: prefix.right > input.left + 0.5,
+    };
+  });
+  assert.equal(geometry.hashInputDelta <= 1.5, true, `Hash/input centers differ <=1.5px at ${viewport.width}px`);
+  assert.equal(geometry.inputSetDelta <= 1.5, true, `input/SET centers differ <=1.5px at ${viewport.width}px`);
+  assert.equal(geometry.left >= -0.5 && geometry.right <= viewport.width + 0.5, true, `channel row stays in viewport at ${viewport.width}px`);
+  assert.equal(geometry.overlap, false, `Hash prefix does not overlap input at ${viewport.width}px`);
+  await openContext(page);
+  return geometry;
+}
+
 async function assertRepresentativeStates(page) {
+  const policy = await page.evaluate(async () => {
+    const audio = await import('/src/lib/sfx.ts');
+    const lifecycle = await import('/src/lib/uiAudioPolicy.ts');
+    const { useAppStore } = await import('/src/store.ts');
+    useAppStore.setState({ sfxEnabled: true });
+    audio.resetOptionalUiAudioDiagnostics();
+    lifecycle.setOptionalUiPageHiddenForTest(true);
+    audio.playSfx('navigation');
+    audio.playSfx('setting_toggle');
+    audio.playSfx('drawer_open');
+    audio.playSfx('channel_set');
+    audio.playAutoCheckTick(3);
+    const hidden = audio.getOptionalUiAudioDiagnostics();
+    lifecycle.setOptionalUiPageHiddenForTest(false);
+    audio.playSfx('navigation');
+    const restored = audio.getOptionalUiAudioDiagnostics();
+    return { hidden, restored };
+  });
+  assert.deepEqual(policy.hidden, { attempted: 5, allowed: 0, suppressed: 5 }, 'hidden optional UI/tick audio is centrally suppressed');
+  assert.equal(policy.restored.allowed, 1, 'foreground restore admits a new intentional sound without replay');
+
+  const timer = await page.evaluate(async () => {
+    const { useAppStore } = await import('/src/store.ts');
+    const realNow = Date.now;
+    const anchors = [];
+    for (const ms of [30_000, 60_000, 120_000, 300_000, 5_940_000]) {
+      const before = Date.now();
+      useAppStore.getState().setAutoForgeAutoCheckCadence('interval', ms);
+      const deadline = useAppStore.getState().autoForgeNextActionMs;
+      anchors.push({ ms, delta: deadline - before });
+      useAppStore.getState().setAutoForgeNextActionMs(deadline - 10_000);
+      useAppStore.getState().setAutoForgeNextActionMs(deadline + 10_000);
+      if (useAppStore.getState().autoForgeNextActionMs !== deadline) throw new Error('model pacing mutated Interval deadline');
+      useAppStore.getState().recordAutoForgeCheckAttempt(deadline);
+      if (useAppStore.getState().autoForgeNextActionMs !== deadline + ms) throw new Error('attempt did not re-anchor exactly once');
+    }
+    return { anchors, intervalMs: useAppStore.getState().autoForgeAutoCheckIntervalMs, nowType: typeof realNow };
+  });
+  for (const anchor of timer.anchors) assert.equal(Math.abs(anchor.delta - anchor.ms) < 50, true, `exact ${anchor.ms}ms deadline anchor`);
+  assert.equal(timer.intervalMs, 5_940_000, 'CUSTOM 99M survives runtime store');
   await page.evaluate(async () => (await import('/src/store.ts')).useAppStore.getState().setPlatform('kick'));
   await page.locator('svg[aria-label="Kick"]').first().waitFor({ state: 'visible' });
   const hideVideo = page.getByRole('button', { name: 'Hide stream video' });
@@ -235,11 +351,14 @@ async function assertRepresentativeStates(page) {
   });
   const shelf = page.getByRole('region', { name: 'Smart Replies' });
   await shelf.waitFor({ state: 'visible' });
-  assert.equal(await composer.count(), 0, 'Smart Reply tray replaces composer instead of stacking');
-  for (const tab of ['Forge workspace', 'Tuning workspace', 'Context workspace']) {
+  await composer.waitFor({ state: 'hidden' });
+  for (const tab of ['Forge workspace', 'Tuning workspace']) {
     await page.getByRole('tab', { name: tab }).click();
-    assert.equal(await shelf.isVisible(), true, `Smart Reply shelf remains globally reachable on ${tab}`);
+    assert.equal(await shelf.isVisible(), false, `full Smart Reply tray does not shrink ${tab}`);
+    assert.equal(await page.getByRole('button', { name: 'Open Smart Replies in Context' }).isVisible(), true, `compact Smart Reply notice remains reachable on ${tab}`);
   }
+  await page.getByRole('button', { name: 'Open Smart Replies in Context' }).click();
+  await shelf.waitFor({ state: 'visible' });
   await page.evaluate(async () => {
     const { useAppStore } = await import('/src/store.ts');
     useAppStore.setState({ smartReplies: [], smartReplyNotice: null, smartRepliesLoading: false });
@@ -318,12 +437,13 @@ try {
     await page.goto(qaUrl, { waitUntil: 'networkidle' });
     await seedWorkspace(page);
     const baseline = await assertViewportBaseline(page, viewport);
+    const channelGeometry = await assertChannelGeometry(page, viewport);
     if (key === '390x844') await assertRepresentativeStates(page);
     assert.deepEqual(pageErrors, [], `no uncaught page errors at ${key}`);
     if (screenshotViewports.has(key)) {
       await page.screenshot({ path: resolve(outputDir, `mobile-${key}.png`), fullPage: true });
     }
-    results.push({ ...baseline, noOverflow: true, pageErrors: 0, representativeStates: key === '390x844' });
+    results.push({ ...baseline, channelGeometry, noOverflow: true, pageErrors: 0, representativeStates: key === '390x844' });
     await context.close();
   }
 
@@ -359,4 +479,5 @@ try {
   console.log(JSON.stringify({ executablePath, viewports: results.length, desktopStatusDock, results }, null, 2));
 } finally {
   await browser.close();
+  await stopAppServer();
 }
