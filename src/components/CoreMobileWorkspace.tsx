@@ -1299,9 +1299,6 @@ function MobileContextTab(props: {
           <span className="text-xs font-bold uppercase tracking-wider text-teal-400 flex items-center gap-1.5">
             Chat Pulse
           </span>
-          <span className="text-[10px] text-gray-500 font-mono">
-            ({filteredChat.length})
-          </span>
         </div>
 
         {/* Sentiment Heatmap — expands across the middle so the entire row is filled */}
@@ -1315,19 +1312,19 @@ function MobileContextTab(props: {
         >
           {sentimentHistory.length > 0 ? (
             <div
-              className="w-full flex items-center gap-0.5 h-2 rounded overflow-hidden bg-black/40 border border-white/5 px-0.5"
+              className="w-full flex items-center gap-0.5 h-2.5 rounded overflow-hidden bg-black/40 border border-white/5 px-0.5"
               title="Recent chat sentiment heatmap"
             >
               {sentimentHistory.slice(-35).map((r, i) => (
                 <div
                   key={i}
-                  className={cn("flex-1 h-full rounded-[0.5px] transition-colors", SENTIMENT_DOT_COLORS[r.label] || "bg-blue-400")}
+                  className={cn("flex-1 h-full rounded-sm transition-colors", SENTIMENT_DOT_COLORS[r.label] || "bg-blue-400")}
                   style={{ opacity: 0.4 + (r.score * 0.6) }}
                 />
               ))}
             </div>
           ) : (
-            <div className="w-full h-1 rounded-full bg-white/[0.04]" />
+            <div className="w-full h-1.5 rounded-full bg-white/[0.04]" />
           )}
         </button>
 

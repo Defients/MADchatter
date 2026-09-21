@@ -2261,12 +2261,12 @@ export function ForgeLayout() {
           {/* E2: Chat Sentiment Heatmap Overlay — pinned to top with search */}
           {sentimentHistory.length > 0 && (
             <ThemedTooltip content="Recent chat sentiment heatmap">
-              <div className="flex items-center gap-px h-1.5 mb-1 rounded overflow-hidden bg-black/30 shrink-0">
+              <div className="flex items-center gap-0.5 h-2.5 mb-1 rounded overflow-hidden bg-black/30 shrink-0">
                 {sentimentHistory.slice(-40).map((r, idx) => (
                   <div
                     key={idx}
-                    className={cn("flex-1 h-full transition-colors", SENTIMENT_DOT_COLORS[r.label as SentimentLabel])}
-                    style={{ opacity: 0.3 + (r.score * 0.7) }}
+                    className={cn("flex-1 h-full rounded-sm transition-colors", SENTIMENT_DOT_COLORS[r.label as SentimentLabel])}
+                    style={{ opacity: 0.4 + (r.score * 0.6) }}
                   />
                 ))}
               </div>
