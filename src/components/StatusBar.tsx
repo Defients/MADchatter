@@ -12,6 +12,8 @@ import type { SentimentLabel } from '../types';
 import { ThemedTooltip } from "./ui/tooltip";
 import { useStudioAvailable, useEffectiveMode } from '../hooks/useMediaQuery';
 import { useNowTick, subscribeSecondTick } from '../hooks/useNowTick';
+import { selectMergedSentMessages } from '../lib/sentHistory';
+import { SentMessageHistory } from './SentMessageHistory';
 import {
   Wifi,
   WifiOff,
@@ -22,8 +24,6 @@ import {
   ChevronDown,
   ChevronUp,
   History,
-  Trash2,
-  Copy,
   GripHorizontal,
 } from 'lucide-react';
 
@@ -35,22 +35,6 @@ function formatDuration(ms: number): string {
   if (mins > 0) return `${mins}m ${secs % 60}s`;
   return `${secs}s`;
 }
-
-function formatClock(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-const SOURCE_COLORS: Record<string, string> = {
-  manual: 'text-green-400 bg-green-500/10 border-green-500/20',
-  autoforge: 'text-red-400 bg-red-500/10 border-red-500/20',
-  followup: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
-};
-
-const SOURCE_LABELS: Record<string, string> = {
-  manual: 'MANUAL',
-  autoforge: 'AUTOFORGE',
-  followup: 'FOLLOWUP',
-};
 
 export function StatusBar() {
   const {
@@ -220,17 +204,10 @@ export function StatusBar() {
   // shows multi-bot activity. Per-bot sends go to bots[].runtime.sentMessages,
   // not the global sentMessages list, so without this merge the log stays
   // empty in multi-bot mode.
-  const allSent = useMemo(() => {
-    type DisplayMsg = { id: string; message: string; channel?: string; timestamp: number; source: string; botName?: string };
-    const safeSent = Array.isArray(sentMessages) ? sentMessages : [];
-    const safeBots = Array.isArray(bots) ? bots : [];
-    const global: DisplayMsg[] = safeSent.map((m) => ({ ...m, botName: undefined }));
-    const perBot: DisplayMsg[] = safeBots.flatMap((b) => {
-      const sm = b?.runtime?.sentMessages;
-      return Array.isArray(sm) ? sm.map((m) => ({ ...m, botName: b.session?.username })) : [];
-    });
-    return [...global, ...perBot].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
-  }, [sentMessages, bots]);
+  const allSent = useMemo(
+    () => selectMergedSentMessages(sentMessages, bots),
+    [sentMessages, bots],
+  );
 
   const startDrag = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     // Double-tap on the grip (mobile core only) toggles horizontal collapse
@@ -299,15 +276,6 @@ export function StatusBar() {
     error: 'text-red-400',
   }[tmiSendState];
 
-  const handleCopyHistory = async () => {
-    const text = allSent.map((m) =>
-      `[${formatClock(m.timestamp)}] [${m.source.toUpperCase()}]${m.botName ? ` [${m.botName}]` : ''} ${m.message}`
-    ).join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {}
-  };
-
   const handleClearHistory = () => {
     clearSentMessages();
     // Also clear per-bot sent messages so the merged log actually empties.
@@ -364,60 +332,8 @@ export function StatusBar() {
                       </span>
                     )}
                   </span>
-                  <div
-                    className="flex items-center gap-1"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onTouchStart={(e) => e.stopPropagation()}
-                  >
-                    <ThemedTooltip content="Copy log">
-                      <button
-                        type="button"
-                        onClick={handleCopyHistory}
-                        aria-label="Copy sent message log"
-                        disabled={allSent.length === 0}
-                        className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30"
-                      >
-                        <Copy className="w-3 h-3" />
-                      </button>
-                    </ThemedTooltip>
-                    <ThemedTooltip content="Clear log">
-                      <button
-                        type="button"
-                        onClick={handleClearHistory}
-                        aria-label="Clear sent message log"
-                        disabled={allSent.length === 0}
-                        className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-30"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </ThemedTooltip>
-                  </div>
                 </div>
-                <div className="flex-1 overflow-y-auto p-2 space-y-1 forge-scroll">
-                  {allSent.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-6 gap-1">
-                      <Send className="w-5 h-5 text-gray-700" />
-                      <span className="text-[10px] text-gray-600 font-mono">No messages sent yet</span>
-                    </div>
-                  ) : (
-                    allSent.map((msg) => (
-                      <div key={msg.id} className="rounded-lg border p-2 bg-black/30 border-white/5 hover:border-white/10 transition-colors">
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <span className={cn('text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded border', SOURCE_COLORS[msg.source])}>
-                            {SOURCE_LABELS[msg.source]}
-                          </span>
-                          {msg.botName && (
-                            <span className="text-[8px] font-mono font-bold uppercase px-1.5 py-0.5 rounded border text-[#c79bff] bg-[#9146FF]/10 border-[#9146FF]/20">
-                              {msg.botName}
-                            </span>
-                          )}
-                          <span className="text-[9px] font-mono text-gray-600">{formatClock(msg.timestamp)}</span>
-                        </div>
-                        <p className="text-[11px] text-gray-300 leading-snug break-words font-mono">{msg.message}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
+                <SentMessageHistory messages={allSent} onClear={handleClearHistory} />
               </div>
             </motion.div>
           )}

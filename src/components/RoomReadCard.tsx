@@ -303,6 +303,7 @@ export function RoomReadCard({
   const hasForgedOnce = useAppStore((s) => s.hasForgedOnce);
   const [whyOpen, setWhyOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [compactExpanded, setCompactExpanded] = useState(false);
 
   const v: RoomReadVariant = variant ?? (compact ? "compact" : "core");
 
@@ -319,6 +320,30 @@ export function RoomReadCard({
     .reverse();
   const chips = v === "compact" ? read.chips.slice(0, 3) : read.chips;
 
+  if (v === "compact" && !compactExpanded) {
+    return (
+      <div data-section="room-read" className="mx-auto w-full max-w-5xl">
+        <section aria-live="polite" aria-label="Room read — collapsed" className={cn(
+          "rounded-lg border bg-white/[0.03]",
+          read.status === "stale" ? "border-amber-400/20" : "border-white/10",
+        )}>
+          <button
+            type="button"
+            onClick={() => setCompactExpanded(true)}
+            aria-expanded={false}
+            aria-label={`Expand Room Read. ${read.headline}`}
+            className="mobile-touch-compact flex h-8 w-full min-w-0 items-center gap-1.5 px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+          >
+            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full motion-reduce:animate-none", dot.className)} aria-hidden="true" />
+            <span className="shrink-0 text-[10px] font-bold tracking-widest text-gray-300">ROOM READ</span>
+            <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">{read.headline}</span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden="true" />
+          </button>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div data-section="room-read" className={cn("max-w-5xl mx-auto w-full", v === "studio" && "max-w-none")}>
       <section
@@ -331,6 +356,22 @@ export function RoomReadCard({
         )}
       >
         {/* Header: ROOM READ + status */}
+        {v === "compact" ? (
+          <button
+            type="button"
+            onClick={() => setCompactExpanded(false)}
+            aria-expanded={true}
+            aria-label="Collapse Room Read"
+            className="mobile-touch-compact flex w-full items-center justify-between gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full motion-reduce:animate-none", dot.className)} aria-hidden="true" />
+              <span className="text-[11px] font-bold tracking-widest text-gray-300">ROOM READ</span>
+              <span className="font-mono text-[9px] text-gray-500">{dot.label}</span>
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 rotate-180 text-gray-500" aria-hidden="true" />
+          </button>
+        ) : (
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 min-w-0">
             <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", dot.className)} aria-hidden="true" />
@@ -348,6 +389,7 @@ export function RoomReadCard({
             </span>
           )}
         </div>
+        )}
 
         {/* Layer 1 — The Read */}
         <p className={cn(headlineClass(read), "transition-opacity duration-300")} title={read.headline}>
