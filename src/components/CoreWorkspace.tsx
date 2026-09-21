@@ -36,6 +36,7 @@ import {
   FlaskConical,
   Gauge,
   GripHorizontal,
+  Hash,
   Loader2,
   LogIn,
   LogOut,
@@ -72,6 +73,7 @@ import { checkOllamaHealth, getCachedOllamaHealth, invalidateOllamaHealthCache }
 import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import { playSfx } from "../lib/sfx";
+import { getMobilePlatformPresentation, type MobilePlatform } from "../lib/mobilePlatformPresentation";
 import { getCoreProviderSummary as getProviderSummary } from "../lib/coreProviderSummary";
 import { switchChannel } from "../lib/channelSwitch";
 import { isSupportedChannelUrlInput, sanitizeChannelInput } from "../lib/channelInput";
@@ -2852,11 +2854,22 @@ function ForgeTrayButton() {
 export function ChannelEditRow(props: {
   channelName: string;
   onSave: (name: string) => void | Promise<void>;
+  platform?: MobilePlatform;
 }) {
   const [value, setValue] = useState(props.channelName);
   const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<"idle" | "success" | "error">("idle");
   const savingRef = useRef(false);
+  const feedbackTimerRef = useRef<number | null>(null);
   useEffect(() => setValue(props.channelName), [props.channelName]);
+  useEffect(() => () => {
+    if (feedbackTimerRef.current !== null) window.clearTimeout(feedbackTimerRef.current);
+  }, []);
+  const showFeedback = (next: "success" | "error") => {
+    setFeedback(next);
+    if (feedbackTimerRef.current !== null) window.clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = window.setTimeout(() => setFeedback("idle"), 700);
+  };
   const save = async () => {
     if (savingRef.current) return;
     const sanitized = sanitizeChannelInput(value);
@@ -2870,15 +2883,23 @@ export function ChannelEditRow(props: {
     setSaving(true);
     try {
       await props.onSave(sanitized);
+      showFeedback("success");
+      playSfx("channel_set");
+    } catch {
+      showFeedback("error");
+      playSfx("error");
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
   };
+  const presentation = props.platform ? getMobilePlatformPresentation(props.platform) : null;
   return (
     <div className="flex gap-1">
       <div className="relative flex-1">
-        <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-gray-600 font-mono text-[11px]" aria-hidden="true">#</span>
+        <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-gray-600" aria-hidden="true">
+          <Hash className="h-3.5 w-3.5" />
+        </span>
         <input
           type="text"
           value={value}
@@ -2898,7 +2919,7 @@ export function ChannelEditRow(props: {
           onBlur={() => setValue(sanitizeChannelInput(value))}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
           placeholder="channel name"
-          className="w-full pl-5 pr-2 py-1.5 rounded bg-[#0a0a0f] border border-white/10 text-[11px] text-gray-200 placeholder-gray-700 focus:outline-none focus:border-orange-500/50 transition-colors"
+          className="w-full pl-7 pr-2 py-1.5 rounded bg-[#0a0a0f] border border-white/10 text-[11px] text-gray-200 placeholder-gray-700 focus:outline-none focus:border-orange-500/50 transition-colors"
           aria-label="Channel name"
         />
       </div>
@@ -2907,9 +2928,17 @@ export function ChannelEditRow(props: {
         onClick={save}
         disabled={saving}
         aria-busy={saving}
-        className="px-2.5 py-1.5 rounded bg-orange-500/20 border border-orange-500/30 text-orange-300 text-[10px] font-bold hover:bg-orange-500/30 transition-all"
+        className={cn(
+          "mobile-touch-primary min-w-[58px] px-2.5 py-1.5 rounded border text-[10px] font-bold transition-all inline-flex items-center justify-center gap-1",
+          feedback === "error"
+            ? "border-red-400/50 bg-red-500/20 text-red-200"
+            : feedback === "success"
+              ? "channel-set-success border-emerald-400/50 bg-emerald-500/20 text-emerald-200"
+              : presentation?.setButtonClass ?? "bg-orange-500/20 border-orange-500/30 text-orange-300 hover:bg-orange-500/30",
+        )}
       >
-        {saving ? "Switching…" : "Set"}
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : feedback === "success" ? <Check className="h-3.5 w-3.5" /> : feedback === "error" ? <AlertTriangle className="h-3.5 w-3.5" /> : null}
+        <span>SET</span>
       </button>
     </div>
   );
@@ -3420,10 +3449,10 @@ function CoreReadinessStrip(props: {
                             try {
                               if (await switchChannel(name)) {
                                 toast.success(`Watching @${name}`);
-                                playSfx("memory_add");
                               }
                             } catch (error) {
                               toast.error(error instanceof Error ? error.message : "Could not switch channels. Please try again.");
+                              throw error;
                             }
                           }}
                         />

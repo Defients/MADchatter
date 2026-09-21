@@ -51,6 +51,8 @@ import {
   Sliders,
   GripHorizontal,
   Check,
+  History,
+  EyeOff,
 } from "lucide-react";
 import { useAppStore, MOBILE_DIRECTOR_NOTE_LIMIT } from "../store";
 import { useCoreReadiness } from "../hooks/useCoreReadiness";
@@ -76,6 +78,7 @@ import { MobileWelcomeOverlay } from "./MobileWelcomeOverlay";
 import { MobileFriendTrialCard } from "./MobileFriendTrialCard";
 import { acknowledgeMobileWelcome, hasSeenMobileWelcome } from "../lib/mobileOnboarding";
 import { perception, classifyVisionError } from "../lib/perceptionLiveness";
+import { captureSessionScope, isSessionScopeCurrent } from "../lib/sessionScope";
 import { fetchStreamThumbnailDataUrl } from "../lib/streamThumbnail";
 import { cn } from "../lib/utils";
 import { toast } from "sonner";
@@ -100,6 +103,16 @@ import logoUrl from "../../madchatter-logo1.png";
 import { useSelfSabotageLogoTap } from "../hooks/useSelfSabotageLogoTap";
 import { MobileSmartReplyShelf } from "./MobileSmartReplyShelf";
 import { describeConfidenceThreshold } from "../lib/confidenceThreshold";
+import { MobileSentHistorySheet } from "./MobileSentHistorySheet";
+import {
+  coerceMobilePlatform,
+  getMobilePlatformPresentation,
+  normalizePersistedMobilePlatform,
+} from "../lib/mobilePlatformPresentation";
+import { getTwitchSession } from "../lib/twitch";
+import { getKickSession } from "../lib/kick";
+import { summarizeChatPulse } from "../lib/chatPulse";
+import { advanceR34lPlateau, r34lStyleReady, type R34lPlateauSnapshot } from "../lib/r34lLifecycle";
 
 // Color maps for sentiment
 const SENTIMENT_DOT_COLORS: Record<string, string> = {
@@ -156,6 +169,7 @@ export function CoreMobileWorkspace(props: {
   const tuningScrollRef = useRef<HTMLDivElement>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [telemetryExpanded, setTelemetryExpanded] = useState(false);
+  const [sentHistoryOpen, setSentHistoryOpen] = useState(false);
   // null follows the newest entry. A key pins the page the operator chose, so
   // a new decision cannot yank an intentional historical view back to latest.
   const [selectedTelemetryHistoryKey, setSelectedTelemetryHistoryKey] = useState<string | null>(null);
@@ -178,7 +192,11 @@ export function CoreMobileWorkspace(props: {
   const telemetryDragHeightRef = useRef<number | null>(null);
   const telemetryDragMovedRef = useRef(false);
   const [telemetryCollapsed, setTelemetryCollapsed] = useState(() => {
-    try { return sessionStorage.getItem("core-telemetry-collapsed") === "1"; } catch { return false; }
+    try {
+      const saved = sessionStorage.getItem("core-telemetry-collapsed");
+      if (saved !== null) return saved === "1";
+    } catch { /* private mode */ }
+    return typeof window !== "undefined" && window.matchMedia("(max-height: 720px)").matches;
   });
   const [telemetryDragging, setTelemetryDragging] = useState(false);
 
@@ -235,6 +253,19 @@ export function CoreMobileWorkspace(props: {
   const studioAvailable = useStudioAvailable();
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
+  const mobilePlatform = coerceMobilePlatform(platform);
+  const mobilePlatformPresentation = getMobilePlatformPresentation(platform);
+  // Joystick remains a supported desktop/global platform, but Mobile CORE is
+  // intentionally Twitch/Kick-only. Normalize a persisted desktop choice as
+  // soon as the mobile workspace mounts so no broken transient branch remains.
+  useEffect(() => {
+    if (platform === "twitch" || platform === "kick") return;
+    setPlatform(normalizePersistedMobilePlatform({
+      platform,
+      twitchAuthenticated: !!getTwitchSession(),
+      kickAuthenticated: !!getKickSession(),
+    }));
+  }, [platform, setPlatform]);
   const streamMetadata = useAppStore((s) => s.streamMetadata);
   const updateStreamMetadata = useAppStore((s) => s.updateStreamMetadata);
   const isForging = useAppStore((s) => s.isForging);
@@ -319,7 +350,7 @@ export function CoreMobileWorkspace(props: {
   }, []);
 
   return (
-    <div className="flex flex-col h-dvh w-full bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-10 select-text">
+    <div className="core-mobile-shell flex flex-col h-dvh w-full bg-[#0b0b11] text-[#e0e0e6] overflow-hidden font-sans relative z-10 select-text">
       {/* ─── Hidden TheForge loop instance to handle forge-trigger and auto-send events ─── */}
       <div className="hidden" aria-hidden="true">
         <TheForge />
@@ -344,7 +375,7 @@ export function CoreMobileWorkspace(props: {
           {props.activeUser ? (
             <div className="flex items-center h-8 rounded-lg overflow-hidden border bg-[#18181B] border-white/10 min-w-0 max-w-full">
               <div className="flex items-center gap-1.5 pl-1.5 pr-2.5 min-w-0">
-                <UserAvatar user={props.activeUser} platform={platform} sizeClass="h-6 w-6" textClass="text-[11px]" />
+                <UserAvatar user={props.activeUser} platform={mobilePlatform} sizeClass="h-6 w-6" textClass="text-[11px]" />
                 <span className="text-[11px] font-bold tracking-wide text-white truncate min-w-0">
                   @{userDisplayName(props.activeUser)}
                 </span>
@@ -365,11 +396,7 @@ export function CoreMobileWorkspace(props: {
               disabled={props.activeLoginInProgress}
               className={cn(
                 "h-8 px-2.5 flex items-center gap-1.5 disabled:opacity-70 text-white text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors touch-target",
-                platform === "kick"
-                  ? "bg-[#53fc18] hover:bg-[#44d014] text-black"
-                  : platform === "joystick"
-                  ? "bg-[#FF6B35] hover:bg-[#e55a25]"
-                  : "bg-[#9146FF] hover:bg-[#772ce8]"
+                mobilePlatformPresentation.loginClass
               )}
             >
               {props.activeLoginInProgress ? (
@@ -397,11 +424,12 @@ export function CoreMobileWorkspace(props: {
         {/* Room Read — shared Room Model surface, compact on mobile (once a
             channel is live). Pure consumer of the store mirror. */}
         {readiness.phase !== "setup" && !!streamMetadata?.channelName && (
-          <div className="shrink-0 px-3 pt-2">
+          <div className="shrink-0 px-2.5 pt-1.5">
             <RoomReadCard compact />
           </div>
         )}
         <MobileContextTab
+          active={mobileTab === "context"}
           activeUser={props.activeUser}
           draft={chatDraft}
           setDraft={setChatDraft}
@@ -461,6 +489,7 @@ export function CoreMobileWorkspace(props: {
           instead of the full row, and never covers the bottom navigation. */}
       <div
         ref={telemetryStripRef}
+        data-mobile-telemetry={telemetryCollapsed ? "collapsed" : telemetryExpanded ? "expanded" : "compact"}
         className={cn(
           "shrink-0 bg-[#0d0d14] border-t border-white/5 relative z-30 core-telemetry-strip overflow-hidden",
           telemetryDragging && "core-telemetry-dragging"
@@ -501,6 +530,14 @@ export function CoreMobileWorkspace(props: {
                 </span>
               )}
             </span>
+            <button
+              type="button"
+              onClick={() => { setSentHistoryOpen(true); playSfx("history_open"); }}
+              aria-label="Open sent message history"
+              className="mobile-icon-control ml-auto grid h-5 w-8 shrink-0 place-items-center text-gray-500 hover:text-cyan-300"
+            >
+              <History className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
 
@@ -585,6 +622,14 @@ export function CoreMobileWorkspace(props: {
             )}
           </div>
         </button>
+          <button
+            type="button"
+            onClick={() => { setSentHistoryOpen(true); playSfx("history_open"); }}
+            aria-label="Open sent message history"
+            className="mobile-icon-control grid h-8 w-9 shrink-0 place-items-center border-l border-white/5 text-gray-500 hover:bg-white/[0.03] hover:text-cyan-300"
+          >
+            <History className="h-3.5 w-3.5" />
+          </button>
         </div>
 
         {/* Expandable Telemetry Drawer */}
@@ -688,6 +733,8 @@ export function CoreMobileWorkspace(props: {
         </AnimatePresence>
       </div>
 
+      <MobileSentHistorySheet open={sentHistoryOpen} onClose={() => setSentHistoryOpen(false)} />
+
       {/* ─── 4. Persistent Bottom Navigation ─── */}
       <nav
         className="shrink-0 h-14 bg-[#0d0d12]/95 backdrop-blur-lg border-t border-white/5 px-2 flex items-center justify-around z-40 safe-bottom"
@@ -700,7 +747,7 @@ export function CoreMobileWorkspace(props: {
           aria-label="Context workspace"
           onClick={() => {
             setMobileTab("context");
-            playSfx("palette_select");
+            playSfx("navigation");
           }}
           className={cn(
             "flex-1 flex flex-col items-center justify-center gap-1 min-h-[48px] rounded-xl transition-all touch-target",
@@ -719,7 +766,7 @@ export function CoreMobileWorkspace(props: {
           aria-label="Forge workspace"
           onClick={() => {
             setMobileTab("forge");
-            playSfx("palette_select");
+            playSfx("navigation");
           }}
           className={cn(
             "flex-1 flex flex-col items-center justify-center gap-1 min-h-[48px] rounded-xl transition-all relative touch-target",
@@ -741,7 +788,7 @@ export function CoreMobileWorkspace(props: {
           aria-label="Tuning workspace"
           onClick={() => {
             setMobileTab("tuning");
-            playSfx("palette_select");
+            playSfx("navigation");
           }}
           className={cn(
             "flex-1 flex flex-col items-center justify-center gap-1 min-h-[48px] rounded-xl transition-all touch-target",
@@ -767,6 +814,7 @@ export function CoreMobileWorkspace(props: {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function MobileContextTab(props: {
+  active: boolean;
   activeUser: CoreMobileWorkspaceProps["activeUser"];
   draft: string;
   setDraft: (s: string) => void;
@@ -781,6 +829,42 @@ function MobileContextTab(props: {
   const [chatSearchQuery, setChatSearchQuery] = useState("");
   const [autoScrollLocked, setAutoScrollLocked] = useState(true);
   const [newMessagesWhileScrolled, setNewMessagesWhileScrolled] = useState(0);
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [pulseInspectorOpen, setPulseInspectorOpen] = useState(false);
+  const [supportingContextOpen, setSupportingContextOpen] = useState(false);
+  const pulseButtonRef = useRef<HTMLButtonElement>(null);
+  const pulseInspectorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!props.active) return;
+    try {
+      if (sessionStorage.getItem("core-mobile-composer-discovered") === "1") return;
+      sessionStorage.setItem("core-mobile-composer-discovered", "1");
+    } catch { /* private mode: reveal once for this mount */ }
+    setComposerExpanded(true);
+  }, [props.active]);
+
+  useEffect(() => {
+    if (!pulseInspectorOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (pulseInspectorRef.current?.contains(target) || pulseButtonRef.current?.contains(target)) return;
+      setPulseInspectorOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPulseInspectorOpen(false);
+        pulseButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [pulseInspectorOpen]);
 
   // Audio Transcription notice dismissal — session-scoped (sessionStorage),
   // so it stays hidden for the duration of the user's visit but returns on a
@@ -809,6 +893,8 @@ function MobileContextTab(props: {
 
   const streamMetadata = useAppStore((s) => s.streamMetadata);
   const platform = useAppStore((s) => s.platform);
+  const mobilePlatform = coerceMobilePlatform(platform);
+  const platformPresentation = getMobilePlatformPresentation(mobilePlatform);
   const chatLog = useAppStore((s) => s.chatLog);
   const sentimentHistory = useAppStore((s) => s.sentimentHistory);
   const isAutoForgeThinking = useAppStore((s) => s.isAutoForgeThinking);
@@ -818,7 +904,7 @@ function MobileContextTab(props: {
   // Canonical Visual data (same store/source as STUDIO and desktop CORE) —
   // the mobile history sheet is a view over this, never a second store.
   const visualSnapshotHistory = useAppStore((s) => s.visualSnapshotHistory);
-  const visualContextTags = useAppStore((s) => s.visualContextTags);
+  const visualActive = useAppStore((s) => !!s.visualSnapshotUrl || s.visualContextTags.length > 0);
   const setVisualHistoryOpen = useAppStore((s) => s.setVisualHistoryOpen);
   const setVisualSnapshot = useAppStore((s) => s.setVisualSnapshot);
   const recordTokenUsage = useAppStore((s) => s.recordTokenUsage);
@@ -842,7 +928,7 @@ function MobileContextTab(props: {
   const [twitchScriptLoaded, setTwitchScriptLoaded] = useState(() => !!window.Twitch);
 
   useEffect(() => {
-    if (platform === "kick" || platform === "joystick" || twitchScriptLoaded) return;
+    if (mobilePlatform === "kick" || twitchScriptLoaded) return;
     const existing = document.querySelector('script[src*="player.twitch.tv/js/embed/v1.js"]');
     if (existing && window.Twitch) { setTwitchScriptLoaded(true); return; }
     if (existing) { existing.addEventListener("load", () => setTwitchScriptLoaded(true)); return; }
@@ -850,10 +936,10 @@ function MobileContextTab(props: {
     script.src = "https://player.twitch.tv/js/embed/v1.js";
     script.onload = () => setTwitchScriptLoaded(true);
     document.head.appendChild(script);
-  }, [platform, twitchScriptLoaded]);
+  }, [mobilePlatform, twitchScriptLoaded]);
 
   useEffect(() => {
-    if (platform === "kick" || platform === "joystick" || !channel || !twitchScriptLoaded || !window.Twitch) return;
+    if (mobilePlatform === "kick" || !channel || !twitchScriptLoaded || !window.Twitch) return;
     // The player div is always mounted while a channel is set — when the
     // video is hidden it shrinks to an invisible 2px box so stream audio
     // keeps playing. The player is therefore created once per channel and
@@ -872,7 +958,7 @@ function MobileContextTab(props: {
       width: "100%",
       height: "100%",
     });
-  }, [channel, platform, parent, twitchPlayerId, twitchScriptLoaded]);
+  }, [channel, mobilePlatform, parent, twitchPlayerId, twitchScriptLoaded]);
 
   // Cleanup the Twitch player on unmount so the iframe doesn't leak.
   useEffect(() => {
@@ -926,16 +1012,19 @@ function MobileContextTab(props: {
       toast.error("No channel set — add a channel first.");
       return;
     }
-    if (platform === "joystick") {
-      toast.error("Joystick doesn't expose a public thumbnail. Use desktop capture instead.");
-      return;
-    }
     setThumbSnapLoading(true);
     playSfx("forge_start");
     const toastId = toast.loading("Fetching stream preview…");
     let dataUrl: string | null = null;
+    const requestScope = captureSessionScope();
+    const requestVisualRevision = useAppStore.getState().visualContextRevision;
+    let analysisVisualRevision: number | null = null;
     try {
-      dataUrl = await fetchStreamThumbnailDataUrl(platform, channel, 1280, 720);
+      dataUrl = await fetchStreamThumbnailDataUrl(mobilePlatform, channel, 1280, 720);
+      if (!isSessionScopeCurrent(requestScope) || useAppStore.getState().visualContextRevision !== requestVisualRevision) {
+        toast.dismiss(toastId);
+        return;
+      }
       if (!dataUrl) {
         toast.error("Couldn't fetch the stream preview. The stream may be offline.", { id: toastId });
         return;
@@ -945,9 +1034,14 @@ function MobileContextTab(props: {
       // exactly ONE history entry, created below with the real analysis
       // outcome (analyzed / no analysis / vision failed).
       setVisualSnapshot(dataUrl, ["Captured"], "manual", undefined, true);
+      analysisVisualRevision = useAppStore.getState().visualContextRevision;
       toast.loading("Analyzing stream frame…", { id: toastId });
       const provider = getActiveProvider();
       const data = await visionRequest(dataUrl, provider, null);
+      if (!isSessionScopeCurrent(requestScope) || useAppStore.getState().visualContextRevision !== analysisVisualRevision) {
+        toast.dismiss(toastId);
+        return;
+      }
       // Perception Liveness: manual thumbnail snap round-trip succeeded — the
       // mobile vision lane reports LIVE even though screen capture is
       // unsupported (the engine evaluates evidence, not capability defaults).
@@ -967,6 +1061,12 @@ function MobileContextTab(props: {
       setThumbSnapCooldown(true);
       setTimeout(() => setThumbSnapCooldown(false), 5000);
     } catch (e: any) {
+      const stale = !isSessionScopeCurrent(requestScope) ||
+        useAppStore.getState().visualContextRevision !== (analysisVisualRevision ?? requestVisualRevision);
+      if (stale) {
+        toast.dismiss(toastId);
+        return;
+      }
       // Perception Liveness: semantic-stage failure with a stable reason code
       // (stream offline fetch failure vs provider failure).
       perception.noteVisionSemantic({ ok: false, code: classifyVisionError(e) });
@@ -990,9 +1090,10 @@ function MobileContextTab(props: {
       (m) => !m.marker && (m.user.toLowerCase().includes(q) || m.text.toLowerCase().includes(q))
     );
   }, [chatLog, chatSearchQuery]);
+  const pulseSummary = useMemo(() => summarizeChatPulse(sentimentHistory), [sentimentHistory]);
 
   return (
-    <div className="flex flex-col h-full w-full min-h-0 bg-[#0B0B10]">
+    <div className="core-mobile-context relative flex flex-col h-full w-full min-h-0 bg-[#0B0B10]">
       {/* ─── Stream Video Area ─── */}
       <div className="shrink-0 border-b border-white/5 bg-black relative">
         {/* Stream Header Bar — overlays the top of the video behind a
@@ -1001,20 +1102,15 @@ function MobileContextTab(props: {
             hidden or no channel is set. */}
         <div
           className={cn(
-            "flex items-center justify-between px-3 py-1.5 gap-2",
+            "flex items-center px-2.5 py-1.5 gap-1.5",
             videoVisible
               ? "absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/80 via-black/40 to-transparent"
               : "bg-[#121218] border-b border-white/5",
           )}
         >
-          <div className="flex items-center gap-2 text-xs font-bold text-gray-300 shrink-0">
-            <Tv className="w-3.5 h-3.5 text-purple-400" />
-            <span>{channel ? `@${channel}` : "No stream selected"}</span>
-            {channel && (
-              <span className="text-[9px] uppercase px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono">
-                {platform}
-              </span>
-            )}
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-bold text-gray-300">
+            <Tv className={cn("w-3.5 h-3.5", platformPresentation.iconClass)} aria-label={platformPresentation.label} />
+            <span className="truncate">{channel ? `@${channel}` : "No stream selected"}</span>
           </div>
 
           {/* Snap / Visual controls — moved to the header so they don't cover
@@ -1064,7 +1160,7 @@ function MobileContextTab(props: {
                           : "Start capture, then tap SNAP again"}
                       aria-label="Capture a stream snapshot (manual)"
                       className={cn(
-                        "h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
+                        "mobile-touch-compact h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50",
                         props.isVisualCapturing && !props.visualCooldown && !props.snapDisabled
                           ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
                           : "bg-white/5 text-gray-400 border-white/10 hover:text-gray-200"
@@ -1080,11 +1176,9 @@ function MobileContextTab(props: {
                 )}
 
                 {/* Thumbnail Snap — the mobile alternative to getDisplayMedia.
-                    Fetches the platform's live preview thumbnail (Twitch CDN /
-                    Kick API) and runs it through the same vision pipeline. Works
-                    on phones where screen capture is unavailable. Twitch + Kick
-                    only (Joystick has no public thumbnail). */}
-                {!visualCaptureSupported && platform !== "joystick" && channel && (
+                    Fetches the active mobile platform's live preview thumbnail
+                    and runs it through the same vision pipeline. */}
+                {!visualCaptureSupported && channel && (
                   <button
                     type="button"
                     onClick={handleThumbnailSnap}
@@ -1092,7 +1186,7 @@ function MobileContextTab(props: {
                     title="Analyze the current stream frame from the live preview thumbnail"
                     aria-label="Snap stream frame from thumbnail"
                     className={cn(
-                      "h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50 touch-target",
+                      "mobile-touch-compact h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase border flex items-center justify-center gap-1 transition-colors disabled:opacity-50",
                       thumbSnapLoading
                         ? "bg-blue-500/15 text-blue-400 border-blue-500/25"
                         : thumbSnapCooldown
@@ -1105,7 +1199,7 @@ function MobileContextTab(props: {
                     ) : (
                       <Camera className="w-3 h-3 shrink-0" />
                     )}
-                    <span>{thumbSnapLoading ? "Analyzing…" : thumbSnapCooldown ? "Cooldown" : "Snap"}</span>
+                    <span>Snap</span>
                     {!thumbSnapLoading && !thumbSnapCooldown && (
                       <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
                     )}
@@ -1117,15 +1211,16 @@ function MobileContextTab(props: {
                     as a view over previously-captured frames (e.g. from desktop). */}
                 <button
                   type="button"
-                  onClick={() => { setVisualHistoryOpen(true); playSfx("hud_open"); }}
+                  onClick={() => { setVisualHistoryOpen(true); playSfx("history_open"); }}
                   aria-label="Open visual snapshot history"
-                  className="h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase bg-teal-500/15 text-teal-300 border border-teal-500/25 flex items-center justify-center gap-1 touch-target"
+                  className="mobile-touch-compact h-7 shrink-0 px-1.5 rounded-lg text-[10px] font-bold uppercase bg-teal-500/15 text-teal-300 border border-teal-500/25 flex items-center justify-center gap-1"
                 >
                   <Clock className="w-3 h-3 shrink-0" />
                   <span>Visual</span>
                   {visualSnapshotHistory.length > 0 && (
                     <span className="font-mono text-[9px] opacity-80 shrink-0">{visualSnapshotHistory.length}</span>
                   )}
+                  {visualActive && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_6px_rgba(103,232,249,0.8)]" aria-label="Current visual context active" />}
                 </button>
               </motion.div>
             )}
@@ -1134,23 +1229,25 @@ function MobileContextTab(props: {
           <button
             type="button"
             onClick={() => setStreamMinimized((v) => !v)}
+            aria-label={streamMinimized ? "Show stream video" : "Hide stream video"}
+            title={streamMinimized ? "Show stream video" : "Hide stream video"}
             className={cn(
-              "font-bold rounded transition-colors touch-action-manipulation shrink-0",
+              "mobile-touch-compact inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded border px-1.5 text-[10px] font-bold transition-colors touch-action-manipulation",
               streamMinimized
-                ? "text-xs text-purple-200 px-3 py-1.5 bg-purple-500/25 border border-purple-500/40 hover:bg-purple-500/35 flex items-center gap-1.5"
-                : "text-[10px] text-gray-400 hover:text-white px-2 py-1 bg-white/10",
+                ? platformPresentation.showVideoClass
+                : platformPresentation.hideVideoClass,
             )}
           >
             {streamMinimized ? (
               <>
-                {channel && platform !== "joystick" && (
+                {channel && (
                   <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" aria-label="Audio playing" />
                 )}
                 <Tv className="w-3.5 h-3.5" />
                 <span>Show Video</span>
               </>
             ) : (
-              "Hide Video"
+              <EyeOff className="h-3.5 w-3.5" />
             )}
           </button>
         </div>
@@ -1171,29 +1268,16 @@ function MobileContextTab(props: {
               className={cn(
                 streamMinimized
                   ? "absolute top-0 left-0 w-[2px] h-[2px] opacity-0 pointer-events-none overflow-hidden"
-                  : "w-full relative aspect-video max-h-[220px]"
+                  : "mobile-stream-frame w-full relative aspect-video max-h-[220px]"
               )}
             >
-              {platform === "kick" ? (
+              {mobilePlatform === "kick" ? (
                 <iframe
                   src={`https://player.kick.com/${channel}?autoplay=true&muted=true&parent=${parent}`}
                   title="Kick Stream"
                   className="w-full h-full border-0"
                   allow="autoplay; fullscreen"
                 />
-              ) : platform === "joystick" ? (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-2 p-4 text-center">
-                  <span className="text-xs text-orange-400 font-bold">Joystick stream active</span>
-                  {visualCaptureSupported && (
-                    <button
-                      type="button"
-                      onClick={props.onVisualCapture}
-                      className="px-3 py-1.5 rounded-lg bg-orange-500/20 border border-orange-500/40 text-orange-300 text-xs font-bold"
-                    >
-                      {props.isVisualCapturing ? "Stop Window Capture" : "Capture Window"}
-                    </button>
-                  )}
-                </div>
               ) : (
                 <div id={twitchPlayerId} className="w-full h-full" />
               )}
@@ -1214,7 +1298,14 @@ function MobileContextTab(props: {
         </div>
 
         {/* Sentiment Heatmap — expands across the middle so the entire row is filled */}
-        <div className="flex-1 min-w-0 flex items-center justify-center">
+        <button
+          ref={pulseButtonRef}
+          type="button"
+          onClick={() => { setPulseInspectorOpen((open) => !open); playSfx(pulseInspectorOpen ? "drawer_close" : "drawer_open"); }}
+          aria-expanded={pulseInspectorOpen}
+          aria-label="Inspect recent Chat Pulse sentiment"
+          className="mobile-touch-compact flex min-w-0 flex-1 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400/70"
+        >
           {sentimentHistory.length > 0 ? (
             <div
               className="w-full flex items-center gap-0.5 h-2 rounded overflow-hidden bg-black/40 border border-white/5 px-0.5"
@@ -1231,14 +1322,14 @@ function MobileContextTab(props: {
           ) : (
             <div className="w-full h-1 rounded-full bg-white/[0.04]" />
           )}
-        </div>
+        </button>
 
         {/* Search button indicator square — compact and cleanly aligned */}
         <button
           type="button"
           onClick={() => setChatSearchOpen((v) => !v)}
           className={cn(
-            "w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-all",
+            "mobile-icon-control w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-all",
             chatSearchOpen
               ? "text-teal-300 bg-teal-500/20 border border-teal-500/30 shadow-[0_0_8px_rgba(20,184,166,0.25)]"
               : "text-gray-400 hover:text-white hover:bg-white/5 border border-transparent"
@@ -1248,7 +1339,46 @@ function MobileContextTab(props: {
         >
           <Search className="w-3 h-3" />
         </button>
+        <button
+          type="button"
+          onClick={() => { setSupportingContextOpen(true); playSfx("drawer_open"); }}
+          className="mobile-icon-control grid h-6 w-6 shrink-0 place-items-center rounded-md border border-transparent text-gray-400 hover:bg-white/5 hover:text-blue-300"
+          aria-label="Open supporting audio and memory context"
+        >
+          <Pin className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setComposerExpanded(true);
+            setComposerFocusRequest((request) => request + 1);
+          }}
+          aria-pressed={composerExpanded}
+          className="mobile-icon-control grid h-6 w-6 shrink-0 place-items-center rounded-md border border-orange-500/20 text-orange-300 hover:bg-orange-500/10"
+          aria-label="Compose a chat message"
+        >
+          <Send className="h-3 w-3" />
+        </button>
       </div>
+
+      {pulseInspectorOpen && (
+        <div ref={pulseInspectorRef} role="dialog" aria-label="Chat Pulse inspector" className="shrink-0 border-b border-teal-500/15 bg-[#0d1518] px-3 py-2 text-[10px] text-gray-300">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-bold uppercase tracking-wider text-teal-300">Pulse Inspector</span>
+            <button type="button" onClick={() => setPulseInspectorOpen(false)} aria-label="Close Pulse Inspector" className="mobile-icon-control rounded p-1 text-gray-500 hover:text-white"><X className="h-3 w-3" /></button>
+          </div>
+          {pulseSummary.sampleCount > 0 ? (
+            <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
+              <span>Dominant <strong className="text-white">{pulseSummary.dominant}</strong></span>
+              <span>Trend <strong className="text-white">{pulseSummary.trend}</strong></span>
+              <span className="text-emerald-300">Positive {pulseSummary.positive}</span>
+              <span className="text-blue-300">Neutral {pulseSummary.neutral}</span>
+              <span className="text-rose-300">Negative {pulseSummary.negative}</span>
+              <span className="text-gray-500">Samples {pulseSummary.sampleCount}</span>
+            </div>
+          ) : <p className="mt-1 text-gray-500">No sentiment samples yet.</p>}
+        </div>
+      )}
 
       {/* Search Input Bar (revealed on demand) */}
       {chatSearchOpen && (
@@ -1276,6 +1406,7 @@ function MobileContextTab(props: {
       {/* ─── Chat Messages Scroll Area ─── */}
       <div
         ref={chatContainerRef}
+        data-mobile-chat-scroll
         onScroll={handleChatScroll}
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2.5 space-y-1.5 font-sans relative"
         style={{ WebkitOverflowScrolling: "touch" }}
@@ -1301,6 +1432,8 @@ function MobileContextTab(props: {
             return (
               <div
                 key={msg.id || i}
+                data-chat-row="ordinary"
+                data-chat-id={msg.id || undefined}
                 className={cn(
                   "p-1.5 rounded-lg border flex items-start gap-1.5 text-xs transition-colors",
                   isSelf
@@ -1349,6 +1482,11 @@ function MobileContextTab(props: {
                       auto
                     </span>
                   )}
+                  {isSelf && msg.selfSentSource === "smart_reply" && (
+                    <span className="text-[8px] font-bold uppercase px-1 rounded bg-cyan-500/15 text-cyan-300">
+                      reply
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -1361,7 +1499,7 @@ function MobileContextTab(props: {
                       toast.success("Pinned to memory");
                       playSfx("memory_add");
                     }}
-                    className="p-1 text-gray-500 hover:text-blue-400 transition-colors"
+                    className="mobile-icon-control p-1 text-gray-500 hover:text-blue-400 transition-colors"
                     aria-label="Pin to memory"
                   >
                     <Pin className="w-3 h-3" />
@@ -1404,15 +1542,24 @@ function MobileContextTab(props: {
       )}
 
       {/* ─── Live Chat Composer ─── */}
-      <MobileChatComposer channel={channel} draft={props.draft} setDraft={props.setDraft} />
-      {/* ─── Secondary Context (Audio Transcript notice & Pinned Memory) ─── */}
-      <div className="shrink-0 border-t border-white/5 bg-[#0D0D14] px-3 py-1.5">
-        <details className="group">
-          <summary className="text-[11px] font-bold text-gray-500 hover:text-gray-300 cursor-pointer flex items-center justify-between list-none">
-            <span>Supporting Context (Audio & Memory)</span>
-            <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="pt-2 pb-1 space-y-2 text-xs">
+      <MobileChatComposer
+        channel={channel}
+        draft={props.draft}
+        setDraft={props.setDraft}
+        expanded={composerExpanded}
+        onExpandedChange={setComposerExpanded}
+        focusRequest={composerFocusRequest}
+      />
+
+      {/* Supporting Context is temporary: it overlays the lower chat region
+          and releases every pixel when dismissed. */}
+      {supportingContextOpen && (
+        <div className="absolute inset-x-2 bottom-2 z-40 max-h-[56%] overflow-y-auto rounded-xl border border-blue-500/20 bg-[#10131b]/98 p-3 text-xs shadow-2xl backdrop-blur-xl">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-blue-300">Supporting Context</span>
+            <button type="button" onClick={() => { setSupportingContextOpen(false); playSfx("drawer_close"); }} aria-label="Close supporting context" className="mobile-icon-control rounded p-1 text-gray-500 hover:text-white"><X className="h-3.5 w-3.5" /></button>
+          </div>
+          <div className="space-y-2">
             {/* Audio Transcript status — dismissible for the session */}
             {!audioNoticeDismissed && (
               <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-300 text-[11px] relative pr-8">
@@ -1463,8 +1610,8 @@ function MobileContextTab(props: {
               </span>
             )}
           </div>
-        </details>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1475,12 +1622,32 @@ function MobileChatComposer(props: {
   channel: string;
   draft: string;
   setDraft: (s: string) => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  focusRequest: number;
 }) {
   const [sending, setSending] = useState(false);
+  const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const tmiReadState = useAppStore((s) => s.tmiReadState);
+  const smartReplies = useAppStore((s) => s.smartReplies);
+  const smartRepliesLoading = useAppStore((s) => s.smartRepliesLoading);
+  const smartReplyNotice = useAppStore((s) => s.smartReplyNotice);
   const isConnected = tmiReadState === "connected" && !!props.channel.trim();
+  const smartReplyTrayActive = smartRepliesLoading || !!smartReplyNotice || smartReplies.length > 0;
+
+  useEffect(() => {
+    if (props.focusRequest > 0 && props.expanded && !smartReplyTrayActive) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [props.focusRequest, props.expanded, smartReplyTrayActive]);
+
+  useEffect(() => {
+    if (!props.expanded || focused || sending || props.draft.trim() || smartReplyTrayActive) return;
+    const timer = window.setTimeout(() => props.onExpandedChange(false), 4500);
+    return () => window.clearTimeout(timer);
+  }, [props.expanded, focused, sending, props.draft, smartReplyTrayActive, props.onExpandedChange]);
 
   const handleSend = async () => {
     const text = props.draft.trim();
@@ -1489,6 +1656,7 @@ function MobileChatComposer(props: {
     try {
       await sendManualMessage({ message: text, channel: props.channel, source: "manual" });
       props.setDraft("");
+      props.onExpandedChange(false);
       playSfx("send_message");
       toast.success("Sent to chat!");
     } catch (e: any) {
@@ -1505,17 +1673,21 @@ function MobileChatComposer(props: {
     }
   };
 
+  if (!props.expanded || smartReplyTrayActive) return null;
+
   return (
-    <div className="shrink-0 border-t border-white/5 bg-[#121217] px-3 py-2 flex items-end gap-2">
+    <div data-mobile-composer="expanded" className="shrink-0 border-t border-white/5 bg-[#121217] px-2.5 py-1.5 flex items-end gap-1.5" aria-label="Chat action tray">
       <textarea
         ref={inputRef}
         rows={1}
         value={props.draft}
         onChange={(e) => props.setDraft(e.target.value)}
         onKeyDown={handleKeyDown}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         placeholder={isConnected ? "Send to stream chat…" : "Connect channel to chat…"}
         disabled={!isConnected || sending}
-        className="flex-1 min-h-[38px] max-h-[84px] bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-orange-500/50 resize-none font-sans"
+        className="flex-1 min-h-[36px] max-h-[84px] bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-orange-500/50 resize-none font-sans"
       />
       <button
         type="button"
@@ -2389,6 +2561,7 @@ function MobileTuningTab(props: {
 }) {
   const platform = useAppStore((s) => s.platform);
   const setPlatform = useAppStore((s) => s.setPlatform);
+  const mobilePlatform = coerceMobilePlatform(platform);
   const streamMetadata = useAppStore((s) => s.streamMetadata);
   const config = useAppStore((s) => s.config);
   const updateConfig = useAppStore((s) => s.updateConfig);
@@ -2402,6 +2575,8 @@ function MobileTuningTab(props: {
   const setR34lEnabled = useAppStore((s) => s.setR34lEnabled);
   const r34lLearningFrozen = useAppStore((s) => s.r34lLearningFrozen);
   const setR34lLearningFrozen = useAppStore((s) => s.setR34lLearningFrozen);
+  const r34lProfiles = useAppStore((s) => s.r34lProfiles);
+  const r34lSessionProfile = useAppStore((s) => s.r34lSessionProfile);
   const sfxEnabled = useAppStore((s) => s.sfxEnabled);
   const setSfxEnabled = useAppStore((s) => s.setSfxEnabled);
   const ttsEnabled = useAppStore((s) => s.ttsEnabled);
@@ -2411,6 +2586,23 @@ function MobileTuningTab(props: {
   const smartRepliesEnabled = useAppStore((s) => s.smartRepliesEnabled);
   const setSmartRepliesEnabled = useAppStore((s) => s.setSmartRepliesEnabled);
   const confidenceDescription = describeConfidenceThreshold(autoForgeConfidenceThreshold);
+  const r34lView = useMemo(
+    () => resolveCurrentR34lAdaptation().view,
+    [r34lProfiles, r34lSessionProfile, platform, streamMetadata.channelName],
+  );
+  const styleReady = !r34lEnabled && !r34lLearningFrozen && props.readiness.platformReady && r34lStyleReady(r34lView);
+  const plateauRef = useRef<R34lPlateauSnapshot | null>(null);
+  const [suggestFrozen, setSuggestFrozen] = useState(false);
+  useEffect(() => {
+    if (!r34lEnabled || r34lLearningFrozen) {
+      plateauRef.current = null;
+      setSuggestFrozen(false);
+      return;
+    }
+    const result = advanceR34lPlateau(plateauRef.current, r34lView);
+    plateauRef.current = result.snapshot;
+    setSuggestFrozen(result.suggestFrozen);
+  }, [r34lView, r34lEnabled, r34lLearningFrozen]);
 
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -2482,7 +2674,9 @@ function MobileTuningTab(props: {
 
         {/* Platform Selector */}
         <div className="flex gap-1.5">
-          {(["twitch", "kick", "joystick"] as const).map((p) => (
+          {(["twitch", "kick"] as const).map((p) => {
+            const presentation = getMobilePlatformPresentation(p);
+            return (
             <button
               key={p}
               type="button"
@@ -2492,14 +2686,14 @@ function MobileTuningTab(props: {
               }}
               className={cn(
                 "flex-1 py-2 rounded-lg border text-xs font-bold capitalize transition-all touch-target",
-                platform === p
-                  ? "bg-purple-500/20 border-purple-500/50 text-purple-200"
+                mobilePlatform === p
+                  ? presentation.activeSelectorClass
                   : "bg-black/30 border-white/5 text-gray-400 hover:text-white"
               )}
             >
-              {p}
+              {presentation.label}
             </button>
-          ))}
+          );})}
         </div>
 
         {/* Channel Row */}
@@ -2509,14 +2703,15 @@ function MobileTuningTab(props: {
           </span>
           <ChannelEditRow
             channelName={streamMetadata.channelName || ""}
+            platform={mobilePlatform}
             onSave={async (name) => {
               try {
                 if (await switchChannel(name)) {
                   toast.success(`Now watching @${name}`);
-                  playSfx("memory_add");
                 }
               } catch (e: any) {
                 toast.error(e.message || "Failed to switch channel");
+                throw e;
               }
             }}
           />
@@ -2923,6 +3118,11 @@ function MobileTuningTab(props: {
                     ? "Applying learned style and learning live chat"
                     : "Inactive: learned style preserved, not applied or updated"}
               </span>
+              {styleReady && (
+                <span className="r34l-style-ready mt-0.5 w-fit rounded border border-emerald-400/30 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider text-emerald-300 motion-reduce:animate-none">
+                  Style ready
+                </span>
+              )}
             </div>
             <button
               type="button"
@@ -2952,6 +3152,20 @@ function MobileTuningTab(props: {
               {r34lLearningFrozen ? "❄ FROZEN" : r34lEnabled ? "ON" : "OFF"}
             </button>
           </div>
+          {suggestFrozen && (
+            <button
+              type="button"
+              onClick={() => {
+                setR34lLearningFrozen(true);
+                setSuggestFrozen(false);
+                playSfx("setting_toggle");
+                toast.success("R34L FROZEN — learned style still applies; new learning paused");
+              }}
+              className="mobile-touch-row flex w-full items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold text-cyan-200 hover:bg-cyan-500/15"
+            >
+              ❄ FREEZE?
+            </button>
+          )}
           <R34lInlineDetails showDesktopShortcutHint={false} />
 
           {/* Smart Replies — incoming direct mentions trigger immediately at

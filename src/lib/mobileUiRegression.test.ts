@@ -32,6 +32,8 @@ assert.match(app, /!isMobile && <StudioDiscoveryOverlay \/>/, "mobile never rece
 assert.match(app, /!isMobile && <StudioGateOverlay \/>/, "mobile never receives the Studio gate");
 assert.match(app, /!isMobile && <StatusBar \/>/, "desktop status dock cannot cover Mobile CORE navigation");
 assert.doesNotMatch(mobile, /multiBotEnabled|manualSendBotId|setManualSendBotId/, "Mobile CORE exposes no multi-bot controls");
+assert.doesNotMatch(mobile, /platform\s*===\s*["']joystick|setPlatform\(["']joystick/, "Mobile CORE contains no Joystick presentation branch or selector");
+assert.match(mobile, /\(\["twitch", "kick"\] as const\)\.map/, "Mobile CORE platform selector is explicitly Twitch/Kick-only");
 assert.match(
   mobile,
   /if \(!sfxEnabled\) \{[\s\S]*initSfxAudioContext\(\);[\s\S]*setSfxEnabled\(true\);[\s\S]*playSfx\("select_change"\);/,
