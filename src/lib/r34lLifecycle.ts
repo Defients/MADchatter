@@ -12,6 +12,9 @@ export interface R34lPlateauResult {
 }
 
 export interface R34lFreezeDismissal {
+  /** Channel the "Not now" was dismissed in — a dismissal must never leak
+   *  into another room, even when both apply an identical fingerprint. */
+  channelKey: string;
   fingerprint: string;
   recentMessages: number;
 }
@@ -41,6 +44,9 @@ export function isR34lFreezeSuggestionDismissed(
   view: R34lView,
 ): boolean {
   if (!dismissal) return false;
+  // Channel-scoped first: another room's "Not now" never suppresses here,
+  // even for an identical applied fingerprint.
+  if (dismissal.channelKey !== view.channelKey) return false;
   return dismissal.fingerprint === r34lAppliedFingerprint(view) &&
     view.recentMessages - dismissal.recentMessages < R34L_PLATEAU_EVIDENCE_WINDOW;
 }

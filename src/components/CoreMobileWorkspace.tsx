@@ -3192,6 +3192,7 @@ function MobileTuningTab(props: {
                   type="button"
                   onClick={() => {
                     freezeDismissalRef.current = {
+                      channelKey: r34lView.channelKey,
                       fingerprint: r34lAppliedFingerprint(r34lView),
                       recentMessages: r34lView.recentMessages,
                     };

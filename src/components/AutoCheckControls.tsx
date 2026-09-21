@@ -237,8 +237,11 @@ function AutoCheckCadenceRow(props: {
             value={customMinutes}
             onChange={(event) => setCustomMinutes(event.target.value.slice(0, 3))}
             onBlur={commitCustom}
+              // Blur owns the commit — Enter only blurs. Committing here AND
+              // via the resulting blur would run the scheduler write, toast
+              // and selection SFX twice.
             onKeyDown={(event) => {
-              if (event.key === "Enter") { event.preventDefault(); commitCustom(); event.currentTarget.blur(); }
+              if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
             }}
             className="w-6 bg-transparent text-right outline-none"
           />

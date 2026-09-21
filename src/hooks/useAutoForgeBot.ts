@@ -88,6 +88,10 @@ const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
 // it's considered wedged — e.g. a hung SDK call or dead-socket send whose
 // promise never settles. A real forge never exceeds ~60s.
 const FORGE_WATCHDOG_MS = 120_000;
+/** Minimum gap between two urgent (mention-driven) early Interval attempts.
+ *  Keeps a lingering mention line from re-firing the bypass on every 15s
+ *  heartbeat while the user's ordinary deadline stays untouched. */
+const URGENT_ATTEMPT_COOLDOWN_MS = 30_000;
 
 /**
  * Per-bot AutoForge decision loop (multi-bot mode only).
@@ -125,6 +129,9 @@ export function useAutoForgeBot(botId: string) {
   const autoCheckSignalRef = useRef<AutoCheckSignal | null>(null);
   const followupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // Loop-local urgent pacing — deliberately NOT the user's deadline. Urgent
+  // mention attempts must never re-anchor `runtime.autoForgeNextActionMs`.
+  const urgentAttemptAtRef = useRef(0);
 
   const checkBot = async (force = false) => {
     const store = useAppStore.getState();
@@ -140,7 +147,36 @@ export function useAutoForgeBot(botId: string) {
       return;
     }
     const runtime = bot.runtime;
-    const intervalDeadlineAttempt = !force && !supercharged && store.autoForgeAutoCheckMode === "interval";
+    const intervalMode = !supercharged && store.autoForgeAutoCheckMode === "interval";
+    // ── Mention evidence for THIS bot's username (hoisted) ────────────────
+    // Computed once at the top so the urgent early-attempt gate below and the
+    // decision context share one source of truth. Uses fuzzy matching so
+    // Whisper mishears (e.g. "kovrycha" → "cory cha") still trigger a mention.
+    // Checks both chat log and audio transcript.
+    const botUsername = (bot.session.username || "").toLowerCase();
+    const mentionedLines: string[] = [];
+    if (botUsername) {
+      for (const msg of store.chatLog.slice(-15)) {
+        if (!msg.marker && isNameMentioned(msg.text, botUsername)) {
+          mentionedLines.push(`${msg.user}: ${msg.text}`);
+        }
+      }
+    }
+    // Also check audio transcript for name mentions (the legacy loop does
+    // this but self-disables in multi-bot mode, so the per-bot loop must
+    // handle it here).
+    const audioMentionLines = getSpokenMentionLines(botId);
+    const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
+    // ── Urgent pre-admission evidence ────────────────────────────────────────
+    // A direct mention may interrupt the user's Interval deadline immediately,
+    // but an urgent attempt NEVER re-anchors the ordinary cadence — only
+    // recordBotAutoForgeCheckAttempt on a due scheduled attempt re-anchors.
+    // The per-loop urgent cooldown keeps a lingering mention from re-firing
+    // the bypass on every heartbeat; the deadline itself stays untouched, so
+    // the ordinary scheduled attempt still fires at its original time.
+    const urgentIntervalAttempt = !force && intervalMode && isMentioned &&
+      Date.now() - urgentAttemptAtRef.current >= URGENT_ATTEMPT_COOLDOWN_MS;
+    const intervalDeadlineAttempt = intervalMode && !force && !urgentIntervalAttempt;
     if (intervalDeadlineAttempt) {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       const nowMs = Date.now();
@@ -150,6 +186,11 @@ export function useAutoForgeBot(botId: string) {
       }
       if (nowMs < runtime.autoForgeNextActionMs) return;
       store.recordBotAutoForgeCheckAttempt(botId, nowMs);
+    } else if (urgentIntervalAttempt) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      // Urgent early attempt in Interval mode: run now WITHOUT recording an
+      // attempt — the user's deadline remains exactly where they set it.
+      urgentAttemptAtRef.current = Date.now();
     }
     if (botCoordinator.getEventFloorOwner()) return;
     if (isForgingRef.current) {
@@ -181,7 +222,7 @@ export function useAutoForgeBot(botId: string) {
     // force bypasses the isForging gate — the scheduler arbitrates contention
     // (the decide queues behind the critical forge on Ollama, or runs
     // concurrently on cloud providers).
-    if (!force && !intervalDeadlineAttempt && Date.now() < runtime.autoForgeNextActionMs) return;
+    if (!force && !intervalDeadlineAttempt && !urgentIntervalAttempt && Date.now() < runtime.autoForgeNextActionMs) return;
 
     isForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
@@ -255,21 +296,9 @@ export function useAutoForgeBot(botId: string) {
       // ── Mention detection for THIS bot's username ────────────────────────
       // Uses fuzzy matching so Whisper mishears (e.g. "kovrycha" → "cory cha")
       // still trigger a mention. Checks both chat log and audio transcript.
-      const botUsername = (bot.session.username || "").toLowerCase();
-      const recentMessages = store.chatLog.slice(-15).filter((m) => !m.marker);
-      const mentionedLines: string[] = [];
-      if (botUsername) {
-        for (const msg of recentMessages) {
-          if (isNameMentioned(msg.text, botUsername)) {
-            mentionedLines.push(`${msg.user}: ${msg.text}`);
-          }
-        }
-      }
-      // Also check audio transcript for name mentions (the legacy loop does
-      // this but self-disables in multi-bot mode, so the per-bot loop must
-      // handle it here).
-      const audioMentionLines = getSpokenMentionLines(botId);
-      const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
+      // Mention evidence was hoisted to the top of checkBot (shared with the
+      // urgent early-attempt gate) — botUsername/mentionedLines/audioMention
+      // Lines/isMentioned are already in scope.
 
       // Direct-chat acknowledgement and Smart Replies are owned by the
       // incoming-chat coordinator. Fuzzy/audio mention evidence stays here as
@@ -542,12 +571,23 @@ export function useAutoForgeBot(botId: string) {
 
       // ── Auto-Check cadence gate ──────────────────────────────────────────
       // The user chooses how often CORE may spend a model evaluation per bot.
-      // Interval mode enforces that cadence; Smart mode requires a real
-      // context change (new chat, transcript, visual frame, or bot activity).
-      // Mentions and activity spikes always pass, so a bot never ignores being
-      // addressed. The 15s tick remains a cheap scheduler heartbeat that this
-      // gate filters — no model call happens "because a timer expired".
-      if (!force && !supercharged) {
+      // Smart mode requires a real context change (new chat, transcript,
+      // visual frame, or bot activity); mentions and activity spikes always
+      // pass, so a bot never ignores being addressed. The 15s tick remains a
+      // cheap scheduler heartbeat that this gate filters — no model call
+      // happens "because a timer expired".
+      //
+      // Manual Interval mode does NOT pass through this gate: the per-bot
+      // `runtime.autoForgeNextActionMs` deadline above IS the authoritative
+      // admission. This gate reads the SHARED `autoForgeLastCheckMs`, which
+      // another bot's just-completed attempt updated milliseconds ago —
+      // re-gating an admitted Interval attempt here would suppress a bot whose
+      // own deadline was independently due (Bot A's attempt must never block
+      // Bot B's). Post-admission gates (rate, provider, sends) still shape the
+      // outcome below without moving the recorded attempt. An urgent early
+      // attempt bypasses this gate too — it interrupted the timer precisely
+      // so a model evaluation could run immediately.
+      if (!force && !supercharged && !intervalMode) {
         const signal = captureAutoCheckSignal({
           chatLog: store.chatLog,
           audioTranscript: store.audioTranscript,

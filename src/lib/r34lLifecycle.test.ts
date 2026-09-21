@@ -26,9 +26,20 @@ const changed = advanceR34lPlateau(started.snapshot, {
 assert.equal(changed.suggestFrozen, false, "material fingerprint change restarts the window");
 
 const matureView = { ...base, recentMessages: base.recentMessages + R34L_PLATEAU_EVIDENCE_WINDOW };
-const dismissal = { fingerprint: r34lAppliedFingerprint(matureView), recentMessages: matureView.recentMessages };
+const dismissal = { channelKey: "twitch:room", fingerprint: r34lAppliedFingerprint(matureView), recentMessages: matureView.recentMessages };
 assert.equal(isR34lFreezeSuggestionDismissed(dismissal, matureView), true, "Not now hides the same plateau snapshot");
 assert.equal(isR34lFreezeSuggestionDismissed(dismissal, { ...matureView, recentMessages: matureView.recentMessages + 17 }), true, "dismissal survives minor extra evidence");
 assert.equal(isR34lFreezeSuggestionDismissed(dismissal, { ...matureView, recentMessages: matureView.recentMessages + 18 }), false, "substantially more evidence permits a later suggestion");
 
-console.log("R34L readiness and bounded plateau scenarios passed");
+// Channel scoping: a "Not now" in one room never leaks into another, even
+// when both rooms apply an identical fingerprint. Returning to the original
+// channel still honors ITS dismissal while the evidence window has not
+// advanced past the bounded threshold.
+const otherChannelView = { ...matureView, channelKey: "twitch:other", channel: "other" };
+assert.equal(isR34lFreezeSuggestionDismissed(dismissal, otherChannelView), false, "same fingerprint in another channel does NOT inherit the dismissal");
+const otherChannelDismissal = { channelKey: "twitch:other", fingerprint: r34lAppliedFingerprint(otherChannelView), recentMessages: otherChannelView.recentMessages };
+assert.equal(isR34lFreezeSuggestionDismissed(otherChannelDismissal, otherChannelView), true, "each channel's own dismissal applies in its own room");
+assert.equal(isR34lFreezeSuggestionDismissed(otherChannelDismissal, matureView), false, "the second channel's dismissal does not suppress the first");
+assert.equal(isR34lFreezeSuggestionDismissed(dismissal, { ...matureView, channelKey: undefined } as unknown as R34lView), false, "missing channel identity never matches a scoped dismissal");
+
+console.log("R34L readiness, bounded plateau and channel-scoped dismissal scenarios passed");

@@ -82,6 +82,10 @@ const ENGAGEMENT_CHECK_DELAY_MS = 30_000;
 // it's considered wedged — e.g. a hung SDK call or dead-socket send whose
 // promise never settles. A real forge never exceeds ~60s.
 const FORGE_WATCHDOG_MS = 120_000;
+/** Minimum gap between two urgent (mention-driven) early Interval attempts.
+ *  Keeps a lingering mention line from re-firing the bypass on every 15s
+ *  heartbeat while the user's ordinary deadline stays untouched. */
+const URGENT_ATTEMPT_COOLDOWN_MS = 30_000;
 
 export function useAutoForge() {
   const {
@@ -154,6 +158,9 @@ export function useAutoForge() {
   const forgingStartedAtRef = useRef(0);
   // Track engagement-check timers for cleanup on unmount
   const engagementTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // Loop-local urgent pacing — deliberately NOT the user's deadline. Urgent
+  // mention attempts must never re-anchor `autoForgeNextActionMs`.
+  const urgentAttemptAtRef = useRef(0);
   const storeRef = useRef({ config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null });
 
   storeRef.current = { config, streamMetadata, audioTranscript, chatLog, visualSnapshotUrl, visualContextTags, longTermMemory, pinnedMemories, goldenMemoryId, isForging, autoForgeEnabled, autoForgeAutoCheckEnabled, autoForgeLastActionMs, autoForgeNextActionMs, r34lEnabled, platform, messageSoundEnabled, autoMemoryConfig, autoMemories, userProfiles, insideJokes, personalityState, sentMessages, rateLimitConfig, autoForgeDryRun, autoForgeConfidenceThreshold, sessionGoals, perActionRateLimits, directorNotes, autoForgeAutoCheckMode, autoForgeAutoCheckIntervalMs, autoForgeLastCheckMs, audioEnergy: useAppStore.getState().audioEnergy?.label ?? null };
@@ -183,7 +190,52 @@ export function useAutoForge() {
     const state = storeRef.current;
     const live = useAppStore.getState();
     const supercharged = live.superchargeActive;
-    const intervalDeadlineAttempt = !force && !supercharged && state.autoForgeAutoCheckMode === "interval";
+    const intervalMode = !supercharged && state.autoForgeAutoCheckMode === "interval";
+    // ── Mention evidence (hoisted) ───────────────────────────────────────────
+    // Computed once at the top so the urgent early-attempt gate below and the
+    // decision context share one source of truth. `live` (full store state)
+    // is used for the multi-bot lookup because storeRef.current omits
+    // multiBot fields — the legacy loop still runs when multiBotEnabled is
+    // on but fewer than 2 bots are authenticated.
+    const botUsername = state.platform === "kick"
+      ? (getKickSession()?.username || "").toLowerCase()
+      : state.platform === "joystick"
+        ? (getJoystickSession()?.username || "").toLowerCase()
+        : (getTwitchSession()?.username || "").toLowerCase();
+    // Also detect common targeting patterns: @username, direct replies, "hey [name]"
+    const mentionPatterns: string[] = [];
+    if (botUsername) {
+      mentionPatterns.push(botUsername);
+      mentionPatterns.push(botUsername.replace(/[^a-z0-9]/g, ""));
+    }
+    const mentionedLines: string[] = [];
+    for (const msg of state.chatLog.slice(-15)) {
+      if (msg.marker) continue;
+      const lower = msg.text.toLowerCase();
+      if (mentionPatterns.some(p => p && lower.includes(p))) {
+        mentionedLines.push(`${msg.user}: ${msg.text}`);
+      }
+      // Detect @mentions
+      if (botUsername && lower.includes(`@${botUsername}`)) {
+        if (!mentionedLines.includes(`${msg.user}: ${msg.text}`)) mentionedLines.push(`${msg.user}: ${msg.text}`);
+      }
+    }
+    // Also check audio transcript for name mentions or references.
+    const audioMentionLines = getSpokenMentionLines(live.multiBotEnabled
+      ? live.bots.find((b) => b.active && b.session?.username.toLowerCase() === botUsername)?.id ?? ""
+      : "");
+    const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
+    const allMentionedLines = [...mentionedLines, ...audioMentionLines];
+    // ── Urgent pre-admission evidence ────────────────────────────────────────
+    // A direct mention may interrupt the user's Interval deadline immediately,
+    // but an urgent attempt NEVER re-anchors the ordinary cadence — only
+    // recordAutoForgeCheckAttempt on a due scheduled attempt re-anchors.
+    // The per-loop urgent cooldown keeps a lingering mention from re-firing
+    // the bypass on every heartbeat; the deadline itself stays untouched, so
+    // the ordinary scheduled attempt still fires at its original time.
+    const urgentIntervalAttempt = !force && intervalMode && isMentioned &&
+      Date.now() - urgentAttemptAtRef.current >= URGENT_ATTEMPT_COOLDOWN_MS;
+    const intervalDeadlineAttempt = intervalMode && !force && !urgentIntervalAttempt;
     if (!state.autoForgeEnabled) return;
     if (intervalDeadlineAttempt) {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
@@ -194,6 +246,11 @@ export function useAutoForge() {
       }
       if (nowMs < state.autoForgeNextActionMs) return;
       live.recordAutoForgeCheckAttempt(nowMs);
+    } else if (urgentIntervalAttempt) {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      // Urgent early attempt in Interval mode: run now WITHOUT recording an
+      // attempt — the user's deadline remains exactly where they set it.
+      urgentAttemptAtRef.current = Date.now();
     }
     // Choreographed events temporarily own automated speech. The interval
     // attempt is still recorded above; event ownership shapes its outcome.
@@ -227,7 +284,7 @@ export function useAutoForge() {
     // force bypasses the isForging gate — the scheduler arbitrates contention.
 
     // Only trigger if we've passed the next scheduled action time
-    if (!force && !intervalDeadlineAttempt && Date.now() < state.autoForgeNextActionMs) return;
+    if (!force && !intervalDeadlineAttempt && !urgentIntervalAttempt && Date.now() < state.autoForgeNextActionMs) return;
 
     isAutoForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
@@ -268,40 +325,10 @@ export function useAutoForge() {
       lastMessagesReceivedRef.current = currentMessagesReceived;
       lastCheckTimeRef.current = now;
 
-      // Detect if the bot's own username is being mentioned or targeted in recent chat or audio
-      const channelName = (state.streamMetadata.channelName || "").toLowerCase();
-      const botUsername = state.platform === "kick"
-        ? (getKickSession()?.username || "").toLowerCase()
-        : state.platform === "joystick"
-          ? (getJoystickSession()?.username || "").toLowerCase()
-          : (getTwitchSession()?.username || "").toLowerCase();
-      const mentionPatterns: string[] = [];
-      if (botUsername) {
-        mentionPatterns.push(botUsername);
-        mentionPatterns.push(botUsername.replace(/[^a-z0-9]/g, ""));
-      }
-      // Also detect common targeting patterns: @username, direct replies, "hey [name]"
-      const recentMessages = state.chatLog.slice(-15).filter(m => !m.marker);
-      const mentionedLines: string[] = [];
-      for (const msg of recentMessages) {
-        const lower = msg.text.toLowerCase();
-        if (mentionPatterns.some(p => p && lower.includes(p))) {
-          mentionedLines.push(`${msg.user}: ${msg.text}`);
-        }
-        // Detect @mentions
-        if (botUsername && lower.includes(`@${botUsername}`)) {
-          if (!mentionedLines.includes(`${msg.user}: ${msg.text}`)) mentionedLines.push(`${msg.user}: ${msg.text}`);
-        }
-      }
-      // Also check audio transcript for name mentions or references.
-      // `live` (full store state) is used because storeRef.current omits
-      // multiBot fields — the legacy loop still runs when multiBotEnabled
-      // is on but fewer than 2 bots are authenticated.
-      const audioMentionLines = getSpokenMentionLines(live.multiBotEnabled
-        ? live.bots.find((b) => b.active && b.session?.username.toLowerCase() === botUsername)?.id ?? ""
-        : "");
-      const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
-      const allMentionedLines = [...mentionedLines, ...audioMentionLines];
+      // Mention evidence was hoisted to the top of checkAutoForge (shared
+      // with the urgent early-attempt gate) — botUsername, mentionedLines,
+      // audioMentionLines, isMentioned and allMentionedLines are already in
+      // scope.
 
       // Track unique chatters for enhanced stats
       const uniqueChatters = new Set(state.chatLog.filter(m => !m.marker).map(m => m.user)).size;
@@ -555,16 +582,25 @@ export function useAutoForge() {
         }
       }
 
-      // Auto-Check cadence gate — the user (not a hard-coded timer) decides how
-      // often CORE may spend a model evaluation. Interval mode enforces the
-      // chosen cadence; Smart mode requires a real context change (new chat,
-      // transcript, visual frame, or bot activity). Mentions and activity
-      // spikes always pass, so the bot never ignores being addressed.
-      // The signal fingerprint is only advanced when a check actually runs, so
-      // a change that arrives during a blocked tick stays "new" until it is
-      // evaluated. Nothing is scheduled here — the 15s tick is now a cheap
-      // scheduler heartbeat that this gate filters.
-      if (!force && !supercharged) {
+      // ── Auto-Check cadence gate — Smart mode only ───────────────────────
+      // Smart mode requires a real context change (new chat, transcript,
+      // visual frame, or bot activity). Mentions and activity spikes always
+      // pass, so the bot never ignores being addressed. The signal fingerprint
+      // is only advanced when a check actually runs, so a change that arrives
+      // during a blocked tick stays "new" until it is evaluated. Nothing is
+      // scheduled here — the 15s tick is now a cheap scheduler heartbeat that
+      // this gate filters.
+      //
+      // Manual Interval mode does NOT pass through this gate: the absolute
+      // `autoForgeNextActionMs` deadline above IS the authoritative admission.
+      // evaluateAutoCheckCadence reads `autoForgeLastCheckMs`, which the
+      // record above just set to "now" — re-gating an admitted Interval
+      // attempt against a floor anchored at its own attempt time would
+      // suppress every Interval check. Post-admission gates (rate, provider,
+      // sends) still shape the outcome below. An urgent early attempt
+      // bypasses this gate too — it interrupted the timer precisely so a
+      // model evaluation could run immediately.
+      if (!force && !supercharged && !intervalMode) {
         const signal = captureAutoCheckSignal({
           chatLog: state.chatLog,
           audioTranscript: state.audioTranscript,

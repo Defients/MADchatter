@@ -271,6 +271,23 @@ async function assertRepresentativeStates(page) {
   assert.deepEqual(policy.hidden, { attempted: 5, allowed: 0, suppressed: 5 }, 'hidden optional UI/tick audio is centrally suppressed');
   assert.equal(policy.restored.allowed, 1, 'foreground restore admits a new intentional sound without replay');
 
+  // Real lifecycle wiring (not the test hook): synthetic browser events
+  // through the actual visibilitychange/pagehide/pageshow listeners the app
+  // installed. The real page stays foreground; the events drive the policy.
+  const lifecycle = await page.evaluate(async () => {
+    const audio = await import('/src/lib/sfx.ts');
+    audio.resetOptionalUiAudioDiagnostics();
+    window.dispatchEvent(new Event('pagehide'));
+    audio.playSfx('navigation');
+    const hiddenEvents = audio.getOptionalUiAudioDiagnostics();
+    window.dispatchEvent(new Event('pageshow'));
+    audio.playSfx('navigation');
+    const restoredEvents = audio.getOptionalUiAudioDiagnostics();
+    return { hiddenEvents, restoredEvents };
+  });
+  assert.deepEqual(lifecycle.hiddenEvents, { attempted: 1, allowed: 0, suppressed: 1 }, 'real pagehide wiring suppresses optional UI audio');
+  assert.equal(lifecycle.restoredEvents.allowed, 1, 'real pageshow wiring admits a new foreground sound without replay');
+
   const timer = await page.evaluate(async () => {
     const { useAppStore } = await import('/src/store.ts');
     const realNow = Date.now;
@@ -413,6 +430,151 @@ async function assertRepresentativeStates(page) {
   assert.equal(await telemetry.getAttribute('data-mobile-telemetry'), 'expanded');
 }
 
+// ── Real CUSTOM timer control + persistence (390x844) ──────────────────────
+// Exercises the ACTUAL Mobile cadence control (never direct Zustand mutation
+// on this acceptance path) and the persisted CUSTOM value through the app's
+// own persistence path. Composer motion validation continues in
+// assertComposerMotion below.
+async function assertCustomTimerAndComposer(page) {
+  await page.evaluate(async () => {
+    const { useAppStore } = await import('/src/store.ts');
+    useAppStore.setState({ autoForgeEnabled: true, sfxEnabled: true });
+  });
+  await page.getByRole('tab', { name: 'Tuning workspace' }).click();
+  const cadence = page.getByRole('radiogroup', { name: 'Auto-Check cadence' });
+  await cadence.waitFor({ state: 'visible' });
+  const state = async () => page.evaluate(async () => {
+    const s = (await import('/src/store.ts')).useAppStore.getState();
+    return { mode: s.autoForgeAutoCheckMode, intervalMs: s.autoForgeAutoCheckIntervalMs };
+  });
+  const sfxAllowed = async () => page.evaluate(async () => (await import('/src/lib/sfx.ts')).getOptionalUiAudioDiagnostics().allowed);
+  const resetSfx = () => page.evaluate(async () => { (await import('/src/lib/sfx.ts')).resetOptionalUiAudioDiagnostics(); });
+
+  // Choose CUSTOM — the numeric control appears.
+  await cadence.getByRole('radio', { name: 'Custom', exact: true }).click();
+  const custom = page.getByRole('textbox', { name: 'Custom Auto-Check minutes' });
+  await custom.waitFor({ state: 'visible' });
+
+  // Enter commits exactly once (blur owns the commit; Enter only blurs).
+  await resetSfx();
+  await custom.fill('5');
+  await custom.press('Enter');
+  await page.waitForTimeout(150);
+  assert.deepEqual(await state(), { mode: 'interval', intervalMs: 300_000 }, 'CUSTOM 5 via Enter commits exactly 300000ms');
+  assert.equal(await custom.inputValue(), '5', 'displayed selection reflects CUSTOM 5');
+  for (const preset of ['Smart', '30s', '1m', '2m']) {
+    assert.equal(await cadence.getByRole('radio', { name: preset }).getAttribute('aria-checked'), 'false', `${preset} deselected by CUSTOM 5`);
+  }
+  assert.equal(await sfxAllowed(), 1, 'Enter commit plays the selection SFX exactly once');
+
+  // Blur commits exactly once.
+  await resetSfx();
+  await custom.fill('99');
+  await custom.blur();
+  await page.waitForTimeout(150);
+  assert.deepEqual(await state(), { mode: 'interval', intervalMs: 5_940_000 }, 'CUSTOM 99 via blur commits exactly 5940000ms');
+  assert.equal(await sfxAllowed(), 1, 'blur commit plays the selection SFX exactly once');
+
+  // Partial blank draft never mutates the scheduler.
+  await resetSfx();
+  await custom.fill('');
+  await custom.blur();
+  await page.waitForTimeout(150);
+  assert.equal((await state()).intervalMs, 5_940_000, 'blank draft does not mutate the scheduler');
+  assert.equal(await sfxAllowed(), 0, 'blank draft produces no selection SFX');
+
+  // 0 clamps once to CUSTOM 1 (the 1m preset takes over the control slot).
+  await custom.fill('0');
+  await custom.blur();
+  await page.waitForTimeout(150);
+  assert.equal((await state()).intervalMs, 60_000, '0 clamps to CUSTOM 1 (60000ms)');
+
+  // 100 clamps once to CUSTOM 99.
+  await cadence.getByRole('radio', { name: 'Custom', exact: true }).click();
+  const custom2 = page.getByRole('textbox', { name: 'Custom Auto-Check minutes' });
+  await custom2.waitFor({ state: 'visible' });
+  await custom2.fill('100');
+  await custom2.blur();
+  await page.waitForTimeout(150);
+  assert.deepEqual(await state(), { mode: 'interval', intervalMs: 5_940_000 }, '100 clamps to CUSTOM 99 (5940000ms)');
+
+  // Reload through the app's own persistence path — CUSTOM 99 survives.
+  await page.reload({ waitUntil: 'networkidle' });
+  assert.deepEqual(await state(), { mode: 'interval', intervalMs: 5_940_000 }, 'CUSTOM 99M persists through the real persistence path');
+  await page.getByRole('tab', { name: 'Tuning workspace' }).click();
+  const custom3 = page.getByRole('textbox', { name: 'Custom Auto-Check minutes' });
+  await custom3.waitFor({ state: 'visible' });
+  assert.equal(await custom3.inputValue(), '99', 'remounted control displays the persisted CUSTOM 99');
+  await assertComposerMotion(page);
+}
+// Composer motion validation (390x844, no reduced motion): the exit phase is
+// measurable (opacity/height animation), the element finally unmounts, the
+// chat viewport re-expands, and the draft survives Smart Reply takeover.
+async function assertComposerMotion(page) {
+  await page.getByRole('tab', { name: 'Context workspace' }).click();
+  const chatScroll = page.locator('[data-mobile-chat-scroll]');
+  const scrollHeight = () => chatScroll.evaluate((el) => Math.round(el.getBoundingClientRect().height));
+  const collapsedHeight = await scrollHeight();
+  await page.getByRole('button', { name: 'Compose a chat message' }).click();
+  const composer = page.locator('[data-mobile-composer="expanded"]');
+  await composer.waitFor({ state: 'visible' });
+  await composer.locator('textarea').fill('Animated exit draft');
+  const expandedHeight = await scrollHeight();
+  await page.evaluate(() => {
+    const w = window;
+    w.__composerExitSamples = [];
+    const start = performance.now();
+    const sample = () => {
+      const el = document.querySelector('[data-mobile-composer="expanded"]');
+      w.__composerExitSamples.push({
+        t: Math.round(performance.now() - start),
+        attached: !!el,
+        opacity: el ? Number(getComputedStyle(el).opacity) : null,
+        height: el ? Math.round(el.getBoundingClientRect().height) : null,
+      });
+      if (performance.now() - start < 600) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  // Smart Reply takeover closes the composer through the AnimatePresence exit.
+  await page.evaluate(async () => {
+    const { useAppStore } = await import('/src/store.ts');
+    useAppStore.setState({
+      smartRepliesLoading: false,
+      smartReplies: [{
+        id: 'qa-exit-r1', text: 'Takeover reply', timestamp: Date.now(),
+        mentionMessageId: 'qa-exit-mention', mentionedUsername: 'viewer1', botUsername: 'BotName',
+      }],
+      smartReplyNotice: {
+        state: 'ready', messageId: 'qa-exit-mention', username: 'viewer1', botUsername: 'BotName',
+        text: '@BotName react?', receivedAt: Date.now(),
+      },
+    });
+  });
+  await composer.waitFor({ state: 'detached', timeout: 6_000 });
+  const samples = await page.evaluate(() => window.__composerExitSamples);
+  const exitSamples = samples.filter((s) => s.attached && (s.opacity < 1 || s.height < expandedHeight));
+  assert(exitSamples.length > 0, `composer exit is animated rather than instant (first samples: ${JSON.stringify(samples.slice(0, 4))})`);
+  await page.getByRole('region', { name: 'Smart Replies' }).waitFor({ state: 'visible' });
+
+  // The draft survives the takeover and returns with the composer.
+  await page.evaluate(async () => {
+    const { useAppStore } = await import('/src/store.ts');
+    useAppStore.setState({ smartReplies: [], smartReplyNotice: null, smartRepliesLoading: false });
+  });
+  await composer.waitFor({ state: 'visible' });
+  assert.equal(await composer.locator('textarea').inputValue(), 'Animated exit draft', 'draft survives the Smart Reply takeover and returns');
+
+  // Closing the composer re-expands the chat viewport.
+  await composer.locator('textarea').fill('');
+  await composer.locator('textarea').blur();
+  await composer.waitFor({ state: 'detached', timeout: 7_000 });
+  const finalHeight = await scrollHeight();
+  assert.equal(finalHeight > expandedHeight, true, `chat viewport expands after the composer unmounts (${finalHeight} vs ${expandedHeight})`);
+  assert.equal(finalHeight >= collapsedHeight, true, 'chat viewport returns to at least its collapsed size');
+}
+
+
 try {
   for (const viewport of viewports) {
     const key = `${viewport.width}x${viewport.height}`;
@@ -475,8 +637,27 @@ try {
   desktopStatusDock = { viewport: '1280x900', visible: true, inViewport: true, sharedHistory: true, pageErrors: 0 };
   await desktopContext.close();
 
-  await writeFile(resolve(outputDir, 'results.json'), JSON.stringify({ executablePath, qaUrl, desktopStatusDock, results }, null, 2));
-  console.log(JSON.stringify({ executablePath, viewports: results.length, desktopStatusDock, results }, null, 2));
+  process.stdout.write('QA custom timer + composer motion (390x844)\n');
+  const motionContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await motionContext.route('**/*', (route) => {
+    const url = new URL(route.request().url());
+    if (['127.0.0.1', 'localhost'].includes(url.hostname)) return route.continue();
+    return route.fulfill({ status: 200, contentType: 'text/plain', body: '' });
+  });
+  await motionContext.addInitScript(initStorage);
+  const motionPage = await motionContext.newPage();
+  const motionErrors = [];
+  motionPage.on('pageerror', (error) => motionErrors.push(error.message));
+  await motionPage.goto(qaUrl, { waitUntil: 'networkidle' });
+  await seedWorkspace(motionPage);
+  await assertCustomTimerAndComposer(motionPage);
+  assert.deepEqual(motionErrors, [], 'custom timer + composer motion section has no uncaught page errors');
+  await motionPage.screenshot({ path: resolve(outputDir, 'mobile-custom-timer.png'), fullPage: true });
+  const motionSummary = { viewport: '390x844', customTimerUi: true, custom99Persists: true, composerAnimatedExit: true, draftSurvivesTakeover: true, pageErrors: 0 };
+  await motionContext.close();
+
+  await writeFile(resolve(outputDir, 'results.json'), JSON.stringify({ executablePath, qaUrl, desktopStatusDock, motionSummary, results }, null, 2));
+  console.log(JSON.stringify({ executablePath, viewports: results.length, desktopStatusDock, motionSummary, results }, null, 2));
 } finally {
   await browser.close();
   await stopAppServer();
