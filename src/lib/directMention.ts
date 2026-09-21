@@ -84,7 +84,7 @@ export interface DirectMentionCoordinatorDeps {
   now: () => number;
   acknowledge: (event: MentionEvent) => void | Promise<void>;
   smartRepliesEnabled: () => boolean;
-  generate: (event: MentionEvent) => Promise<SmartReply[]>;
+  generate: (event: MentionEvent, signal: AbortSignal) => Promise<SmartReply[]>;
   isSessionCurrent: (event: MentionEvent) => boolean;
   setReplies: (replies: SmartReply[]) => void;
   setLoading: (loading: boolean) => void;
@@ -108,12 +108,20 @@ const MAX_REQUESTS_PER_WINDOW = 6;
 export class DirectMentionCoordinator {
   private processed = new Map<string, number>();
   private requestTimes = new Map<string, number[]>();
-  private latestRequestKey: string | null = null;
+  /**
+   * Smart Replies currently render into one shared suggestion surface on both
+   * desktop and mobile. One request therefore owns that surface at a time.
+   * A newer direct mention aborts and supersedes the obsolete provider call;
+   * the identity check remains as a guard for providers that cannot cancel
+   * after transport has started.
+   */
+  private activeRequest: { key: string; controller: AbortController } | null = null;
 
   reset(): void {
+    this.activeRequest?.controller.abort();
     this.processed.clear();
     this.requestTimes.clear();
-    this.latestRequestKey = null;
+    this.activeRequest = null;
   }
 
   private prune(now: number): void {
@@ -157,7 +165,8 @@ export class DirectMentionCoordinator {
 
     if (!deps.smartRepliesEnabled()) return "acknowledged";
     if (!this.requestAllowed(event.botUsername, now)) {
-      this.latestRequestKey = dedupKey;
+      this.activeRequest?.controller.abort();
+      this.activeRequest = null;
       deps.setReplies([]);
       deps.setLoading(false);
       deps.setNotice({
@@ -173,7 +182,9 @@ export class DirectMentionCoordinator {
       return "spam_guard";
     }
 
-    this.latestRequestKey = dedupKey;
+    this.activeRequest?.controller.abort();
+    const controller = new AbortController();
+    this.activeRequest = { key: dedupKey, controller };
     deps.setReplies([]);
     deps.setNotice({
       state: "loading",
@@ -186,8 +197,8 @@ export class DirectMentionCoordinator {
     deps.setLoading(true);
 
     try {
-      const replies = await deps.generate(event);
-      if (!deps.isSessionCurrent(event) || this.latestRequestKey !== dedupKey) return "stale";
+      const replies = await deps.generate(event, controller.signal);
+      if (!deps.isSessionCurrent(event) || this.activeRequest?.key !== dedupKey) return "stale";
       if (!deps.smartRepliesEnabled()) {
         deps.setReplies([]);
         deps.setNotice(null);
@@ -207,7 +218,7 @@ export class DirectMentionCoordinator {
       });
       return "ready";
     } catch (error) {
-      if (!deps.isSessionCurrent(event) || this.latestRequestKey !== dedupKey) return "stale";
+      if (!deps.isSessionCurrent(event) || this.activeRequest?.key !== dedupKey || controller.signal.aborted) return "stale";
       const known = error instanceof SmartReplyRequestError ? error : null;
       const reason = known?.reason ?? "generation_failed";
       deps.setNotice({
@@ -222,7 +233,13 @@ export class DirectMentionCoordinator {
       });
       return reason === "generation_failed" ? "error" : "unavailable";
     } finally {
-      if (deps.isSessionCurrent(event) && this.latestRequestKey === dedupKey) deps.setLoading(false);
+      if (this.activeRequest?.key === dedupKey) {
+        this.activeRequest = null;
+        // Loading belongs to the shared surface, not the old channel. Clear it
+        // even when the session became stale; resetDirectMentionHandling also
+        // clears replies/notice synchronously at the transition boundary.
+        deps.setLoading(false);
+      }
     }
   }
 }

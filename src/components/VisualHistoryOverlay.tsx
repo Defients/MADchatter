@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAppStore } from "../store";
 import { X, Clock, Camera, Zap, Trash2, Pin, Download, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -26,6 +26,7 @@ export function VisualHistoryOverlay() {
   const open = useAppStore((s) => s.visualHistoryOpen);
   const setOpen = useAppStore((s) => s.setVisualHistoryOpen);
   const history = useAppStore((s) => s.visualSnapshotHistory);
+  const activeVisualSnapshotId = useAppStore((s) => s.activeVisualSnapshotId);
   const clearHistory = useAppStore((s) => s.clearVisualSnapshotHistory);
   const removeSnapshot = useAppStore((s) => s.removeVisualSnapshot);
   const addPinnedMemory = useAppStore((s) => s.addPinnedMemory);
@@ -33,6 +34,12 @@ export function VisualHistoryOverlay() {
   // full analysis on touch devices (the old hover tooltip doesn't exist on
   // phones) and doubles as the desktop "inspect" path.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [clearArmed, setClearArmed] = useState(false);
+  useEffect(() => {
+    if (!clearArmed) return;
+    const timer = window.setTimeout(() => setClearArmed(false), 3500);
+    return () => window.clearTimeout(timer);
+  }, [clearArmed]);
   const toggleExpanded = (id: string) =>
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -69,19 +76,6 @@ export function VisualHistoryOverlay() {
               </span>
             </div>
             <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-              {history.length > 0 && (
-                <button
-                  onClick={() => {
-                    clearHistory();
-                    playSfx("clear_context");
-                    toast.success("Visual history cleared");
-                  }}
-                  aria-label="Clear visual snapshot history"
-                  className="text-[10px] text-gray-400 hover:text-red-400 px-2 py-1 rounded border border-white/10 hover:border-red-500/30 transition-colors flex items-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" /> <span className="hidden min-[360px]:inline">Clear</span>
-                </button>
-              )}
               <button
                 onClick={() => { setOpen(false); playSfx("hud_close"); }}
                 aria-label="Close visual snapshot history"
@@ -110,6 +104,7 @@ export function VisualHistoryOverlay() {
                 <div className="space-y-3">
                   {reversed.map((entry, idx) => {
                     const isLatest = idx === 0;
+                    const isActive = entry.id === activeVisualSnapshotId;
                     // Entries captured before the reasoning-block sanitizer
                     // existed can still carry raw <think> chain-of-thought
                     // in this session — sanitize for display regardless.
@@ -193,6 +188,11 @@ export function VisualHistoryOverlay() {
                                   {isLatest && (
                                     <span className="shrink-0 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30">
                                       Latest
+                                    </span>
+                                  )}
+                                  {isActive && (
+                                    <span className="shrink-0 inline-flex items-center gap-1 text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-300" /> Live
                                     </span>
                                   )}
                                   {/* Analysis status badge — makes it obvious
@@ -316,15 +316,43 @@ export function VisualHistoryOverlay() {
             )}
           </div>
 
-          {/* Footer hint */}
+          {/* Destructive history action is intentionally separated from the
+              safe close control. Clearing also invalidates live visual truth;
+              pinned memories remain a separate intentional record. */}
           {history.length > 0 && (
-            <div className="px-3 sm:px-4 py-2 border-t border-white/5 bg-black/20 flex items-start gap-2 text-[9px] text-gray-600 min-w-0">
-              <Clock className="w-3 h-3 shrink-0 mt-0.5" />
-              <span>
-                <span className="text-blue-400 font-bold">P</span> = manual capture ·{" "}
-                <span className="text-gray-400 font-bold">A</span> = auto capture ·{" "}
-                <span className="text-cyan-400 font-bold">Δ</span> = frame change %
+            <div className="px-3 sm:px-4 py-2 border-t border-white/5 bg-black/20 flex items-center justify-between gap-3 text-[9px] text-gray-600 min-w-0">
+              <span className="flex items-start gap-2 min-w-0">
+                <Clock className="w-3 h-3 shrink-0 mt-0.5" />
+                <span className="min-w-0">
+                  <span className="text-blue-400 font-bold">P</span> manual ·{" "}
+                  <span className="text-gray-400 font-bold">A</span> auto ·{" "}
+                  <span className="text-cyan-400 font-bold">Δ</span> change<br />
+                  Pinned memories are kept separately.
+                </span>
               </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!clearArmed) {
+                    setClearArmed(true);
+                    return;
+                  }
+                  clearHistory();
+                  setClearArmed(false);
+                  playSfx("destructive_clear");
+                  toast.success("Visual history and active visual context cleared");
+                }}
+                aria-label={clearArmed ? "Confirm clear visual history" : "Clear visual snapshot history"}
+                className={cn(
+                  "shrink-0 inline-flex items-center gap-1 rounded border px-2 py-1.5 text-[9px] font-bold uppercase transition-colors",
+                  clearArmed
+                    ? "border-red-400/60 bg-red-500/20 text-red-200"
+                    : "border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/15",
+                )}
+              >
+                <Trash2 className="w-3 h-3" />
+                {clearArmed ? "Confirm clear" : "Clear"}
+              </button>
             </div>
           )}
         </motion.div>

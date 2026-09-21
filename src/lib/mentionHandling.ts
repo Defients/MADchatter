@@ -94,6 +94,10 @@ export function resetDirectMentionHandling(): void {
   coordinator.reset();
   if (expiryTimer) clearTimeout(expiryTimer);
   expiryTimer = null;
+  const state = useAppStore.getState();
+  state.setSmartReplies([]);
+  state.setSmartRepliesLoading(false);
+  state.setSmartReplyNotice(null);
 }
 
 /**
@@ -119,13 +123,14 @@ export function handleIncomingDirectMentions(input: {
       now: Date.now,
       acknowledge: acknowledgeMention,
       smartRepliesEnabled: () => useAppStore.getState().smartRepliesEnabled,
-      generate: (mention) => generateSmartReplies(
+      generate: (mention, signal) => generateSmartReplies(
         [`${mention.username}: ${mention.text}`],
         {
           botId: mention.botId,
           mentionMessageId: mention.messageId,
           mentionedUsername: mention.username,
           botUsername: mention.botUsername,
+          signal,
         },
       ),
       isSessionCurrent: isEventSessionCurrent,

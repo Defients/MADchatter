@@ -114,7 +114,7 @@ import { endAllBackgroundTtsSessions } from "./lib/backgroundTts";
 // mobile add action.
 export const MOBILE_DIRECTOR_NOTE_LIMIT = 3;
 
-const SETTINGS_VERSION = 34;
+const SETTINGS_VERSION = 35;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -412,7 +412,12 @@ interface AppState {
   
   visualSnapshotUrl: string | null;
   visualContextTags: string[];
+  /** History-backed identity of the live visual. null for skipHistory frames. */
+  activeVisualSnapshotId: string | null;
+  /** Runtime-only invalidation generation used to reject stale async vision. */
+  visualContextRevision: number;
   setVisualSnapshot: (url: string | null, tags: string[], source?: "manual" | "auto", delta?: number, skipHistory?: boolean) => void;
+  clearActiveVisualContext: (options?: { clearHistory?: boolean; removeHistoryId?: string }) => void;
   visualSnapshotHistory: VisualSnapshotHistoryEntry[];
   visualHistoryOpen: boolean;
   setVisualHistoryOpen: (open: boolean) => void;
@@ -1250,6 +1255,22 @@ export const partializeAppState = (state: AppState) => ({
   localBridgeLanguage: state.localBridgeLanguage,
 });
 
+/**
+ * Hydration normalization for invariants that must hold even when a persisted
+ * payload already claims the current schema version. Missing Smart Replies
+ * provenance belongs to an existing user and therefore retains the historical
+ * OFF behavior; a genuinely fresh store never merges a payload and defaults
+ * ON. Explicit true/false preferences are preserved.
+ */
+export function mergePersistedAppState(persisted: unknown, current: AppState): AppState {
+  if (!persisted || typeof persisted !== "object") return current;
+  const saved = persisted as Partial<AppState>;
+  const merged = { ...current, ...saved } as AppState;
+  if (saved.smartRepliesEnabled === undefined) merged.smartRepliesEnabled = false;
+  if (merged.ttsEnabled !== true) merged.ttsBackgroundEnabled = false;
+  return merged;
+}
+
 /** Reset intelligence synchronously, before any subscriber can read a new session. */
 function resetIntelligenceSession(channel: string | null): Partial<AppState> {
   const normalized = channel?.trim().toLowerCase() || null;
@@ -1310,14 +1331,41 @@ export const useAppStore = create<AppState>()(
 
       visualSnapshotUrl: null,
       visualContextTags: [],
+      activeVisualSnapshotId: null,
+      visualContextRevision: 0,
       visualSnapshotHistory: [],
       visualHistoryOpen: false,
       setVisualHistoryOpen: (open) => set({ visualHistoryOpen: open }),
-      clearVisualSnapshotHistory: () => set({ visualSnapshotHistory: [] }),
-      removeVisualSnapshot: (id) =>
+      clearActiveVisualContext: (options) => {
+        roomModel.clearVision();
+        perception.clearVisionObservation();
         set((state) => ({
-          visualSnapshotHistory: state.visualSnapshotHistory.filter((e) => e.id !== id),
-        })),
+          visualSnapshotUrl: null,
+          visualContextTags: [],
+          activeVisualSnapshotId: null,
+          visualContextRevision: state.visualContextRevision + 1,
+          // Do not wait for the ~1s hook mirrors: the destructive domain
+          // operation must make every current-truth consumer forget now.
+          roomState: roomModel.getState(),
+          perceptionSummary: perception.getSummary(Date.now()),
+          ...(options?.clearHistory
+            ? { visualSnapshotHistory: [] }
+            : options?.removeHistoryId
+              ? { visualSnapshotHistory: state.visualSnapshotHistory.filter((entry) => entry.id !== options.removeHistoryId) }
+              : {}),
+        }));
+      },
+      clearVisualSnapshotHistory: () => {
+        get().clearActiveVisualContext({ clearHistory: true });
+      },
+      removeVisualSnapshot: (id) => {
+        const active = get().activeVisualSnapshotId === id;
+        if (active) {
+          get().clearActiveVisualContext({ removeHistoryId: id });
+          return;
+        }
+        set((state) => ({ visualSnapshotHistory: state.visualSnapshotHistory.filter((entry) => entry.id !== id) }));
+      },
       setVisualSnapshot: (url, tags, source = "auto", delta, skipHistory = false) => {
         // Thinking-capable vision models can leak <think> chain-of-thought
         // into the observation. Strip it at the store boundary so history
@@ -1328,7 +1376,7 @@ export const useAppStore = create<AppState>()(
           .map((t) => stripReasoningBlocks(t))
           .filter((t) => t.length > 0);
         if (!url) {
-          set({ visualSnapshotUrl: null, visualContextTags: cleanTags });
+          get().clearActiveVisualContext();
           return;
         }
         // Room Model: vision lane evidence (frame change + semantic tags).
@@ -1341,6 +1389,8 @@ export const useAppStore = create<AppState>()(
           const base = {
             visualSnapshotUrl: url,
             visualContextTags: cleanTags,
+            activeVisualSnapshotId: null as string | null,
+            visualContextRevision: state.visualContextRevision + 1,
           };
           if (skipHistory) return base;
           const entry: VisualSnapshotHistoryEntry = {
@@ -1353,6 +1403,7 @@ export const useAppStore = create<AppState>()(
           };
           return {
             ...base,
+            activeVisualSnapshotId: entry.id,
             visualSnapshotHistory: [...state.visualSnapshotHistory, entry].slice(-30),
           };
         });
@@ -1426,7 +1477,7 @@ export const useAppStore = create<AppState>()(
           details: { active },
         });
       },
-      setVisionProvider: (mode) =>
+      setVisionProvider: (mode) => {
         set((state) => ({
           visionProvider: mode,
           // Bump the revision so in-flight vision results from the old
@@ -1436,23 +1487,23 @@ export const useAppStore = create<AppState>()(
           // is cleared too so the UI doesn't show a stale frame labelled
           // with the old observation.
           visionConfigRevision: state.visionConfigRevision + 1,
-          visualContextTags: [],
-          visualSnapshotUrl: null,
-        })),
-      setVisionOllamaBaseUrl: (url) =>
+        }));
+        get().clearActiveVisualContext();
+      },
+      setVisionOllamaBaseUrl: (url) => {
         set((state) => ({
           visionOllamaBaseUrl: url,
           visionConfigRevision: state.visionConfigRevision + 1,
-          visualContextTags: [],
-          visualSnapshotUrl: null,
-        })),
-      setVisionOllamaModel: (model) =>
+        }));
+        get().clearActiveVisualContext();
+      },
+      setVisionOllamaModel: (model) => {
         set((state) => ({
           visionOllamaModel: model,
           visionConfigRevision: state.visionConfigRevision + 1,
-          visualContextTags: [],
-          visualSnapshotUrl: null,
-        })),
+        }));
+        get().clearActiveVisualContext();
+      },
 
       config: {
         provider: "gemini",
@@ -1837,6 +1888,7 @@ export const useAppStore = create<AppState>()(
           sessionRevision: state.sessionRevision + 1,
           variants: [],
           isForging: false,
+          smartReplies: [],
           smartRepliesLoading: false,
           smartReplyNotice: null,
           chatLog: [],
@@ -1844,6 +1896,8 @@ export const useAppStore = create<AppState>()(
           audioTranscript: "",
           visualSnapshotUrl: null,
           visualContextTags: [],
+          activeVisualSnapshotId: null,
+          visualContextRevision: state.visualContextRevision + 1,
           visualSnapshotHistory: [],
           longTermMemory: "",
           pinnedMemories: [],
@@ -1883,7 +1937,6 @@ export const useAppStore = create<AppState>()(
           autoForgeNextActionMs: 0,
           autoForgeFollowup: null,
           isAutoForgeThinking: false,
-          smartReplies: [],
           // R34L session overlay dies with the session (the retained
           // baseline is long-lived per channel and deliberately survives).
           r34lSessionProfile: null,
@@ -2616,7 +2669,7 @@ export const useAppStore = create<AppState>()(
       setSmartRepliesLoading: (loading) => set({ smartRepliesLoading: loading }),
       smartReplyNotice: null,
       setSmartReplyNotice: (notice) => set({ smartReplyNotice: notice }),
-      smartRepliesEnabled: false,
+      smartRepliesEnabled: true,
       setSmartRepliesEnabled: (enabled) => set(enabled
         ? { smartRepliesEnabled: true }
         : { smartRepliesEnabled: false, smartReplies: [], smartRepliesLoading: false, smartReplyNotice: null }),
@@ -3810,6 +3863,7 @@ export const useAppStore = create<AppState>()(
       // recorded so the UI can avoid claiming persistence succeeded.
       storage: createJSONStorage(() => resilientLocalStorage),
       partialize: partializeAppState,
+      merge: mergePersistedAppState,
       version: SETTINGS_VERSION,
       migrate: (persistedState: any, version: number) => {
         // v1 -> v2: chatLog changed from string[] to ChatMessage[]
@@ -4188,6 +4242,16 @@ export const useAppStore = create<AppState>()(
         // v34: Background TTS is subordinate to TTS. Normalize the legacy
         // impossible state without changing either preference for valid users.
         if (version < 34 && persistedState && persistedState.ttsEnabled !== true) {
+          persistedState.ttsBackgroundEnabled = false;
+        }
+        // v35 changes only the fresh-install default. Existing payloads keep
+        // explicit choices; old payloads without provenance retain historical
+        // OFF rather than being silently opted in.
+        if (version < 35 && persistedState && persistedState.smartRepliesEnabled === undefined) {
+          persistedState.smartRepliesEnabled = false;
+        }
+        // Enforce the parent/child audio invariant even for malformed payloads.
+        if (persistedState && persistedState.ttsEnabled !== true) {
           persistedState.ttsBackgroundEnabled = false;
         }
         return persistedState;

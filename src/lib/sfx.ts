@@ -7,7 +7,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type SfxEvent =
+type BaseSfxEvent =
   | "forge_start"
   | "forge_complete"
   | "send_message"
@@ -45,6 +45,31 @@ export type SfxEvent =
   | "select_change"
   | "force_burst"
   | "mention_alert";
+
+export type SfxEvent = BaseSfxEvent
+  | "navigation"
+  | "setting_toggle"
+  | "channel_set"
+  | "drawer_open"
+  | "drawer_close"
+  | "history_open"
+  | "destructive_clear";
+
+const SEMANTIC_SFX_ALIASES: Record<Exclude<SfxEvent, BaseSfxEvent>, BaseSfxEvent> = {
+  navigation: "palette_select",
+  setting_toggle: "select_change",
+  channel_set: "connect",
+  drawer_open: "panel_expand",
+  drawer_close: "panel_collapse",
+  history_open: "history_toggle",
+  destructive_clear: "clear_context",
+};
+
+export function resolveSfxEvent(event: SfxEvent): string {
+  return event in SEMANTIC_SFX_ALIASES
+    ? SEMANTIC_SFX_ALIASES[event as keyof typeof SEMANTIC_SFX_ALIASES]
+    : event;
+}
 
 type Theme = "default" | "cosmotech";
 
@@ -229,7 +254,7 @@ function playSynth(config: SynthConfig, volume: number): void {
 // Each theme has its own synth config for every SfxEvent.
 // Default = warm/organic/arcade. CosmoTech = clean/digital/sci-fi.
 
-const DEFAULT_SOUNDS: Record<SfxEvent, SoundDefinition> = {
+const DEFAULT_SOUNDS: Record<BaseSfxEvent, SoundDefinition> = {
   // ── Tier 1: Major Actions ──
   forge_start: {
     type: "synth",
@@ -619,7 +644,7 @@ const DEFAULT_SOUNDS: Record<SfxEvent, SoundDefinition> = {
   },
 };
 
-const COSMOTECH_SOUNDS: Record<SfxEvent, SoundDefinition> = {
+const COSMOTECH_SOUNDS: Record<BaseSfxEvent, SoundDefinition> = {
   // ── Tier 1: Major Actions ──
   forge_start: {
     type: "synth",
@@ -1076,7 +1101,7 @@ function buildForceBurstSynth(level: number): SynthConfig {
   };
 }
 
-const SOUND_MAPS: Record<Theme, Record<SfxEvent, SoundDefinition>> = {
+const SOUND_MAPS: Record<Theme, Record<BaseSfxEvent, SoundDefinition>> = {
   default: DEFAULT_SOUNDS,
   cosmotech: COSMOTECH_SOUNDS,
 };
@@ -1093,7 +1118,8 @@ export function playSfx(event: SfxEvent, options?: { volume?: number }): void {
 
   const theme: Theme = state.theme === "cosmotech" ? "cosmotech" : state.theme === "corrupture" ? "cosmotech" : "default";
   const soundMap = SOUND_MAPS[theme];
-  const def = soundMap[event];
+  const resolved = resolveSfxEvent(event) as BaseSfxEvent;
+  const def = soundMap[resolved];
   if (!def) return;
 
   const volume = (options?.volume ?? 1) * (state.sfxVolume ?? 0.3);

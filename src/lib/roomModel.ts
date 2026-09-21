@@ -676,6 +676,18 @@ export class RoomModelEngine {
     this.dirty = true;
   }
 
+  /**
+   * Forget only the current/live visual observation. Historical moments and
+   * every non-vision lane remain intact: deleting a screenshot changes what
+   * the system may use now, not what previously happened in the room.
+   */
+  clearVision(): void {
+    this.lastVision = null;
+    this.lanes.vision.lastSignalAt = null;
+    this.stateCache = null;
+    this.dirty = true;
+  }
+
   notePlatformEvent(note: {
     summary: string;
     detail?: RoomPlatformEventDetail;

@@ -18,6 +18,7 @@ export async function generateSmartReplies(mentionedLines: string[], options?: {
   mentionMessageId?: string;
   mentionedUsername?: string;
   botUsername?: string;
+  signal?: AbortSignal;
 }): Promise<SmartReply[]> {
   if (!hasAnyApiKey()) {
     throw new SmartReplyRequestError("no_provider", "Smart Replies need an AI provider.");
@@ -212,6 +213,7 @@ Rules:
       botIdentityStory,
       // Smart replies are background/autonomous — must not block manual Forge.
       priority: "autonomous",
+      signal: options?.signal,
     });
 
     if (result?.tokenUsage) {

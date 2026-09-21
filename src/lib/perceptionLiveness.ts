@@ -480,6 +480,23 @@ export class PerceptionLivenessEngine {
     }
   }
 
+  /**
+   * Invalidate the current visual observation without resetting chat, audio,
+   * platform events, capture intent, or cadence. A still-running capture goes
+   * back to initializing; an idle/unsupported lane derives its honest idle
+   * state until a new frame arrives.
+   */
+  clearVisionObservation(at: number = Date.now()): void {
+    this.vision.lastFrameAt = null;
+    this.vision.lastFrameDelta = null;
+    this.vision.significantDeltaAt = null;
+    this.vision.lastSemanticAt = null;
+    this.vision.lastSemanticOk = null;
+    this.vision.lastSemanticError = null;
+    this.vision.lastAttemptAt = null;
+    this.hysteresis.vision = freshHysteresis(at);
+  }
+
   // ─── Ingestion: platform events ─────────────────────────────────────────────
 
   /** Valid platform event delivered (raid/sub/cheer/host…). */

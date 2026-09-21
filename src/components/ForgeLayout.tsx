@@ -291,8 +291,22 @@ export function ForgeLayout() {
   const interfaceMode = useEffectiveMode();
   const whisperDownloadProgress = useAppStore((s) => s.whisperDownloadProgress);
 
-  // Active auth based on platform
-  const activeAuth = platform === 'kick' ? kickAuth : platform === 'joystick' ? joystickAuth : { user, loading: authLoading, loginError, loginInProgress, login, logout, loginWithDevToken, clearLoginError };
+  const twitchAuth = { user, loading: authLoading, loginError, loginInProgress, login, logout, loginWithDevToken, clearLoginError };
+  // Desktop retains every supported platform. Mobile CORE intentionally has
+  // no Joystick surface, including during the first render before its store
+  // normalization effect runs, so its auth callbacks must also be Twitch/Kick.
+  const mobileActiveAuth = platform === 'kick'
+    ? kickAuth
+    : platform === 'twitch'
+      ? twitchAuth
+      : user
+        ? twitchAuth
+        : kickAuth.user
+          ? kickAuth
+          : twitchAuth;
+
+  // Active auth based on the full desktop platform set.
+  const activeAuth = platform === 'kick' ? kickAuth : platform === 'joystick' ? joystickAuth : twitchAuth;
   const activeUser = activeAuth.user;
   const activeAuthLoading = activeAuth.loading;
   const activeLoginError = activeAuth.loginError;
@@ -1723,6 +1737,7 @@ export function ForgeLayout() {
   handleMicrophoneCaptureRef.current = handleMicrophoneCapture;
 
   const handleCaptureWindow = async (isManual = false, forceStreamCrop = false) => {
+    const captureStartVisualRevision = useAppStore.getState().visualContextRevision;
     try {
       if (!cachedStreamRef.current || !cachedStreamRef.current.active) {
         toast.error("Start capture first using the Capture button.");
@@ -1952,6 +1967,10 @@ export function ForgeLayout() {
       // Don't stop the stream — keep it cached for reuse
       // captureStream.getTracks().forEach((track) => track.stop());
 
+      if (useAppStore.getState().visualContextRevision !== captureStartVisualRevision) {
+        console.log("[Visual] Discarding captured frame (active visual invalidated during capture)");
+        return;
+      }
       setVisualSnapshot(dataUrl, ["Captured"], isManual ? "manual" : "auto", undefined, true);
       window.dispatchEvent(new CustomEvent('bg-visual-capture'));
 
@@ -2006,6 +2025,12 @@ export function ForgeLayout() {
       console.log(`[Visual] Frame changed (delta: ${(delta * 100).toFixed(1)}%), calling vision API`);
 
       // Async vision request with previous context for delta-aware prompting
+      const visionScope = captureSessionScope();
+      const visionRev = getVisionConfigRevision();
+      // setVisualSnapshot(skipHistory) above established the raw active frame.
+      // Deleting/clearing it increments this generation, so neither a success
+      // nor an error completion may resurrect the removed visual.
+      const visualContextRev = useAppStore.getState().visualContextRevision;
       try {
         const provider = getActiveProvider();
         // Capture scope before the async vision call so we can discard the
@@ -2013,14 +2038,12 @@ export function ForgeLayout() {
         // switch) while the vision API was in flight. Without this, an in-flight
         // vision result can repopulate visual context after clearAllContext
         // wiped it for the new channel.
-        const visionScope = captureSessionScope();
         // Capture the vision config revision too — if the user changed the
         // vision provider/endpoint/model while this analysis was in flight,
         // the result was produced by superseded settings and must not replace
         // the current observation. The store setters bump this revision and
         // clear the stored observation, so a late result landing here would
         // otherwise resurrect a stale description.
-        const visionRev = getVisionConfigRevision();
         const data = await visionRequest(dataUrl, provider, prevVisualContextRef.current);
         if (!isSessionScopeCurrent(visionScope)) {
           console.log("[Visual] Discarding stale vision result (session changed)");
@@ -2028,6 +2051,10 @@ export function ForgeLayout() {
         }
         if (getVisionConfigRevision() !== visionRev) {
           console.log("[Visual] Discarding stale vision result (vision config changed)");
+          return;
+        }
+        if (useAppStore.getState().visualContextRevision !== visualContextRev) {
+          console.log("[Visual] Discarding stale vision result (active visual invalidated)");
           return;
         }
         if (data.tokenUsage) {
@@ -2046,6 +2073,12 @@ export function ForgeLayout() {
           setVisualSnapshot(dataUrl, ["Captured — no analysis"], isManual ? "manual" : "auto", delta);
         }
       } catch (visionErr: any) {
+        if (!isSessionScopeCurrent(visionScope) ||
+          getVisionConfigRevision() !== visionRev ||
+          useAppStore.getState().visualContextRevision !== visualContextRev) {
+          console.log("[Visual] Discarding stale vision failure (context invalidated)");
+          return;
+        }
         const vErrMsg = visionErr?.message || String(visionErr);
         // Queue timeout or scheduler preemption = the Ollama slot was needed
         // by higher-priority work (e.g. a manual Forge). Not a real failure —
@@ -2353,6 +2386,11 @@ export function ForgeLayout() {
                   {isSelfSent && selfSentSource === "autoforge" && (
                     <span className="text-[8px] font-bold uppercase tracking-wider text-orange-400/70 shrink-0 self-center">auto</span>
                   )}
+                  {isSelfSent && selfSentSource === "smart_reply" && (
+                    <span className="px-1 py-0.5 rounded text-[8px] font-bold uppercase bg-cyan-500/15 text-cyan-300 border border-cyan-500/20">
+                      reply
+                    </span>
+                  )}
                   {sentimentColor && (
                     <ThemedTooltip content={`Sentiment: ${msg.sentiment}`}>
                       <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 self-center', sentimentColor)} />
@@ -2600,13 +2638,13 @@ export function ForgeLayout() {
         isMobile ? (
           /* ═══ Core Mobile Workspace ═══ */
           <CoreMobileWorkspace
-            activeUser={activeUser}
-            activeAuthLoading={activeAuthLoading}
-            activeLoginError={activeLoginError}
-            activeLoginInProgress={activeLoginInProgress}
-            activeLogin={activeLogin}
-            activeLogout={activeLogout}
-            activeClearLoginError={activeClearLoginError}
+            activeUser={mobileActiveAuth.user}
+            activeAuthLoading={mobileActiveAuth.loading}
+            activeLoginError={mobileActiveAuth.loginError}
+            activeLoginInProgress={mobileActiveAuth.loginInProgress}
+            activeLogin={mobileActiveAuth.login}
+            activeLogout={mobileActiveAuth.logout}
+            activeClearLoginError={mobileActiveAuth.clearLoginError}
             onVisualCapture={handleVoiceCapture}
             onManualSnapshot={handleManualCapture}
             isVisualCapturing={windowSelected}

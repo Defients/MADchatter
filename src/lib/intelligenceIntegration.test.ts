@@ -39,7 +39,7 @@ scenario("v28 migration preserves enrichment opt-out and seeds episodic preferen
 scenario("both intelligence preferences survive persistence and export/import", () => {
   store.getState().setEpisodicMemoryEnabled(false);
   const persisted = JSON.parse(storage.get("madchatter-storage")!);
-  assert.equal(persisted.version, 34);
+  assert.equal(persisted.version, 35);
   assert.equal(persisted.state.episodicMemoryEnabled, false);
   assert.equal(persisted.state.spokenCallout, undefined);
   const exported = store.getState().exportSettings();

@@ -55,7 +55,7 @@ function harness(options?: {
       await options?.acknowledge?.(mention);
     },
     smartRepliesEnabled: () => options?.enabled ?? true,
-    generate: async (mention) => {
+    generate: async (mention, _signal) => {
       state.generations++;
       return options?.generate?.(mention) ?? [{ id: `r-${mention.messageId}`, text: "reply", timestamp: 100 }];
     },
@@ -97,6 +97,30 @@ for (const mode of [
   state.current = false;
   resolveGeneration([{ id: "late", text: "late", timestamp: 1 }]);
   assert(await pending === "stale" && state.replies.length === 0, "session switch discards stale replies");
+  assert(!state.loading, "stale completion releases the shared loading state");
+}
+
+{
+  const coordinator = new DirectMentionCoordinator();
+  let resolveFirst!: (value: SmartReply[]) => void;
+  let firstAborted = false;
+  const first = new Promise<SmartReply[]>((resolve) => { resolveFirst = resolve; });
+  const { state, deps } = harness({
+    generate: (mention) => mention.messageId === "superseded"
+      ? first
+      : Promise.resolve([{ id: "new", text: "newest", timestamp: 2 }]),
+  });
+  const originalGenerate = deps.generate;
+  deps.generate = async (mention, signal) => {
+    if (mention.messageId === "superseded") signal.addEventListener("abort", () => { firstAborted = true; }, { once: true });
+    return originalGenerate(mention, signal);
+  };
+  const stale = coordinator.handle(event("superseded"), deps);
+  const newest = coordinator.handle(event("newest"), deps);
+  assert(await newest === "ready" && state.replies[0]?.text === "newest", "newer mention owns the shared reply surface");
+  assert(firstAborted, "superseded provider work receives an abort signal");
+  resolveFirst([{ id: "old", text: "obsolete", timestamp: 1 }]);
+  assert(await stale === "stale" && state.replies[0]?.text === "newest", "superseded completion cannot overwrite newer replies");
 }
 
 for (const [reason, expectedState] of [
