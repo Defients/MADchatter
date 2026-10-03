@@ -1,3 +1,4 @@
+import { streamCompanion, normalizeParticipationProfile, type ParticipationProfile } from "./lib/streamCompanion";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
@@ -114,7 +115,7 @@ import { endAllBackgroundTtsSessions } from "./lib/backgroundTts";
 // mobile add action.
 export const MOBILE_DIRECTOR_NOTE_LIMIT = 3;
 
-const SETTINGS_VERSION = 35;
+const SETTINGS_VERSION = 36;
 
 // ─── Multi-Bot factories (additive; legacy global fields remain) ────────────
 // These mirror the existing global single-bot defaults so each bot carries an
@@ -489,6 +490,9 @@ interface AppState {
   // Manual participation control (persisted user preference): "auto" lets the
   // engine infer, "quiet"/"direct_only" are explicit overrides that always
   // outrank inferred recovery. Direct mentions still pass in every mode.
+  participationProfile: ParticipationProfile;
+  participationProfileRevision: number;
+  setParticipationProfile: (profile: ParticipationProfile) => void;
   participationManualMode: ManualParticipationMode;
   setParticipationManualMode: (mode: ManualParticipationMode) => void;
   // Master toggle for the INFERRED layer only. Manual quiet/direct-only and
@@ -580,7 +584,7 @@ interface AppState {
   
   audioTranscript: string;
   setAudioTranscript: (transcript: string) => void;
-  appendAudioTranscript: (line: string) => void;
+  appendAudioTranscript: (line: string, attribution?: "streamer" | "uncertain" | "background") => void;
   // ─── Spoken Callout Priority (v29) ─────────────────────────────────────────
   // Mirror of the deterministic spokenCallout engine (src/lib/spokenCallout.ts)
   // for React consumers. The engine is the source of truth; this mirror is
@@ -1248,6 +1252,7 @@ export const partializeAppState = (state: AppState) => ({
   // Participation awareness (v28): user preferences + the global stop
   // persist. The volatile risk/state machine and receipts never do — they
   // describe the live session, not a preference.
+  participationProfile: state.participationProfile,
   participationManualMode: state.participationManualMode,
   participationAwarenessEnabled: state.participationAwarenessEnabled,
   botsGlobalStop: state.botsGlobalStop,
@@ -1274,6 +1279,8 @@ export function mergePersistedAppState(persisted: unknown, current: AppState): A
   if (!persisted || typeof persisted !== "object") return current;
   const saved = persisted as Partial<AppState>;
   const merged = { ...current, ...saved } as AppState;
+  merged.participationProfile = normalizeParticipationProfile(saved.participationProfile);
+  merged.participationProfileRevision = current.participationProfileRevision;
   if (saved.smartRepliesEnabled === undefined) merged.smartRepliesEnabled = false;
   if (merged.ttsEnabled !== true) merged.ttsBackgroundEnabled = false;
   return merged;
@@ -1282,6 +1289,7 @@ export function mergePersistedAppState(persisted: unknown, current: AppState): A
 /** Reset intelligence synchronously, before any subscriber can read a new session. */
 function resetIntelligenceSession(channel: string | null): Partial<AppState> {
   const normalized = channel?.trim().toLowerCase() || null;
+  streamCompanion.reset();
   roomModel.reset(normalized);
   episodicMemory.reset(normalized);
   semanticCoordination.reset(normalized);
@@ -1345,6 +1353,7 @@ export const useAppStore = create<AppState>()(
       visualHistoryOpen: false,
       setVisualHistoryOpen: (open) => set({ visualHistoryOpen: open }),
       clearActiveVisualContext: (options) => {
+        streamCompanion.clearLane("visual");
         roomModel.clearVision();
         perception.clearVisionObservation();
         set((state) => ({
@@ -1388,6 +1397,7 @@ export const useAppStore = create<AppState>()(
           return;
         }
         // Room Model: vision lane evidence (frame change + semantic tags).
+        if (!skipHistory) streamCompanion.note({ kind: "visual", text: cleanTags.join(" "), delta, at: Date.now() });
         roomModel.noteVision({ tags: cleanTags, delta, source });
         // Perception Liveness: capture-stage evidence — a frame was produced
         // (semantic success/failure is reported separately at the
@@ -1456,6 +1466,20 @@ export const useAppStore = create<AppState>()(
       // ─── Participation Awareness (v28) ─────────────────────────────────────
       participationSnapshot: null,
       setParticipationSnapshot: (snapshot) => set({ participationSnapshot: snapshot }),
+      participationProfile: "standard",
+      participationProfileRevision: 0,
+      setParticipationProfile: (value) => {
+        const profile = normalizeParticipationProfile(value);
+        if (get().participationProfile === profile) return;
+        streamCompanion.invalidate();
+        set((state) => ({
+          participationProfile: profile, participationProfileRevision: state.participationProfileRevision + 1,
+          ...(profile === "standard" && state.autoForgeAutoCheckMode === "smart" ? {
+            autoForgeNextActionMs: Math.max(state.autoForgeNextActionMs, Date.now() + 90_000),
+            bots: state.bots.map(bot => ({ ...bot, runtime: { ...bot.runtime, autoForgeNextActionMs: Math.max(bot.runtime.autoForgeNextActionMs, Date.now() + 90_000) } })),
+          } : {}),
+        }));
+      },
       participationManualMode: "auto",
       setParticipationManualMode: (mode) => {
         set({ participationManualMode: mode });
@@ -1687,7 +1711,10 @@ export const useAppStore = create<AppState>()(
         })),
 
       audioTranscript: "",
-      setAudioTranscript: (transcript) => set({ audioTranscript: transcript }),
+      setAudioTranscript: (transcript) => {
+        if (!transcript) streamCompanion.clearLane("speech");
+        set({ audioTranscript: transcript });
+      },
 
       // ─── Local Bridge (v30) ────────────────────────────────────────
       localBridgeEnabled: false,
@@ -1732,6 +1759,7 @@ export const useAppStore = create<AppState>()(
       streamEvents: [],
       addStreamEvent: (event, detail) => {
         // Room Model: platform events are deterministic, high-confidence facts.
+        streamCompanion.note({ kind: "platform", text: event, at: Date.now() });
         roomModel.notePlatformEvent({ summary: event, detail });
         // Perception Liveness: valid platform event = events lane LIVE (the
         // lane itself stays QUIET-when-silent — raids are sparse by nature).
@@ -1741,7 +1769,9 @@ export const useAppStore = create<AppState>()(
         }));
       },
       clearStreamEvents: () => set({ streamEvents: [] }),
-      appendAudioTranscript: (line) => {
+      appendAudioTranscript: (line, attribution = "uncertain") => {
+        const ambient = spokenCallouts.inspectTranscript(line);
+        streamCompanion.note({ kind: "speech", text: line, at: Date.now(), attribution: ambient.classification === "agent_echo" ? "agent_echo" : attribution });
         // Room Model: streamer speech segment (transcript lane).
         roomModel.noteTranscript({ text: line });
         // Perception Liveness: valid transcript output — immediate recovery
@@ -1785,6 +1815,10 @@ export const useAppStore = create<AppState>()(
           });
           if (routing) {
             const { callout, isNew } = routing;
+            if (callout.kind !== "negative_instruction" && attribution === "streamer") {
+              const targets = callout.target.type === "bot" ? [callout.target.botId] : callout.target.type === "multi_bot" ? callout.target.botIds : ["legacy"];
+              for (const botId of targets) streamCompanion.noteSpokenResponse({ botId: selectMultiBotActive(state) ? botId || "legacy" : "legacy", text: callout.transcriptText, at: Date.now(), confirmed: true });
+            }
             if (callout.kind === "negative_instruction") {
               participation.setExplicitQuiet(parseQuietDurationMs(callout.transcriptText, Date.now()), "spoken_callout");
               set({ participationSnapshot: participation.getSnapshot() });
@@ -2110,6 +2144,7 @@ export const useAppStore = create<AppState>()(
         // buffers, and receipts are volatile per channel visit. Channel-A quiet
         // can never leak into Channel B (A→B→A gets a fresh engine each hop).
         participation.reset(channel);
+        streamCompanion.reset();
         // Episodic Memory: restore retained episodes as channel history. Open
         // candidates were force-closed on export; session-episodes died with
         // their producing session. Guarded by the revision check above, so a
@@ -3271,6 +3306,7 @@ export const useAppStore = create<AppState>()(
       enableMultiBot: () => {
         const state = get();
         if (state.multiBotEnabled) return;
+        streamCompanion.invalidate();
 
         // Re-enable path: a saved roster already exists — preserve all bots.
         // Refresh the primary bot's runtime/persona from the global single-bot
@@ -3387,6 +3423,7 @@ export const useAppStore = create<AppState>()(
       disableMultiBot: () => {
         const state = get();
         if (!state.multiBotEnabled) return;
+        streamCompanion.invalidate();
         // Sync bots[0] runtime/persona back into the global fields so nothing
         // learned as the primary bot is lost, then deactivate multi-bot mode.
         const primary = state.bots[0];
@@ -3824,6 +3861,7 @@ export const useAppStore = create<AppState>()(
           // never credentials. Sanitized per-profile on import.
           r34lProfiles: state.r34lProfiles,
           // Participation awareness (v28) — preferences + global stop only.
+          participationProfile: state.participationProfile,
           participationManualMode: state.participationManualMode,
           participationAwarenessEnabled: state.participationAwarenessEnabled,
           botsGlobalStop: state.botsGlobalStop,
@@ -3846,6 +3884,8 @@ export const useAppStore = create<AppState>()(
       importSettings: (json: string) => {
         try {
           const data = JSON.parse(json);
+          if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+          get().setParticipationProfile(normalizeParticipationProfile(data.participationProfile));
           if (data.config) set((state) => ({ config: { ...state.config, ...data.config } }));
           if (data.platform === "twitch" || data.platform === "kick" || data.platform === "joystick") get().setPlatform(data.platform);
           if (data.r34lEnabled !== undefined) set({ r34lEnabled: data.r34lEnabled });
@@ -4355,6 +4395,7 @@ export const useAppStore = create<AppState>()(
         if (persistedState && persistedState.ttsEnabled !== true) {
           persistedState.ttsBackgroundEnabled = false;
         }
+        if (persistedState) persistedState.participationProfile = version < 36 ? "standard" : normalizeParticipationProfile(persistedState.participationProfile);
         return persistedState;
       },
     }

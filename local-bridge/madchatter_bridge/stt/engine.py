@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Optional, Callable, Any
 
 from ..config import BridgeConfig
+from ..capabilities import cuda_runtime_loadable
 
 
 @dataclass
@@ -88,9 +89,11 @@ def _pick_compute(device: str) -> str:
 def _check_cuda_usable() -> bool:
     try:
         import ctranslate2
-        return bool(ctranslate2.get_supported_compute_types("cuda"))
+        if not ctranslate2.get_supported_compute_types("cuda"):
+            return False
     except Exception:
         return False
+    return cuda_runtime_loadable()
 
 
 class STTEngine:

@@ -80,7 +80,11 @@ class AudioSource(abc.ABC):
     def stop(self) -> None:
         """Stop capturing and clean up child processes."""
         self._stop_event.set()
-        if self._thread and self._thread.is_alive():
+        if (
+            self._thread
+            and self._thread.is_alive()
+            and self._thread is not threading.current_thread()
+        ):
             self._thread.join(timeout=5.0)
         self._cleanup()
 

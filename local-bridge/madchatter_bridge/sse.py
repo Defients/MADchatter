@@ -38,6 +38,17 @@ class EventBus:
         self._subscribers: list[asyncio.Queue[BridgeEvent]] = []
         self._ring: deque[BridgeEvent] = deque(maxlen=ring_size)
         self._lock = asyncio.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def bind_loop(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        """Bind the event loop that serves SSE subscribers (uvicorn's loop).
+
+        publish_sync runs on worker threads (segmenter, audio sources) — they
+        have no running loop of their own, so delivery must target the bound
+        loop explicitly. Call once at app startup (lifespan runs inside the
+        serving loop).
+        """
+        self._loop = loop or asyncio.get_running_loop()
 
     async def subscribe(self) -> tuple[asyncio.Queue[BridgeEvent], list[BridgeEvent]]:
         """Subscribe to the bus. Returns (queue, recent_events)."""
@@ -71,14 +82,19 @@ class EventBus:
     def publish_sync(self, event: BridgeEvent) -> None:
         """Thread-safe publish from a non-async context (audio worker threads).
 
-        Schedules the coroutine on the running event loop if one exists.
+        Schedules the coroutine on the bound event loop (or a running loop in
+        the calling thread). With no usable loop the event lands in the ring
+        only — subscribers will pick it up via recent-event replay on connect.
         """
-        try:
-            loop = asyncio.get_running_loop()
+        loop = self._loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+        if loop is not None and loop.is_running():
             asyncio.run_coroutine_threadsafe(self.publish(event), loop)
-        except RuntimeError:
-            # No running loop — store in ring only; subscribers will pick up
-            # recent events on connect.
+        else:
             self._ring.append(event)
 
 

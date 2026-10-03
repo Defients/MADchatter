@@ -283,6 +283,8 @@ export interface ActionHistoryEntry {
     reactionsAfter: number;
     label: "ignored" | "low" | "moderate" | "high";
     evaluatedAt: number;
+    attribution?: "uncertain";
+    spokenResponse?: { text: string; at: number; provenance: string };
   };
 }
 

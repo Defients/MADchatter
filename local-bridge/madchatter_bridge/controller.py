@@ -90,6 +90,8 @@ class TranscriptionController:
         )
         self._state.reset_retries()
 
+        self._state.transition(TranscriptionState.PREPARING_SOURCE)
+
         # Load model if not ready (or if a different model/device was requested).
         if not self._engine.is_ready() or (model and model != self._engine.status.model):
             self._state.transition(TranscriptionState.LOADING_MODEL)
@@ -112,7 +114,6 @@ class TranscriptionController:
             )
 
         # Build the source.
-        self._state.transition(TranscriptionState.PREPARING_SOURCE)
         bus.publish_sync(BridgeEvent("source.status", {"state": "connecting"}))
         if source == "stream":
             self._source = StreamSource(url=url, on_status=self._on_source_status)
@@ -130,7 +131,12 @@ class TranscriptionController:
             on_status=self._on_status,
         )
         self._segmenter.start()
-        self._state.transition(TranscriptionState.LISTENING)
+        try:
+            self._state.transition(TranscriptionState.LISTENING)
+        except ValueError:
+            # The source or segmenter may have already failed (state ERROR) —
+            # don't clobber the terminal state with LISTENING.
+            pass
         bus.publish_sync(BridgeEvent("bridge.status", self._state.snapshot.to_dict()))
 
     def stop(self) -> None:

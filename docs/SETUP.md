@@ -27,6 +27,12 @@ The frontend loads AI credentials from **Settings → API Config**. Its normal g
 
 The Forge setup checklist includes authentication, channel, provider, and capture. Desktop capture capability depends on the browser, operating system, and selected capture source.
 
+## Stream Companion
+
+After ordinary platform/provider setup, enable **Stream Companion** in desktop Core's AutoForge controls, mobile **Tuning**, or the expanded Studio AutoForge HUD. Configure working audio transcription or semantic visual capture, rehearse in Dry Run, then enable AutoForge and resume Auto-Check when ready. The mode switch itself does neither.
+
+The status explains whether usable speech/visual evidence is present, human conversation needs space, a shared limit applies, or controls have paused participation. Raw screen previews and old transcript text do not grant permission. All bots share the mode and optional-message budget; more identities add voices within that pace. See [Stream Companion](STREAM_COMPANION.md) for bounds, source attribution, feedback, and troubleshooting.
+
 ## Ollama / local models
 
 Install [Ollama](https://ollama.com/) and download a model suitable for your hardware. The app currently prefills `qwen3.5:9b`; to use that tag:

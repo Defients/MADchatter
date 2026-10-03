@@ -140,6 +140,7 @@ export interface SemanticCandidate {
   questionPending?: boolean;
   socialOpening?: boolean;
   firstMessagePending?: boolean;
+  companionOpportunity?: ConversationOpportunity;
 }
 
 export interface SemanticBidRequest {
@@ -947,7 +948,8 @@ export function resolveSemanticBids(
 
   const saturation = computeSaturation(ledger, now, supercharge);
   const maxStreak = supercharge ? L.maxSuperchargeBotOnlyStreak : L.maxBotOnlyStreak;
-  const loopSuppressed = saturation.botOnlyStreak >= maxStreak;
+  const boundedExternal = requests.every(r => r.candidate.companionOpportunity?.id === opportunity.id && r.candidate.companionOpportunity.humanOriginated);
+  const loopSuppressed = !boundedExternal && saturation.botOnlyStreak >= maxStreak;
 
   const bids: SemanticBotBid[] = requests.map((r) => {
     const c = r.candidate;
@@ -973,7 +975,7 @@ export function resolveSemanticBids(
       semanticFit *
       (1 - interruption);
 
-    const saturationPenalty = loopSuppressed ? 1 : saturation.penalty;
+    const saturationPenalty = loopSuppressed ? 1 : saturation.penalty * (boundedExternal ? 0.25 : 1);
 
     const finalScore =
       W.confidence * clamp01(c.confidence) +
@@ -1327,7 +1329,9 @@ export class SemanticCoordinationEngine {
       return { winnerBotId: null, bids, dispositions, outcome: "stale_channel", reason: receipt.reason, receipt };
     }
 
-    const opportunity = classifyOpportunity({ requests, ledger: this.ledger, now });
+    const classified = classifyOpportunity({ requests, ledger: this.ledger, now });
+    const companion = requests.find(r => r.candidate.companionOpportunity)?.candidate.companionOpportunity;
+    const opportunity = classified.targetBotIds.length ? classified : companion ?? classified;
     const result = resolveSemanticBids(requests, {
       opportunity,
       ledger: this.ledger,

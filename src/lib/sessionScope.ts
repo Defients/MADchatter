@@ -41,6 +41,8 @@ export function createAutoForgeExecutionGuard(identityIsCurrent: () => boolean) 
     const state = useAppStore.getState();
     return isSessionScopeCurrent(scope) && state.autoForgeEnabled && !state.botsGlobalStop &&
       state.autoForgeDryRun === initial.autoForgeDryRun &&
+      state.participationProfileRevision === initial.participationProfileRevision &&
+      state.participationProfile === initial.participationProfile &&
       state.multiBotEnabled === initial.multiBotEnabled &&
       selectMultiBotActive(state) === multiBotActive && identityIsCurrent();
   };

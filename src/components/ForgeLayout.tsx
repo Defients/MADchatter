@@ -1729,7 +1729,7 @@ export function ForgeLayout() {
       setMicStreamForEnergy(sharedStream);
       toast.info("Starting microphone transcription via Whisper...");
       const showedPrompt = await startEmbedWhisper(sharedStream, (formattedSegment) => {
-        appendAudioTranscript(formattedSegment);
+        appendAudioTranscript(formattedSegment, "streamer");
         checkAudioMention(formattedSegment);
       });
       if (!showedPrompt) {

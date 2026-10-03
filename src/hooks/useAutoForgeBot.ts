@@ -1,3 +1,5 @@
+import { streamCompanion, formatCompanionContext, toCoordinationOpportunity } from "../lib/streamCompanion";
+import { getCompanionReceipt, getCompanionControls, isCompanionHumanMessage } from "../lib/streamCompanionRuntime";
 import { getSpokenMentionLines } from "../lib/spokenCallout";
 import { SendCancelledError } from "../lib/sendCancellation";
 import { useEffect, useRef } from "react";
@@ -157,7 +159,7 @@ export function useAutoForgeBot(botId: string) {
     const mentionedLines: string[] = [];
     if (botUsername) {
       for (const msg of store.chatLog.slice(-15)) {
-        if (!msg.marker && isNameMentioned(msg.text, botUsername)) {
+        if (!msg.marker && isCompanionHumanMessage(msg) && isNameMentioned(msg.text, botUsername)) {
           mentionedLines.push(`${msg.user}: ${msg.text}`);
         }
       }
@@ -167,6 +169,16 @@ export function useAutoForgeBot(botId: string) {
     // handle it here).
     const audioMentionLines = getSpokenMentionLines(botId);
     const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
+    const companionOptional = store.participationProfile === "stream_companion" && !isMentioned && !force && !supercharged;
+    const companionReceipt = getCompanionReceipt(botId);
+    const companionTicket = companionOptional ? companionReceipt.ticket : undefined;
+    const companionContext = store.participationProfile === "stream_companion" && !supercharged
+      ? companionOptional ? formatCompanionContext(companionReceipt) : "Direct human address or operator Force: respond to the supplied evidence; existing controls remain authoritative."
+      : "";
+    const companionAudio = companionOptional ? companionReceipt.opportunity?.evidence.filter(e => e.kind === "speech").map(e => e.text).join("\n") ?? "" : store.audioTranscript;
+    const companionVisual = companionOptional ? companionReceipt.opportunity?.evidence.filter(e => e.kind === "visual").map(e => e.text).join("\n") ?? "" : store.visualContextTags.join(" ");
+    const autoForgeSendOptions = { autoForge: { profileRevision: store.participationProfileRevision, companion: companionTicket, force } };
+
     // ── Urgent pre-admission evidence ────────────────────────────────────────
     // A direct mention may interrupt the user's Interval deadline immediately,
     // but an urgent attempt NEVER re-anchors the ordinary cadence — only
@@ -207,6 +219,10 @@ export function useAutoForgeBot(botId: string) {
       }
     }
     if (store.botsGlobalStop) return;
+    if (companionOptional && !companionReceipt.eligible) return;
+    if (store.participationProfile === "stream_companion" &&
+      (store.participationManualMode === "quiet" || (participation.getExplicitQuietUntil() ?? 0) > Date.now())) return;
+
     // Self-heal a wedged manual-forge flag. If a forge request hung without
     // settling, isForging would gate every bot check + force forever.
     if (store.isForging && (store.forgeStartedAtMs === null || Date.now() - store.forgeStartedAtMs > FORGE_WATCHDOG_MS)) {
@@ -222,7 +238,7 @@ export function useAutoForgeBot(botId: string) {
     // force bypasses the isForging gate — the scheduler arbitrates contention
     // (the decide queues behind the critical forge on Ollama, or runs
     // concurrently on cloud providers).
-    if (!force && !intervalDeadlineAttempt && !urgentIntervalAttempt && Date.now() < runtime.autoForgeNextActionMs) return;
+    if (!force && !intervalDeadlineAttempt && !urgentIntervalAttempt && !(companionOptional && companionReceipt.eligible) && Date.now() < runtime.autoForgeNextActionMs) return;
 
     isForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
@@ -327,7 +343,7 @@ export function useAutoForgeBot(botId: string) {
 
       // ── Offline detection ───────────────────────────────────────────────
       const viewerCount = store.streamMetadata?.viewerCount || 0;
-      const likelyOffline = detectOfflineStream(viewerCount, newMessages, elapsedMs);
+      const likelyOffline = detectOfflineStream(viewerCount, newMessages, elapsedMs, companionOptional ? { freshEvidence: companionReceipt.eligible, authoritativeOffline: getCompanionControls().offline } : undefined);
       store.setStreamLikelyOffline(likelyOffline);
       if (likelyOffline && !force) {
         store.setBotAutoForgeNextActionMs(botId, now + 120000);
@@ -376,8 +392,8 @@ export function useAutoForgeBot(botId: string) {
           runtime.personalityState,
           {
             currentChatLog: store.chatLog,
-            audioTranscript: store.audioTranscript,
-            visualContext: store.visualContextTags.join(" "),
+            audioTranscript: companionAudio,
+            visualContext: companionVisual,
             streamMetadata: store.streamMetadata,
             activeUsers: [],
             tokenBudget: runtime.autoMemoryConfig.contextInjectionTokenBudget,
@@ -476,6 +492,7 @@ export function useAutoForgeBot(botId: string) {
           timeSinceLastActionMs: runtime.autoForgeLastActionMs ? now - runtime.autoForgeLastActionMs : Infinity,
           viewerCount: store.streamMetadata?.viewerCount || 0,
           isForging: store.isForging,
+          companion: companionOptional ? { freshEvidence: companionReceipt.eligible, authoritativeOffline: getCompanionControls().offline } : undefined,
         });
         if (vibe.shouldSkip) {
           store.addBotAutoForgeEvent(botId, {
@@ -526,6 +543,7 @@ export function useAutoForgeBot(botId: string) {
             isMentioned,
             activitySpike,
             manualMode: liveGate.participationManualMode,
+            companionEvidence: companionOptional && companionReceipt.eligible,
           });
           participationEvalRef.current = evaluation;
           liveGate.setParticipationSnapshot(participation.getSnapshot());
@@ -590,7 +608,7 @@ export function useAutoForgeBot(botId: string) {
       if (!force && !supercharged && !intervalMode) {
         const signal = captureAutoCheckSignal({
           chatLog: store.chatLog,
-          audioTranscript: store.audioTranscript,
+          audioTranscript: companionAudio,
           visualSnapshotUrl: store.visualSnapshotUrl,
           visualSnapshotHistoryLength: store.visualSnapshotHistory.length,
           sentMessagesLength: store.sentMessages.length,
@@ -601,7 +619,7 @@ export function useAutoForgeBot(botId: string) {
           intervalMs: store.autoForgeAutoCheckIntervalMs,
           now: Date.now(),
           lastCheckAt: store.autoForgeLastCheckMs,
-          signalsChanged: hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
+          signalsChanged: companionOptional ? companionReceipt.eligible : hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
           urgent: isMentioned || activitySpike,
           minCooldownMs: store.rateLimitConfig?.minCooldownMs,
         });
@@ -663,11 +681,14 @@ export function useAutoForgeBot(botId: string) {
       // generation, failed send); a successful send completes it via
       // addBotSentMessage → completeBotFirstMessage.
       const isFirstMessage = useAppStore.getState().acquireFirstMessageLock(botId);
+      if (companionTicket) streamCompanion.markEvaluated(companionTicket, Date.now());
       const decision = await autoforgeDecide({
+        companionContext,
+        signal: guard.signal,
         streamMetadata: store.streamMetadata,
-        visualContext: store.visualContextTags.join(" "),
+        visualContext: companionVisual,
         recentChatLog: formatChatLog(store.chatLog),
-        audioTranscript: store.audioTranscript,
+        audioTranscript: companionAudio,
         longTermContext: buildLongTermMemoryContext(runtime.longTermMemory, runtime.pinnedMemories, runtime.goldenMemoryId),
         config: bot.persona.config,
         activeProvider,
@@ -714,7 +735,7 @@ export function useAutoForgeBot(botId: string) {
           enabled: store.episodicMemoryEnabled,
           channelName: store.streamMetadata.channelName,
           chatLog: store.chatLog,
-          audioTranscript: store.audioTranscript,
+          audioTranscript: companionAudio,
           activeMomentTopicHints: roomModel.getMoments().find(
             (mom) => mom.id === roomModel.getState()?.activeMomentId,
           )?.topicHints,
@@ -738,6 +759,7 @@ export function useAutoForgeBot(botId: string) {
           : undefined,
         goalPressureContext: buildSessionGoalsContext(useAppStore.getState().goalEvaluationResults),
       });
+      if (companionTicket) streamCompanion.markEvaluated(companionTicket, Infinity);
 
       // First Message lock release helper. Safe to call on any exit path: it
       // only acts on the "sending" state, so it's a no-op once a successful
@@ -841,6 +863,7 @@ export function useAutoForgeBot(botId: string) {
           isMentioned,
           activitySpike,
           manualMode: useAppStore.getState().participationManualMode,
+          companionEvidence: companionOptional && !!companionTicket && streamCompanion.inspect(getCompanionControls(), Date.now(), botId, companionTicket).eligible,
           wouldHaveActed: decision.decision !== "deliberate_silence",
         });
         useAppStore.getState().setParticipationSnapshot(participation.getSnapshot());
@@ -910,6 +933,7 @@ export function useAutoForgeBot(botId: string) {
         questionPending,
         socialOpening,
         firstMessagePending: isFirstMessage || undefined,
+        companionOpportunity: companionOptional ? toCoordinationOpportunity(companionReceipt, Date.now()) : undefined,
       });
       // Cross-bot semantic dedup: another bot's recent send (Jaccard ≥ 0.6 on
       // the shared ledger) stands this one down. Per-bot exact dedup already
@@ -945,16 +969,19 @@ export function useAutoForgeBot(botId: string) {
           if (!target) return;
           const currentChat = currentState.chatLog;
           const botName = (currentBot.session?.username || "").toLowerCase();
-          const eng = countPostSendEngagement(currentChat, sentAt, botName);
-          const label = labelEngagement(eng.total);
+          const botUsernamesForEngagement = collectBotUsernames(currentState.bots, botName);
+          const engagementChat = companionTicket ? currentChat.filter(m => !botUsernamesForEngagement.includes(m.user.toLowerCase())) : currentChat;
+          const eng = countPostSendEngagement(engagementChat, sentAt, botName);
+          const spokenEngagement = companionTicket ? streamCompanion.getSpokenEngagement(sentAt, botId) : null;
+          const label = labelEngagement(eng.total + (spokenEngagement ? 2 : 0));
           useAppStore.getState().updateBotActionHistoryEntry(botId, target.id, {
-            engagement: { chatLinesAfter: eng.linesAfter, mentionsAfter: eng.mentionsAfter, reactionsAfter: eng.reactionsAfter, label, evaluatedAt: Date.now() },
+            engagement: { chatLinesAfter: eng.linesAfter, mentionsAfter: eng.mentionsAfter, reactionsAfter: eng.reactionsAfter, label, evaluatedAt: Date.now(), ...(spokenEngagement ? { spokenResponse: spokenEngagement } : {}), ...(companionTicket && eng.total === 0 && !spokenEngagement ? { attribution: "uncertain" as const } : {}) },
           });
           // A9: Record accuracy metric (shared global — no per-bot twin exists)
-          useAppStore.getState().recordActionEngagement(actionType, label);
+          if (!companionTicket || eng.total > 0 || spokenEngagement) useAppStore.getState().recordActionEngagement(actionType, label);
           // Participation awareness: outcome evidence. Only OPTIONAL sends
           // (not mention responses) inform the ignored-trend restraint dim.
-          participation.noteOutcome({
+          if (!companionTicket || eng.total > 0 || spokenEngagement) participation.noteOutcome({
             channel: currentState.streamMetadata.channelName,
             label,
             wasOptional: !wasMentionResponse,
@@ -972,7 +999,7 @@ export function useAutoForgeBot(botId: string) {
             subjectUsername: botName,
             wasMentionResponse,
           });
-          useAppStore.getState().recordLearningOutcome(actionType, outcome.score);
+          if (!companionTicket || eng.total > 0 || spokenEngagement) useAppStore.getState().recordLearningOutcome(actionType, spokenEngagement ? Math.max(0, outcome.score) : outcome.score);
         }, ENGAGEMENT_CHECK_DELAY_MS);
         engagementTimersRef.current.add(engTimer);
       };
@@ -995,11 +1022,13 @@ export function useAutoForgeBot(botId: string) {
           // so multi-bot full_forge matches single-bot quality.
           try {
             const chatResult = await generateChat({
+              companionContext,
+              signal: guard.signal,
               streamMetadata: store.streamMetadata,
-              visualContext: store.visualContextTags.join(" "),
-              screenshot: store.visualSnapshotUrl || undefined,
+              visualContext: companionVisual,
+              screenshot: companionOptional ? undefined : store.visualSnapshotUrl || undefined,
               recentChatLog: formatChatLog(store.chatLog),
-              audioTranscript: store.audioTranscript,
+              audioTranscript: companionAudio,
               longTermContext: buildLongTermMemoryContext(runtime.longTermMemory, runtime.pinnedMemories, runtime.goldenMemoryId),
               config: bot.persona.config,
               activeProvider,
@@ -1104,7 +1133,7 @@ export function useAutoForgeBot(botId: string) {
               }
 
               // Won the floor — send the best variant
-              const sendFn = getPlatformSendFn(store.platform, botId);
+              const sendFn = getPlatformSendFn(store.platform, botId, autoForgeSendOptions);
               const channel = store.streamMetadata.channelName;
               playSfx("autoforge_action");
               botLimiter.recordAction("full_forge");
@@ -1175,6 +1204,7 @@ export function useAutoForgeBot(botId: string) {
               }
             }
           } catch (e: any) {
+            if (companionTicket) streamCompanion.markEvaluated(companionTicket, Date.now());
             // Scheduler preemption/cancellation is an intentional yield —
             // don't log as a failure or toast; let the outer catch reschedule
             // quietly.
@@ -1280,7 +1310,7 @@ export function useAutoForgeBot(botId: string) {
               releaseFM();
               return;
             }
-            const sendFn = getPlatformSendFn(store.platform, botId);
+            const sendFn = getPlatformSendFn(store.platform, botId, autoForgeSendOptions);
             sendFn(channel, followupPayload).then(() => {
               if (!isSessionScopeCurrent(followupScope)) { releaseFM(); return; }
               store.updateBotDecisionLogEntry(botId, decisionLogId, { outcome: "sent" });
@@ -1422,7 +1452,7 @@ export function useAutoForgeBot(botId: string) {
             releaseFM();
             return;
           }
-          const sendFn = getPlatformSendFn(store.platform, botId);
+          const sendFn = getPlatformSendFn(store.platform, botId, autoForgeSendOptions);
           const channel = store.streamMetadata.channelName;
           playSfx("autoforge_action");
           botLimiter.recordAction(effectiveDecision);
@@ -1510,7 +1540,7 @@ export function useAutoForgeBot(botId: string) {
         {
           const silenceLive = useAppStore.getState();
           const silenceProfile = silenceLive.learningProfiles[learningProfileKey(store.streamMetadata.channelName)] ?? emptyLearningProfile();
-          if (shouldRecordSilenceObservation(silenceProfile, Date.now())) {
+          if (!(silenceLive.participationProfile === "stream_companion" && silenceLive.autoForgeDryRun) && shouldRecordSilenceObservation(silenceProfile, Date.now())) {
             const silenceScope = captureSessionScope();
             const decidedAt = Date.now();
             const silenceTimer = setTimeout(() => {
@@ -1607,6 +1637,7 @@ export function useAutoForgeBot(botId: string) {
       store.setBotAutoForgeNextActionMs(botId, nowMs + nextMin * 60 * 1000);
     } catch (e: any) {
       const errMsg = e?.message || "Unknown error";
+      if (companionTicket) streamCompanion.markEvaluated(companionTicket, Date.now());
       if (isTrialDailyLimitError(e)) {
         store.setBotAutoForgeNextActionMs(botId, trialResetRetryAt(e.usage));
       } else if (isSchedulerCancellation(e) || isQueueTimeout(e)) {

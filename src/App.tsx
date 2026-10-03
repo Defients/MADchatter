@@ -1,3 +1,4 @@
+import { streamCompanion } from "./lib/streamCompanion";
 import React, { useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { ForgeLayout } from './components/ForgeLayout';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './components/ui/command';
@@ -328,6 +329,7 @@ export default function App() {
       // Perception Liveness: valid inbound chat output — own-bot messages are
       // filtered before this chokepoint, so this is human/foreign chat only.
       perception.noteChatInput();
+      streamCompanion.note({ kind: "human", text: `${username}: ${text}`, at: Date.now() });
       // Semantic coordination ledger — human chat is attributed so speaker
       // balance, saturation, and thread health stay human-primary (bot-only
       // chatter can never manufacture human momentum).

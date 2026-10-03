@@ -1,3 +1,4 @@
+import { StreamCompanionControl } from "./StreamCompanionControl";
 /**
  * CoreWorkspace — the centered, panel-free Core Mode layout.
  *
@@ -1467,6 +1468,7 @@ function AutoForgeSetupStep(props: {
         {/* Auto-Check cadence — replaces the old implicit 15s re-check with a
             user-controlled cadence (Smart / 30s / 1m / 2m / 5m) + live progress.
             Matches the Mobile CORE tuning surface (AutoCheckControls). */}
+        <StreamCompanionControl />
         {props.autoForgeEnabled && (
           <div className="p-3 rounded-xl border border-white/5 bg-[#0a0a0f]">
             <AutoCheckControls variant="full" />
@@ -3804,6 +3806,7 @@ function AutoForgeLiteControls() {
 
       {/* ── Auto-Check cadence — user-controlled cadence (Smart / 30s / 1m /
           2m / 5m) + live progress. Matches the Mobile CORE tuning surface. ── */}
+      <StreamCompanionControl />
       {autoForgeEnabled && (
         <div className="rounded-xl border border-white/5 bg-black/30 p-2.5">
           <AutoCheckControls variant="full" />

@@ -28,6 +28,25 @@ def _has_executable(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+def cuda_runtime_loadable() -> bool:
+    """Probe whether the CUDA runtime libraries ctranslate2 needs can load.
+
+    ctranslate2's driver-level check (get_supported_compute_types) reports CUDA
+    support even when the runtime DLLs are absent — the wheels do not bundle
+    cuBLAS/cuDNN, and inference then crashes at first encode. Loading the same
+    libraries ctypes-style uses the identical DLL search path ctranslate2 will
+    hit, so this is an honest probe. ctranslate2 4.x targets CUDA 12 + cuDNN 9;
+    if those names age out, the worst case is a safe CPU fallback.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL("cublas64_12.dll")
+        ctypes.CDLL("cudnn64_9.dll")
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
 def _check_cuda() -> bool:
     """Detect whether a usable CUDA path exists for faster-whisper.
 
@@ -37,7 +56,7 @@ def _check_cuda() -> bool:
     try:
         import ctranslate2
         supported = ctranslate2.get_supported_compute_types("cuda")
-        return bool(supported)
+        return bool(supported) and cuda_runtime_loadable()
     except Exception:
         return False
 

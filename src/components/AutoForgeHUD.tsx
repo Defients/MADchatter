@@ -1,3 +1,4 @@
+import { StreamCompanionControl } from "./StreamCompanionControl";
 import React, { useEffect, useState, useRef } from 'react';
 import { useAppStore, selectMultiBotActive } from '../store';
 import type { Bot } from '../types';
@@ -885,6 +886,7 @@ export function AutoForgeHUD() {
 
             {/* Participation awareness — state, reasons, quiet/direct-only, STOP */}
             <ParticipationControl />
+            <StreamCompanionControl />
 
             {/* Context Token Budget */}
             <div className="flex flex-col gap-2 p-2.5 bg-black/40 rounded border border-white/5">

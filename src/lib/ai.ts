@@ -15,6 +15,8 @@ import {
   STANDARD_TYPING_PROMPT,
   REFINE_SYSTEM_PROMPT,
   AUTOFORGE_SYSTEM_PROMPT,
+  AUTOFORGE_COMPANION_SYSTEM_PROMPT,
+  STREAM_COMPANION_DIRECTIVE,
   MEMORY_AWARENESS_PROMPT,
   AUTOFORGE_MEMORY_PROMPT,
   EPISODIC_AWARENESS_PROMPT,
@@ -273,6 +275,7 @@ function repairTruncatedJson(str: string): string {
 }
 
 export interface GenerateChatParams {
+  companionContext?: string;
   streamMetadata: StreamMetadata;
   visualContext?: string;
   screenshot?: string;
@@ -474,7 +477,7 @@ ${params.availableEmotes && params.availableEmotes.length > 0 ? `\nAVAILABLE EMO
 ${effortDirective}
 ${params.count ? `\nEXACT OUTPUT COUNT: You must generate exactly ${params.count} suggestion${params.count > 1 ? "s" : ""}. Do not generate more or fewer than ${params.count}.` : ""}`;
 
-  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.temporarySystemDirective ? `\n\n${params.temporarySystemDirective.trim()}` : "");
+  const systemPrompt = FORGE_SYSTEM_PROMPT + (params.companionContext ? STREAM_COMPANION_DIRECTIVE + "\n" + params.companionContext : "") + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? MEMORY_AWARENESS_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.temporarySystemDirective ? `\n\n${params.temporarySystemDirective.trim()}` : "");
   let generatedJsonStr = "";
 
   const forgeTimeout = getOperationTimeout("forge", provider);
@@ -1051,6 +1054,8 @@ ${params.r34lContext ? `\nTYPING STYLE OVERRIDE (R34L):\nThe streamer has R34L m
 }
 
 export interface AutoForgeParams {
+  companionContext?: string;
+  signal?: AbortSignal;
   streamMetadata: StreamMetadata;
   visualContext?: string;
   recentChatLog?: string;
@@ -1653,6 +1658,7 @@ ${params.audioEnergyLabel ? `Audio energy level: ${params.audioEnergyLabel}${par
 ${params.streamEvents && params.streamEvents.length > 0 ? `RECENT STREAM EVENTS:\n${params.streamEvents.join("\n")}` : ""}
 ${params.roomStateContext ? `\n${params.roomStateContext}` : ""}
 ${params.participationContext ? `\n${params.participationContext}` : ""}
+${params.companionContext ? `\n${params.companionContext}` : ""}
 ${params.episodicContext ? `\n${params.episodicContext}` : ""}
 
 VISUAL CONTEXT:
@@ -1684,7 +1690,7 @@ ${params.force ? "\nFORCE MODE: The user has manually forced this action. You MU
 ${params.antiRepetitionContext ? `\n\n${params.antiRepetitionContext}` : ""}
 DECIDE NOW.`;
 
-  const systemPrompt = AUTOFORGE_SYSTEM_PROMPT + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + (params.selfPerformanceContext ? SELF_PERFORMANCE_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
+  const systemPrompt = (params.companionContext ? AUTOFORGE_COMPANION_SYSTEM_PROMPT : AUTOFORGE_SYSTEM_PROMPT) + (params.r34lEnabled ? R34L_TYPING_PROMPT + r34lProfileSegment(params.r34lContext) : STANDARD_TYPING_PROMPT) + (params.memoryContext ? AUTOFORGE_MEMORY_PROMPT : "") + (params.episodicContext ? EPISODIC_AWARENESS_PROMPT : "") + (params.antiRepetitionContext ? ANTI_REPETITION_PROMPT : "") + (params.sentimentContext ? SENTIMENT_AWARENESS_PROMPT : "") + (params.selfPerformanceContext ? SELF_PERFORMANCE_PROMPT : "") + buildBotIdentityPrompt(params.botIdentityMode || "admit", params.botIdentityStory || "") + (params.firstMessageMode ? FIRST_MESSAGE_DIRECTIVE : "") + (params.superchargeMode ? SUPERCHARGE_DIRECTIVE : "");
 
   let lastError: Error | null = null;
   let usedFallback = false;
@@ -1717,7 +1723,7 @@ DECIDE NOW.`;
               abortSignal: signal,
             },
           }),
-          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName, signal: params.signal },
         );
         generatedJsonStr = response.text || "{}";
         if (response.usageMetadata) {
@@ -1748,7 +1754,7 @@ DECIDE NOW.`;
             ],
             ...ollamaOpts,
           }, { signal }),
-          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model, priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName, signal: params.signal },
         );
         generatedJsonStr = response.choices[0].message.content || "{}";
         if (response.usage) {
@@ -1768,7 +1774,7 @@ DECIDE NOW.`;
             system: systemPrompt + "\n\nYou must output ONLY valid JSON matching the schema format.",
             messages: [{ role: "user", content: userMessageContent }],
           }, { signal }),
-          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model: "claude-haiku-4-5-20251001", priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName },
+          { operation: `autoforgeDecide/${provider}`, provider: currentProvider, model: "claude-haiku-4-5-20251001", priority: decidePriority, timeoutMs: decideTimeout, botId: params.botUsername, channel: params.streamMetadata?.channelName, signal: params.signal },
         );
         generatedJsonStr = (response.content[0] as any).text;
         if (response.usage) {

@@ -31,6 +31,7 @@ Built for streamers and bot operators who want control over their bot's personal
 | **Forge replies** | Generate several chat-message variants from the available stream context, then refine, copy, or send your choice. |
 | **Shape the voice** | Adjust persona, humor, chaos, emote density, message length, and directives in the Tuning Deck. **R34L** adds a looser typing style informed by recent chat. |
 | **Let AutoForge participate** | Use autonomous decisions, confidence thresholds, pacing controls, and a decision log. Start in Dry Run to inspect decisions before enabling automatic sends. |
+| **Keep a quiet stream company** | Opt into **Stream Companion** to ground AutoForge in fresh speech and meaningful visuals, with one shared pace across all bots. See the [mode and controls](docs/STREAM_COMPANION.md). |
 | **Bring the stream into context** | Combine chat and stream metadata with optional audio transcription and visual snapshots. Include pinned context and a priority Golden Memory. |
 | **Remember recurring context** | Extract memories, user profiles, and inside jokes, with personality context stored between sessions in the browser. |
 | **Respond to mentions** | Review smart-reply suggestions when someone addresses the bot. |
@@ -56,6 +57,8 @@ The workspace also includes rule presets, session goals, action sequences, visua
 4. Turn Dry Run off when you are ready for autonomous messages to reach chat.
 
 AutoForge includes rate controls, duplicate checks, and anti-repetition context. These help manage participation; use the bot in channels where you have permission and review its behavior as the conversation changes.
+
+**Stream Companion** is an optional participation mode in the Core AutoForge controls, mobile Tuning workspace, and expanded Studio HUD. It lets fresh streamer speech or meaningful visuals justify a conversation even when human chat is quiet. Choosing it does not enable AutoForge or resume Auto-Check. The ensemble shares an optional-message budget of 30/hour and 8/10 minutes, with bounded follow-ups; your existing stricter limits and explicit silence controls still apply. [Read the operator guide](docs/STREAM_COMPANION.md) for sensor requirements and honest limits.
 
 > **Dry Run suppresses AutoForge sends.** It can still make AI calls, and manual sends remain live. It is useful for rehearsing autonomous decisions, but it is not a no-cost or fully simulated session.
 

@@ -232,6 +232,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Bind the serving loop so worker-thread publishes reach live SSE
+        # subscribers (transcript.final, bridge.status from sources, etc.).
+        bus.bind_loop()
         yield
         controller.stop()
         engine.unload()

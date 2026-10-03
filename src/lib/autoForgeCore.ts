@@ -121,7 +121,10 @@ export function detectOfflineStream(
   viewerCount: number,
   newMessages: number,
   elapsedMs: number,
+  companion?: { freshEvidence: boolean; authoritativeOffline?: boolean },
 ): boolean {
+  if (companion?.authoritativeOffline) return true;
+  if (companion?.freshEvidence) return false;
   const noChatForLongTime = newMessages === 0 && elapsedMs > 300000;
   return viewerCount === 0 && noChatForLongTime;
 }
@@ -292,7 +295,9 @@ export function vibeCheck(opts: {
   timeSinceLastActionMs: number;
   viewerCount: number;
   isForging: boolean;
+  companion?: { freshEvidence: boolean; authoritativeOffline?: boolean };
 }): VibeCheckResult {
+  if (opts.companion?.authoritativeOffline) return { shouldSkip: true, reason: "stream disconnected", nextCheckDelayMs: 30_000 };
   // Mentions and spikes are always worth checking — never skip.
   if (opts.isMentioned || opts.activitySpike) {
     return { shouldSkip: false, reason: "", nextCheckDelayMs: 0 };
@@ -301,6 +306,7 @@ export function vibeCheck(opts: {
   if (opts.isForging) {
     return { shouldSkip: true, reason: "user is forging", nextCheckDelayMs: 15_000 };
   }
+  if (opts.companion?.freshEvidence) return { shouldSkip: false, reason: "fresh stream evidence", nextCheckDelayMs: 0 };
   // Stream likely offline: no viewers AND no chat movement.
   if (opts.viewerCount === 0 && opts.chatVelocity === 0 && opts.timeSinceLastActionMs > 120_000) {
     return { shouldSkip: true, reason: "stream likely offline (0 viewers, no chat for 2+ min)", nextCheckDelayMs: 120_000 };

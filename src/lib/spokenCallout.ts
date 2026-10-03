@@ -609,7 +609,7 @@ export function detectSpokenCallout(input: DetectSpokenCalloutInput): SpokenCall
     transcriptText: rawText.slice(0, 200),
     reason: "no identity matched",
   };
-  if (words.length === 0 || input.identities.length === 0) return base;
+  if (words.length === 0) return base;
 
   // ── Echo protection: bot TTS heard back through the transcriber ──────────
   const echo = (input.recentAgentSpeech ?? []).find(
@@ -622,6 +622,7 @@ export function detectSpokenCallout(input: DetectSpokenCalloutInput): SpokenCall
   }
 
   // ── Identity matching ─────────────────────────────────────────────────────
+  if (input.identities.length === 0) return base;
   const matches = matchIdentities(words, input.identities);
 
   // ── Ensemble: "MADchatter" (exact) or generic "bots" (syntax-gated) ──────
@@ -876,6 +877,11 @@ export class SpokenCalloutEngine {
     if (this.agentSpeech.length > SPOKEN_CALLOUT_LIMITS.maxAgentEchoEntries) {
       this.agentSpeech.splice(0, this.agentSpeech.length - SPOKEN_CALLOUT_LIMITS.maxAgentEchoEntries);
     }
+  }
+
+  /** Reuse the canonical TTS echo guard for ambient Companion evidence. */
+  inspectTranscript(text: string, now = Date.now()): SpokenCalloutDetection {
+    return detectSpokenCallout({ text, isFinal: true, identities: [], recentAgentSpeech: this.agentSpeech, now });
   }
 
   /**

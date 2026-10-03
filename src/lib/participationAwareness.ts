@@ -324,6 +324,7 @@ export function computeParticipationRisk(
   timeline: TimelineEntry[],
   outcomes: OutcomeEntry[],
   now: number,
+  companionEvidence = false,
 ): ParticipationRisk {
   const L = PARTICIPATION_LIMITS;
   const W = PARTICIPATION_WEIGHTS;
@@ -404,11 +405,11 @@ export function computeParticipationRisk(
   const repetitionRisk = clamp01((recentBotSends - 1) / 3);
 
   const dimensions: ParticipationRiskDimensions = {
-    botSaturation: round2(botSaturation),
+    botSaturation: round2(companionEvidence ? botSaturation * 0.25 : botSaturation),
     interruptionRisk: round2(interruptionRisk),
     repetitionRisk: round2(repetitionRisk),
-    outcomeTrendRisk: round2(outcomeTrendRisk),
-    botLoopRisk: round2(botLoopRisk),
+    outcomeTrendRisk: round2(companionEvidence ? 0 : outcomeTrendRisk),
+    botLoopRisk: round2(companionEvidence ? 0 : botLoopRisk),
     recencyPressure: round2(recencyPressure),
   };
 
@@ -613,6 +614,8 @@ export interface EvaluateOptions {
   manualMode?: ManualParticipationMode;
   /** True when the model already proposed a send (post-AI gate). */
   wouldHaveActed?: boolean;
+  /** A valid bounded external opportunity, never a bot-created signal. */
+  companionEvidence?: boolean;
 }
 
 export class ParticipationEngine {
@@ -754,7 +757,7 @@ export class ParticipationEngine {
       }
     }
 
-    const risk = computeParticipationRisk(this.timeline, this.outcomes, now);
+    const risk = computeParticipationRisk(this.timeline, this.outcomes, now, opts.companionEvidence);
     const resolved = resolveParticipationState({
       current: this.state,
       enteredAt: this.stateEnteredAt,
@@ -782,13 +785,13 @@ export class ParticipationEngine {
           reasonCodes.push("manual_direct_only_mode");
           break;
         case "cooldown":
-          disposition = "silence";
-          reasonCodes.push("cooldown_active");
+          disposition = opts.companionEvidence && resolved.source === "inferred" && risk.overall < W.cooldownEnter ? "allow" : "silence";
+          if (disposition === "silence") reasonCodes.push("cooldown_active");
           break;
         case "quiet":
           // Strong opportunities may still pass when the risk that entered
           // quiet has already decayed (hysteresis holds the state, not a ban).
-          if (obligation === "optional" || risk.overall >= W.quietEnter) {
+          if ((obligation === "optional" && !opts.companionEvidence) || risk.overall >= W.quietEnter || (opts.companionEvidence && resolved.source !== "inferred")) {
             disposition = "silence";
             if (resolved.source === "explicit_instruction") reasonCodes.push("explicit_quiet_instruction");
             else if (resolved.source === "manual") reasonCodes.push("manual_quiet_mode");

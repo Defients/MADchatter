@@ -1,3 +1,4 @@
+import { StreamCompanionControl } from "./StreamCompanionControl";
 /**
  * CoreMobileWorkspace — First-class mobile layout for MADchatter CORE Mode.
  *
@@ -2184,6 +2185,7 @@ function MobileForgeTab(props: {
 
       {/* Auto-Check cadence — the user's control over how often AutoForge may
           spend an evaluation (replaces the old implicit 15s re-check). */}
+      <StreamCompanionControl />
       {autoForgeEnabled && (
         <div className="p-3 rounded-xl bg-[#121218] border border-white/5">
           <AutoCheckControls variant="compact" />
@@ -3347,6 +3349,7 @@ function MobileTuningTab(props: {
           <Bot className="w-3.5 h-3.5" />
           AutoForge Automation Tuning
         </div>
+        <StreamCompanionControl />
 
         {/* Dry Run Toggle */}
         <div

@@ -1,3 +1,5 @@
+import { streamCompanion, formatCompanionContext } from "../lib/streamCompanion";
+import { getCompanionReceipt, getCompanionControls, isCompanionHumanMessage } from "../lib/streamCompanionRuntime";
 import { getSpokenMentionLines } from "../lib/spokenCallout";
 import { SendCancelledError } from "../lib/sendCancellation";
 import { useEffect, useRef } from "react";
@@ -210,7 +212,7 @@ export function useAutoForge() {
     }
     const mentionedLines: string[] = [];
     for (const msg of state.chatLog.slice(-15)) {
-      if (msg.marker) continue;
+      if (msg.marker || !isCompanionHumanMessage(msg)) continue;
       const lower = msg.text.toLowerCase();
       if (mentionPatterns.some(p => p && lower.includes(p))) {
         mentionedLines.push(`${msg.user}: ${msg.text}`);
@@ -225,6 +227,16 @@ export function useAutoForge() {
       ? live.bots.find((b) => b.active && b.session?.username.toLowerCase() === botUsername)?.id ?? ""
       : "");
     const isMentioned = mentionedLines.length > 0 || audioMentionLines.length > 0;
+    const companionOptional = live.participationProfile === "stream_companion" && !isMentioned && !force && !supercharged;
+    const companionReceipt = getCompanionReceipt("legacy");
+    const companionTicket = companionOptional ? companionReceipt.ticket : undefined;
+    const companionContext = live.participationProfile === "stream_companion" && !supercharged
+      ? companionOptional ? formatCompanionContext(companionReceipt) : "Direct human address or operator Force: respond to the supplied evidence; existing controls remain authoritative."
+      : "";
+    const companionAudio = companionOptional ? companionReceipt.opportunity?.evidence.filter(e => e.kind === "speech").map(e => e.text).join("\n") ?? "" : state.audioTranscript;
+    const companionVisual = companionOptional ? companionReceipt.opportunity?.evidence.filter(e => e.kind === "visual").map(e => e.text).join("\n") ?? "" : state.visualContextTags.join(" ");
+    const autoForgeSendOptions = { autoForge: { profileRevision: live.participationProfileRevision, companion: companionTicket, force } };
+
     const allMentionedLines = [...mentionedLines, ...audioMentionLines];
     // ── Urgent pre-admission evidence ────────────────────────────────────────
     // A direct mention may interrupt the user's Interval deadline immediately,
@@ -275,6 +287,10 @@ export function useAutoForge() {
       live.setIsForging(false);
     }
     if (live.botsGlobalStop) return;
+    if (companionOptional && !companionReceipt.eligible) return;
+    if (live.participationProfile === "stream_companion" &&
+      (live.participationManualMode === "quiet" || (participation.getExplicitQuietUntil() ?? 0) > Date.now())) return;
+
     if (live.isForging && !force) {
       // Gated on a live manual forge — push NEXT CHECK forward so the HUD
       // countdown reflects the real deferral instead of sitting at 0s.
@@ -284,7 +300,7 @@ export function useAutoForge() {
     // force bypasses the isForging gate — the scheduler arbitrates contention.
 
     // Only trigger if we've passed the next scheduled action time
-    if (!force && !intervalDeadlineAttempt && !urgentIntervalAttempt && Date.now() < state.autoForgeNextActionMs) return;
+    if (!force && !intervalDeadlineAttempt && !urgentIntervalAttempt && !(companionOptional && companionReceipt.eligible) && Date.now() < state.autoForgeNextActionMs) return;
 
     isAutoForgingRef.current = true;
     forgingStartedAtRef.current = Date.now();
@@ -360,7 +376,7 @@ export function useAutoForge() {
 
       // Detect likely offline stream: 0 viewers + no chat activity for 5+ minutes
       const viewerCount = state.streamMetadata?.viewerCount || 0;
-      const likelyOffline = detectOfflineStream(viewerCount, newMessages, elapsedMs);
+      const likelyOffline = detectOfflineStream(viewerCount, newMessages, elapsedMs, companionOptional ? { freshEvidence: companionReceipt.eligible, authoritativeOffline: getCompanionControls().offline } : undefined);
       useAppStore.getState().setStreamLikelyOffline(likelyOffline);
       if (likelyOffline && !force) {
         console.log("[AutoForge] Stream appears offline — skipping check");
@@ -436,8 +452,8 @@ export function useAutoForge() {
           state.personalityState,
           {
             currentChatLog: state.chatLog,
-            audioTranscript: state.audioTranscript,
-            visualContext: state.visualContextTags.join(" "),
+            audioTranscript: companionAudio,
+            visualContext: companionVisual,
             streamMetadata: state.streamMetadata,
             activeUsers: [],
             tokenBudget: state.autoMemoryConfig.contextInjectionTokenBudget,
@@ -482,6 +498,7 @@ export function useAutoForge() {
           timeSinceLastActionMs: state.autoForgeLastActionMs ? now - state.autoForgeLastActionMs : Infinity,
           viewerCount: state.streamMetadata?.viewerCount || 0,
           isForging: state.isForging,
+          companion: companionOptional ? { freshEvidence: companionReceipt.eligible, authoritativeOffline: getCompanionControls().offline } : undefined,
         });
         if (vibe.shouldSkip) {
           console.log(`[AutoForge] Vibe check skip: ${vibe.reason}`);
@@ -537,6 +554,7 @@ export function useAutoForge() {
             isMentioned,
             activitySpike,
             manualMode: liveGate.participationManualMode,
+            companionEvidence: companionOptional && companionReceipt.eligible,
           });
           participationEvalRef.current = evaluation;
           liveGate.setParticipationSnapshot(participation.getSnapshot());
@@ -603,7 +621,7 @@ export function useAutoForge() {
       if (!force && !supercharged && !intervalMode) {
         const signal = captureAutoCheckSignal({
           chatLog: state.chatLog,
-          audioTranscript: state.audioTranscript,
+          audioTranscript: companionAudio,
           visualSnapshotUrl: state.visualSnapshotUrl,
           visualSnapshotHistoryLength: useAppStore.getState().visualSnapshotHistory.length,
           sentMessagesLength: state.sentMessages.length,
@@ -614,7 +632,7 @@ export function useAutoForge() {
           intervalMs: state.autoForgeAutoCheckIntervalMs,
           now: Date.now(),
           lastCheckAt: state.autoForgeLastCheckMs,
-          signalsChanged: hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
+          signalsChanged: companionOptional ? companionReceipt.eligible : hasMeaningfulContextChange(autoCheckSignalRef.current, signal),
           urgent: isMentioned || activitySpike,
           minCooldownMs: state.rateLimitConfig?.minCooldownMs,
         });
@@ -671,11 +689,14 @@ export function useAutoForge() {
       const learningLive = useAppStore.getState();
       const channelProfile = learningLive.learningProfiles[learningProfileKey(state.streamMetadata.channelName)] ?? emptyLearningProfile();
 
+      if (companionTicket) streamCompanion.markEvaluated(companionTicket, Date.now());
       const decision = await autoforgeDecide({
+        companionContext,
+        signal: guard.signal,
         streamMetadata: state.streamMetadata,
-        visualContext: state.visualContextTags.join(" "),
+        visualContext: companionVisual,
         recentChatLog: formatChatLog(state.chatLog),
-        audioTranscript: state.audioTranscript,
+        audioTranscript: companionAudio,
         longTermContext: buildLongTermMemoryContext(state.longTermMemory, state.pinnedMemories, state.goldenMemoryId),
         config: state.config,
         activeProvider,
@@ -715,7 +736,7 @@ export function useAutoForge() {
           enabled: useAppStore.getState().episodicMemoryEnabled,
           channelName: state.streamMetadata.channelName,
           chatLog: state.chatLog,
-          audioTranscript: state.audioTranscript,
+          audioTranscript: companionAudio,
           activeMomentTopicHints: roomModel.getMoments().find(
             (mom) => mom.id === roomModel.getState()?.activeMomentId,
           )?.topicHints,
@@ -727,6 +748,7 @@ export function useAutoForge() {
           : undefined,
         goalPressureContext: buildSessionGoalsContext(learningLive.goalEvaluationResults),
       });
+      if (companionTicket) streamCompanion.markEvaluated(companionTicket, Infinity);
       const responseTimeMs = Date.now() - decisionStartTime;
       console.log("[AutoForge] Decision:", decision);
 
@@ -819,6 +841,7 @@ export function useAutoForge() {
           isMentioned,
           activitySpike,
           manualMode: useAppStore.getState().participationManualMode,
+          companionEvidence: companionOptional && !!companionTicket && streamCompanion.inspect(getCompanionControls(), Date.now(), "legacy", companionTicket).eligible,
           wouldHaveActed: decision.decision !== "deliberate_silence",
         });
         useAppStore.getState().setParticipationSnapshot(participation.getSnapshot());
@@ -919,17 +942,20 @@ export function useAutoForge() {
           const currentChat = live.chatLog;
           const session = live.platform === 'kick' ? getKickSession() : live.platform === 'joystick' ? getJoystickSession() : getTwitchSession();
           const botName = (session?.username || "").toLowerCase();
-          const eng = countPostSendEngagement(currentChat, sentAt, botName);
-          const label = labelEngagement(eng.total);
+          const botUsernamesForEngagement = collectBotUsernames(live.bots, botName);
+          const engagementChat = companionTicket ? currentChat.filter(m => !botUsernamesForEngagement.includes(m.user.toLowerCase())) : currentChat;
+          const eng = countPostSendEngagement(engagementChat, sentAt, botName);
+          const spokenEngagement = companionTicket ? streamCompanion.getSpokenEngagement(sentAt, "legacy") : null;
+          const label = labelEngagement(eng.total + (spokenEngagement ? 2 : 0));
           live.updateActionHistoryEntry(target.id, {
-            engagement: { chatLinesAfter: eng.linesAfter, mentionsAfter: eng.mentionsAfter, reactionsAfter: eng.reactionsAfter, label, evaluatedAt: Date.now() },
+            engagement: { chatLinesAfter: eng.linesAfter, mentionsAfter: eng.mentionsAfter, reactionsAfter: eng.reactionsAfter, label, evaluatedAt: Date.now(), ...(spokenEngagement ? { spokenResponse: spokenEngagement } : {}), ...(companionTicket && eng.total === 0 && !spokenEngagement ? { attribution: "uncertain" as const } : {}) },
           });
           // A9: Record accuracy metric
-          live.recordActionEngagement(actionType, label);
+          if (!companionTicket || eng.total > 0 || spokenEngagement) live.recordActionEngagement(actionType, label);
           // Participation awareness: outcome evidence. Only OPTIONAL sends
           // (not mention responses — an active exchange implies replies)
           // inform the ignored-trend restraint dimension.
-          participation.noteOutcome({
+          if (!companionTicket || eng.total > 0 || spokenEngagement) participation.noteOutcome({
             channel: live.streamMetadata.channelName,
             label,
             wasOptional: !wasMentionResponse,
@@ -944,7 +970,7 @@ export function useAutoForge() {
             subjectUsername: botName,
             wasMentionResponse,
           });
-          live.recordLearningOutcome(actionType, outcome.score);
+          if (!companionTicket || eng.total > 0 || spokenEngagement) live.recordLearningOutcome(actionType, spokenEngagement ? Math.max(0, outcome.score) : outcome.score);
         }, ENGAGEMENT_CHECK_DELAY_MS);
         engagementTimersRef.current.add(engTimer);
       };
@@ -978,11 +1004,13 @@ export function useAutoForge() {
           const forgeChannel = state.streamMetadata.channelName;
 
           const chatResult = await generateChat({
+            companionContext,
+            signal: guard.signal,
             streamMetadata: state.streamMetadata,
-            visualContext: state.visualContextTags.join(" "),
-            screenshot: state.visualSnapshotUrl || undefined,
+            visualContext: companionVisual,
+            screenshot: companionOptional ? undefined : state.visualSnapshotUrl || undefined,
             recentChatLog: formatChatLog(state.chatLog),
-            audioTranscript: state.audioTranscript,
+            audioTranscript: companionAudio,
             longTermContext: buildLongTermMemoryContext(state.longTermMemory, state.pinnedMemories, state.goldenMemoryId),
             config: state.config,
             activeProvider,
@@ -1030,7 +1058,7 @@ export function useAutoForge() {
           }
 
           // Send the best variant directly
-          const sendFn = getPlatformSendFn(state.platform);
+          const sendFn = getPlatformSendFn(state.platform, undefined, autoForgeSendOptions);
           // Final scope check before the send — the ranking + dedup checks
           // above may have taken time, and the session may have changed.
           if (!guard.isCurrent()) {
@@ -1111,6 +1139,7 @@ export function useAutoForge() {
             },
           });
         } catch (e: any) {
+          if (companionTicket) streamCompanion.markEvaluated(companionTicket, Date.now());
           // Scheduler preemption/cancellation is an intentional yield —
           // don't log as a failure or toast; let the outer catch reschedule
           // quietly.
@@ -1183,7 +1212,7 @@ export function useAutoForge() {
           incrementStat("autoForgeActions");
           markActionBucketRef.current();
           
-          const sendFn = getPlatformSendFn(state.platform);
+          const sendFn = getPlatformSendFn(state.platform, undefined, autoForgeSendOptions);
           // Scope check before the send — the joke-engine lookup above may
           // have taken time; don't send into a stale session.
           if (!guard.isCurrent()) {
@@ -1286,7 +1315,7 @@ export function useAutoForge() {
               followupTimerRef.current = null;
               return;
             }
-            const sendFn2 = getPlatformSendFn(state.platform);
+            const sendFn2 = getPlatformSendFn(state.platform, undefined, autoForgeSendOptions);
             sendFn2(state.streamMetadata.channelName, decision.action_payload)
               .then(() => {
                 if (!isSessionScopeCurrent(followupScope)) return;
@@ -1353,7 +1382,7 @@ export function useAutoForge() {
         {
           const silenceLive = useAppStore.getState();
           const silenceProfile = silenceLive.learningProfiles[learningProfileKey(state.streamMetadata.channelName)] ?? emptyLearningProfile();
-          if (shouldRecordSilenceObservation(silenceProfile, Date.now())) {
+          if (!(silenceLive.participationProfile === "stream_companion" && silenceLive.autoForgeDryRun) && shouldRecordSilenceObservation(silenceProfile, Date.now())) {
             const silenceScope = captureSessionScope();
             const decidedAt = Date.now();
             const silenceTimer = setTimeout(() => {
@@ -1439,6 +1468,7 @@ export function useAutoForge() {
 
     } catch (e: any) {
       const errMsg = e?.message || 'Unknown error';
+      if (companionTicket) streamCompanion.markEvaluated(companionTicket, Date.now());
       const isMissingKey = errMsg.includes('No API key configured');
       if (isTrialDailyLimitError(e)) {
         setAutoForgeNextActionMs(trialResetRetryAt(e.usage));

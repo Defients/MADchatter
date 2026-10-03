@@ -6,6 +6,7 @@ audio source so no real Whisper, Streamlink, or FFmpeg is required.
 Run with:  pytest tests/  (or:  python -m pytest tests/)
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -79,6 +80,21 @@ class FakeSource(AudioSource):
 
     def _cleanup(self):
         pass
+
+
+class RaisingEngine(FakeEngine):
+    """Engine whose transcribe always fails — drives the segmenter error path."""
+    def transcribe(self, audio_bytes, language=None, vad=None):
+        raise RuntimeError("boom")
+
+
+class BigPushSource(FakeSource):
+    """Pushes one full transcription window so the segmenter flushes once."""
+    def start(self):
+        self._stop_event.clear()
+        self._emit_status("connected")
+        # SEGMENT_WINDOW_SECONDS(10) * 16000 * 2 = 320,000 bytes per window.
+        self._push(b"\x00" * 400000)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -213,6 +229,86 @@ class TestStartStop:
         r = c.post("/v1/transcription/stop", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
         assert r.json()["stopped"] is True
+
+
+class TestControllerColdStart:
+    def test_first_start_loads_model_then_listens(self, monkeypatch):
+        """Regression: first start (model not yet loaded) must reach LISTENING.
+        The load path goes IDLE -> PREPARING_SOURCE -> LOADING_MODEL -> LISTENING;
+        a LOADING_MODEL -> PREPARING_SOURCE transition is illegal and used to
+        wedge the session in loading_model with _active=True forever."""
+        config = BridgeConfig()
+        engine = FakeEngine(config)
+        # Force the cold-start path: engine reports not ready until load() runs.
+        loaded = {"v": False}
+        monkeypatch.setattr(engine, "is_ready", lambda: loaded["v"])
+        orig_load = engine.load
+        def load_and_mark(model=None, device=None):
+            orig_load(model=model, device=device)
+            loaded["v"] = True
+        monkeypatch.setattr(engine, "load", load_and_mark)
+        # Use the fake source so no real Streamlink/FFmpeg is spawned.
+        monkeypatch.setattr(
+            "madchatter_bridge.controller.StreamSource",
+            lambda url=None, on_status=None: FakeSource(on_status=on_status),
+        )
+        controller = TranscriptionController(config, engine)
+        controller.start(source="stream", url="https://twitch.tv/test")
+        try:
+            assert controller.state.get_state() == TranscriptionState.LISTENING
+        finally:
+            controller.stop()
+        assert controller.state.get_state() == TranscriptionState.IDLE
+
+
+class TestTranscribeErrorUnwedge:
+    def test_transcribe_error_clears_session(self, monkeypatch):
+        """Regression: a transcribe failure fires _handle_source_error from
+        inside the segmenter thread. segmenter.stop() must not join its own
+        thread — otherwise the handler dies before set_error, leaving the
+        session stuck in 'listening' with a zombie source."""
+        config = BridgeConfig()
+        engine = RaisingEngine(config)  # is_ready() True — skips model load
+        monkeypatch.setattr(
+            "madchatter_bridge.controller.StreamSource",
+            lambda url=None, on_status=None: BigPushSource(on_status=on_status),
+        )
+        controller = TranscriptionController(config, engine)
+        controller.start(source="stream", url="https://twitch.tv/test")
+        try:
+            deadline = time.time() + 5
+            while controller.state.get_state() != TranscriptionState.ERROR and time.time() < deadline:
+                time.sleep(0.05)
+            assert controller.state.get_state() == TranscriptionState.ERROR
+            assert controller.state.snapshot.last_error_code == "TRANSCRIPTION_FAILED"
+            assert not controller.is_active()
+        finally:
+            controller.stop()
+
+
+class TestEventBusThreadedDelivery:
+    def test_publish_sync_from_worker_thread_reaches_subscriber(self):
+        """Regression: publish_sync from a non-loop thread must deliver to live
+        subscribers, not just the ring buffer. Before loop binding, worker
+        thread events (transcript.final, source errors) only surfaced on the
+        next SSE reconnect — transcripts appeared only after re-subscribing."""
+        from madchatter_bridge.sse import EventBus, BridgeEvent
+        bus2 = EventBus()
+        received = []
+
+        async def main():
+            q, _ = await bus2.subscribe()
+            bus2.bind_loop()
+            t = threading.Thread(
+                target=lambda: bus2.publish_sync(BridgeEvent("transcript.final", {"text": "hi"})),
+                daemon=True,
+            )
+            t.start()
+            received.append(await asyncio.wait_for(q.get(), timeout=3))
+            t.join(timeout=3)
+
+        asyncio.run(main())
+        assert received[0].type == "transcript.final"
 
 
 class TestSSE:

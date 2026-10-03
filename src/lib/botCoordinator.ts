@@ -57,6 +57,7 @@ class BotCoordinator {
   private channel: string | null = null;
   private superchargeActive = false;
   private eventFloorOwner: string | null = null;
+  private eventFloorListeners = new Set<() => void>();
   private autonomousResumeAt = 0;
   private blockedAutonomousMessages = 0;
   private droppedStaleMessages = 0;
@@ -107,6 +108,7 @@ class BotCoordinator {
     if (this.eventFloorOwner && this.eventFloorOwner !== normalized) return false;
     this.reset();
     this.eventFloorOwner = normalized;
+    this.eventFloorListeners.forEach(listener => listener());
     return true;
   }
 
@@ -114,6 +116,7 @@ class BotCoordinator {
     if (this.eventFloorOwner !== owner) return false;
     this.eventFloorOwner = null;
     this.autonomousResumeAt = Date.now() + Math.max(0, cooldownMs);
+    this.eventFloorListeners.forEach(listener => listener());
     this.reset();
     return true;
   }
@@ -138,6 +141,11 @@ class BotCoordinator {
 
   getEventFloorOwner(): string | null {
     return this.eventFloorOwner;
+  }
+
+  subscribeEventFloor(listener: () => void): () => void {
+    this.eventFloorListeners.add(listener);
+    return () => { this.eventFloorListeners.delete(listener); };
   }
 
   isEventFloorOwner(owner: string): boolean {
