@@ -1,5 +1,5 @@
 import { StreamCompanionControl } from "./StreamCompanionControl";
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useId } from 'react';
 import { useAppStore, selectMultiBotActive } from '../store';
 import type { Bot } from '../types';
 import { Activity, Brain, Clock, Zap, X, Minimize2, Maximize2, Sparkles, ScrollText, Gauge, Rows3, FlaskConical, Radio, TrendingUp, HelpCircle, ChevronDown, Send, Megaphone } from 'lucide-react';
@@ -45,59 +45,81 @@ function RateLimitIndicator() {
   // Shared app clock — the stats are cheap synchronous local reads, so the
   // per-second re-render is all this needs (no per-instance timer).
   useNowTick();
+  const [expanded, setExpanded] = useState(false);
+  const id = useId();
+  const detailsId = `${id}-rate-details`;
+  const statusId = `${id}-rate-status`;
   const stats = actionRateLimiter.getStats();
 
-  const hourPct = (stats.actionsLastHour / stats.maxPerHour) * 100;
-  const tenMinPct = (stats.actionsLastTenMin / stats.maxPerTenMin) * 100;
+  const hourPct = (stats.actionsLastHour / Math.max(1, stats.maxPerHour)) * 100;
+  const tenMinPct = (stats.actionsLastTenMin / Math.max(1, stats.maxPerTenMin)) * 100;
   const cooldownSecs = Math.ceil(stats.msUntilNextAllowed / 1000);
 
   const hourColor = hourPct >= 80 ? 'bg-red-500' : hourPct >= 60 ? 'bg-yellow-500' : 'bg-green-500';
   const tenMinColor = tenMinPct >= 80 ? 'bg-red-500' : tenMinPct >= 60 ? 'bg-yellow-500' : 'bg-green-500';
-  const canAct = stats.msUntilNextAllowed === 0;
+  const quotaReached = stats.actionsLastHour >= stats.maxPerHour || stats.actionsLastTenMin >= stats.maxPerTenMin;
+  const status = quotaReached ? 'Limit reached' : cooldownSecs > 0 ? `Cooldown · ${cooldownSecs}s` : 'Ready';
+  const statusTone = quotaReached ? 'text-red-300' : cooldownSecs > 0 ? 'text-amber-300' : 'text-emerald-300';
 
   return (
-    <div className="flex flex-col gap-2 p-2.5 bg-black/40 rounded border border-white/5">
-      <span className="text-[9px] text-gray-500 font-bold tracking-wider uppercase flex items-center gap-1.5">
-        <Gauge className="w-3 h-3 text-cyan-400" /> Rate Limit Status
-      </span>
-
-      <div className="flex flex-col gap-1.5">
-        {/* Per hour */}
-        <div className="flex flex-col gap-0.5">
-          <div className="flex justify-between items-center text-[10px]">
-            <span className="text-gray-400 uppercase">Per Hour</span>
-            <span className={cn('font-mono font-bold', hourPct >= 80 ? 'text-red-400' : hourPct >= 60 ? 'text-yellow-400' : 'text-green-400')}>
-              {stats.actionsLastHour}/{stats.maxPerHour}
+    <div className="overflow-hidden rounded-xl border border-cyan-400/15 bg-cyan-400/[0.025]">
+      <div className="px-2 py-0.5">
+        <button type="button" aria-label="Rate Limit Status details" aria-expanded={expanded}
+          aria-controls={detailsId} aria-describedby={statusId} onClick={() => setExpanded(open => !open)}
+          className="flex min-h-11 w-full min-w-0 items-center gap-2 rounded-lg text-left hover:bg-white/[0.025] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-300">
+            <Gauge className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[11px] font-semibold text-gray-200">Rate Limit Status</span>
+            <span className="block truncate text-[10px] leading-4 text-gray-400 font-mono">
+              {stats.actionsLastHour}/{stats.maxPerHour} hr · {stats.actionsLastTenMin}/{stats.maxPerTenMin} per 10m
             </span>
-          </div>
-          <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-            <div className={cn('h-full transition-all duration-500', hourColor)} style={{ width: `${Math.min(100, hourPct)}%` }} />
-          </div>
-        </div>
+          </span>
+          <span id={statusId} className={cn('shrink-0 rounded-full border border-current/15 bg-white/[0.03] px-1.5 py-1 text-[9px] font-semibold', statusTone)}>{status}</span>
+          <ChevronDown aria-hidden="true" className={cn('mr-1 h-3 w-3 shrink-0 text-gray-500', expanded && 'rotate-180')} />
+        </button>
+      </div>
 
-        {/* Per 10 min */}
-        <div className="flex flex-col gap-0.5">
-          <div className="flex justify-between items-center text-[10px]">
-            <span className="text-gray-400 uppercase">Per 10 Min</span>
-            <span className={cn('font-mono font-bold', tenMinPct >= 80 ? 'text-red-400' : tenMinPct >= 60 ? 'text-yellow-400' : 'text-green-400')}>
-              {stats.actionsLastTenMin}/{stats.maxPerTenMin}
-            </span>
+      <div id={detailsId} hidden={!expanded} className="border-t border-white/[0.06] px-3 pb-2.5 pt-2">
+        <div className="flex flex-col gap-2">
+          {/* Per hour */}
+          <div className="flex flex-col gap-0.5">
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-gray-400 uppercase">Per Hour</span>
+              <span className={cn('font-mono font-bold', hourPct >= 80 ? 'text-red-400' : hourPct >= 60 ? 'text-yellow-400' : 'text-green-400')}>
+                {stats.actionsLastHour}/{stats.maxPerHour}
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div className={cn('h-full transition-all duration-500 motion-reduce:transition-none', hourColor)} style={{ width: `${Math.min(100, hourPct)}%` }} />
+            </div>
           </div>
-          <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-            <div className={cn('h-full transition-all duration-500', tenMinColor)} style={{ width: `${Math.min(100, tenMinPct)}%` }} />
-          </div>
-        </div>
 
-        {/* Cooldown */}
-        <div className="flex items-center justify-between text-[10px] pt-0.5">
-          <span className="text-gray-400 uppercase">Cooldown</span>
-          {canAct ? (
-            <span className="font-mono font-bold text-green-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" /> Ready
-            </span>
-          ) : (
-            <span className="font-mono font-bold text-yellow-400">{cooldownSecs}s</span>
-          )}
+          {/* Per 10 min */}
+          <div className="flex flex-col gap-0.5">
+            <div className="flex justify-between items-center text-[10px]">
+              <span className="text-gray-400 uppercase">Per 10 Min</span>
+              <span className={cn('font-mono font-bold', tenMinPct >= 80 ? 'text-red-400' : tenMinPct >= 60 ? 'text-yellow-400' : 'text-green-400')}>
+                {stats.actionsLastTenMin}/{stats.maxPerTenMin}
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div className={cn('h-full transition-all duration-500 motion-reduce:transition-none', tenMinColor)} style={{ width: `${Math.min(100, tenMinPct)}%` }} />
+            </div>
+          </div>
+
+          {/* Cooldown */}
+          <div className="flex items-center justify-between text-[10px] pt-0.5">
+            <span className="text-gray-400 uppercase">Cooldown</span>
+            {cooldownSecs === 0 ? (
+              <span className="font-mono font-bold text-green-400 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400" /> Ready
+              </span>
+            ) : (
+              <span className="font-mono font-bold text-yellow-400">{cooldownSecs}s</span>
+            )}
+          </div>
         </div>
       </div>
     </div>
